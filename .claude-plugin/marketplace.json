@@ -1,0 +1,13 @@
+{
+  "name": "code-flow-report",
+  "owner": { "name": "Jinho Kim", "url": "https://github.com/JinhoKim46" },
+  "description": "The code-flow-report skill for Claude Code.",
+  "plugins": [
+    {
+      "name": "code-flow-report",
+      "source": "./",
+      "description": "Interactive, self-checking report of how a Python codebase actually works.",
+      "version": "0.1.0"
+    }
+  ]
+}

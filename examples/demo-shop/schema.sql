@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT);
+CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, sku TEXT UNIQUE, title TEXT, price_cents INTEGER);
+CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status TEXT, total_cents INTEGER, created_at TEXT);
+CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER, product_id INTEGER, qty INTEGER);
+CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY, action TEXT, actor TEXT, detail TEXT, at TEXT);

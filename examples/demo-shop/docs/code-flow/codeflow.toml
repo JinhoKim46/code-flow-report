@@ -1,0 +1,33 @@
+# codeflow configuration — repo-specific knowledge the extractor cannot infer.
+# paths.root is the repo root relative to this file. param_types: first-parameter names that
+# always mean the same kind of object (lets `cur.execute(...)` resolve). gateways: function names
+# whose first string argument is an action label (a shared write/audit wrapper).
+# profiles: stack profiles are switched on by imports; force with enable / disable.
+
+
+[paths]
+root = "../.."
+
+[project]
+name = "demo-shop"
+language = "en"
+repo_url = ""
+store_name = "database"
+audience = ""
+
+[scan]
+include = ["shop"]
+exclude = ["tests", "test", "testing", ".venv", "venv", "env", ".env", "node_modules", "__pycache__", "build", "dist", ".git", ".tox", ".nox", "site-packages", "migrations", "cdk.out", ".mypy_cache", ".pytest_cache", ".claude", "docs"]
+strip_prefixes = []
+schema_globs = ["**/*.sql"]
+
+[conventions]
+param_types = {}
+returns = {}
+gateways = []
+route_prefixes = {}
+noisy_services = ["Template render", "AWS CDK", "Jinja"]
+
+[profiles]
+enable = []
+disable = []

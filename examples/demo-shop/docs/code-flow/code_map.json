@@ -1,0 +1,580 @@
+{
+ "schema": 1,
+ "scope": [
+  "shop"
+ ],
+ "summary": {
+  "files": 9,
+  "lines": 183,
+  "functions": 19,
+  "methods": 0,
+  "classes": 1,
+  "routes": 2,
+  "route_functions": 2,
+  "call_sites": 65,
+  "resolved_internal": 15,
+  "resolved_external": 27,
+  "resolved_builtin": 5,
+  "resolved_by_convention": 0,
+  "unresolved": 18,
+  "resolved_ratio": 0.7231,
+  "internal_edges": 15,
+  "reference_edges": 6,
+  "sql_sites": 7,
+  "gateway_sites": 0,
+  "external_sites": 9,
+  "tables": 5,
+  "orm_models": 0,
+  "import_cycles": 0,
+  "lazy_import_cycles": 0,
+  "parse_errors": 0,
+  "profiles": {
+   "llm": 1,
+   "jobs": 1
+  },
+  "top_unresolved_names": [
+   ["execute", 6],
+   ["fetchall", 2],
+   ["cursor", 2],
+   ["join", 1],
+   ["work", 1],
+   ["get", 1],
+   ["append", 1],
+   ["executemany", 1],
+   ["isoformat", 1],
+   ["view", 1],
+   ["delay", 1]
+  ]
+ },
+ "tables": [
+  "audit_log",
+  "customers",
+  "order_items",
+  "orders",
+  "products"
+ ],
+ "orm_models": {},
+ "orm_uses": {},
+ "modules": {
+  "shop": {
+   "file": "shop/__init__.py",
+   "lines": 9,
+   "doc": "demo-shop web app.",
+   "cli": false,
+   "imports": [],
+   "lazy_imports": [
+    "shop.web"
+   ],
+   "call_sites": 2,
+   "unresolved": 0
+  },
+  "shop.catalog": {
+   "file": "shop/catalog.py",
+   "lines": 11,
+   "doc": "Products.",
+   "cli": false,
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 6,
+   "unresolved": 5
+  },
+  "shop.db": {
+   "file": "shop/db.py",
+   "lines": 20,
+   "doc": "SQLite connection and the one write gateway every change goes through.",
+   "cli": false,
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 8,
+   "unresolved": 3
+  },
+  "shop.mail": {
+   "file": "shop/mail.py",
+   "lines": 6,
+   "doc": "",
+   "cli": false,
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 2,
+   "unresolved": 0
+  },
+  "shop.orders": {
+   "file": "shop/orders.py",
+   "lines": 42,
+   "doc": "Order rules: totals are computed here, never taken from the client.",
+   "cli": false,
+   "imports": [
+    "shop.catalog"
+   ],
+   "lazy_imports": [],
+   "call_sites": 14,
+   "unresolved": 6
+  },
+  "shop.payments": {
+   "file": "shop/payments.py",
+   "lines": 14,
+   "doc": "External payment provider (invented API).",
+   "cli": false,
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 4,
+   "unresolved": 0
+  },
+  "shop.summary": {
+   "file": "shop/summary.py",
+   "lines": 18,
+   "doc": "AI-written order summary for the confirmation email.",
+   "cli": false,
+   "imports": [
+    "shop.mail"
+   ],
+   "lazy_imports": [],
+   "call_sites": 3,
+   "unresolved": 0
+  },
+  "shop.tasks": {
+   "file": "shop/tasks.py",
+   "lines": 20,
+   "doc": "Background work (Celery).",
+   "cli": false,
+   "imports": ["shop.db", "shop.orders", "shop.summary"],
+   "lazy_imports": [],
+   "call_sites": 6,
+   "unresolved": 1
+  },
+  "shop.web": {
+   "file": "shop/web.py",
+   "lines": 43,
+   "doc": "HTTP routes.",
+   "cli": false,
+   "imports": [
+    "shop.catalog",
+    "shop.db",
+    "shop.orders",
+    "shop.payments",
+    "shop.tasks"
+   ],
+   "lazy_imports": [],
+   "call_sites": 20,
+   "unresolved": 3
+  }
+ },
+ "symbols": {
+  "shop.catalog:list_products": {
+   "kind": "function",
+   "file": "shop/catalog.py",
+   "line": 4,
+   "end": 5,
+   "doc": "",
+   "params": [
+    "cur"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "shop.catalog:prices": {
+   "kind": "function",
+   "file": "shop/catalog.py",
+   "line": 8,
+   "end": 11,
+   "doc": "",
+   "params": ["cur", "product_ids"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.db:connect": {
+   "kind": "function",
+   "file": "shop/db.py",
+   "line": 9,
+   "end": 10,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "shop.db:run_write": {
+   "kind": "function",
+   "file": "shop/db.py",
+   "line": 13,
+   "end": 20,
+   "doc": "Runs work(cur) and its audit row in one transaction, so a change is never unrecorded.",
+   "params": [
+    "action",
+    "actor",
+    "payload",
+    "work"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "shop.mail:send": {
+   "kind": "function",
+   "file": "shop/mail.py",
+   "line": 4,
+   "end": 6,
+   "doc": "",
+   "params": ["to", "subject", "body"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.orders:OrderError": {
+   "kind": "class",
+   "file": "shop/orders.py",
+   "line": 9,
+   "end": 10,
+   "doc": "",
+   "bases": [
+    "ValueError"
+   ],
+   "decorators": []
+  },
+  "shop.orders:cancel_stale": {
+   "kind": "function",
+   "file": "shop/orders.py",
+   "line": 40,
+   "end": 42,
+   "doc": "",
+   "params": ["cur", "before_iso"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.orders:create_order": {
+   "kind": "function",
+   "file": "shop/orders.py",
+   "line": 25,
+   "end": 33,
+   "doc": "",
+   "params": ["cur", "customer_id", "items"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.orders:mark_paid": {
+   "kind": "function",
+   "file": "shop/orders.py",
+   "line": 36,
+   "end": 37,
+   "doc": "",
+   "params": ["cur", "order_id"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.orders:validate": {
+   "kind": "function",
+   "file": "shop/orders.py",
+   "line": 13,
+   "end": 22,
+   "doc": "",
+   "params": [
+    "form"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "shop.payments:charge": {
+   "kind": "function",
+   "file": "shop/payments.py",
+   "line": 9,
+   "end": 14,
+   "doc": "One charge per order — the order id doubles as the idempotency key.",
+   "params": ["order_id", "total_cents", "card_token"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.summary:summarise": {
+   "kind": "function",
+   "file": "shop/summary.py",
+   "line": 10,
+   "end": 18,
+   "doc": "",
+   "params": ["order", "customer_email"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.tasks:cancel_unpaid": {
+   "kind": "function",
+   "file": "shop/tasks.py",
+   "line": 17,
+   "end": 20,
+   "doc": "Nightly: cancel orders still unpaid after a day.",
+   "params": [],
+   "decorators": [
+    "shared_task"
+   ],
+   "async": false
+  },
+  "shop.tasks:send_summary": {
+   "kind": "function",
+   "file": "shop/tasks.py",
+   "line": 12,
+   "end": 13,
+   "doc": "",
+   "params": ["order", "email"],
+   "decorators": [
+    "shared_task"
+   ],
+   "async": false
+  },
+  "shop.web:login_required": {
+   "kind": "function",
+   "file": "shop/web.py",
+   "line": 11,
+   "end": 17,
+   "doc": "",
+   "params": [
+    "view"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "shop.web:login_required.wrapped": {
+   "kind": "nested",
+   "file": "shop/web.py",
+   "line": 12,
+   "end": 15,
+   "doc": "",
+   "params": ["*a", "**kw"],
+   "decorators": [],
+   "async": false
+  },
+  "shop.web:place_order": {
+   "kind": "function",
+   "file": "shop/web.py",
+   "line": 29,
+   "end": 43,
+   "doc": "",
+   "params": [],
+   "decorators": ["bp.post", "login_required"],
+   "async": false
+  },
+  "shop.web:place_order.work": {
+   "kind": "nested",
+   "file": "shop/web.py",
+   "line": 35,
+   "end": 39,
+   "doc": "",
+   "params": [
+    "cur"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "shop.web:products": {
+   "kind": "function",
+   "file": "shop/web.py",
+   "line": 21,
+   "end": 24,
+   "doc": "",
+   "params": [],
+   "decorators": [
+    "bp.get"
+   ],
+   "async": false
+  },
+  "shop:create_app": {
+   "kind": "function",
+   "file": "shop/__init__.py",
+   "line": 5,
+   "end": 9,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  }
+ },
+ "routes": {
+  "shop.web:place_order": {
+   "blueprint": "bp",
+   "routes": [
+    ["POST", "/orders"]
+   ],
+   "urls": [
+    ["POST", "/shop/orders"]
+   ],
+   "guards": [
+    "login_required"
+   ],
+   "templates": []
+  },
+  "shop.web:products": {
+   "blueprint": "bp",
+   "routes": [
+    ["GET", "/products"]
+   ],
+   "urls": [
+    ["GET", "/shop/products"]
+   ],
+   "guards": [],
+   "templates": [
+    "products.html"
+   ]
+  }
+ },
+ "calls": [
+  ["shop.db:run_write", "shop.db:connect", 15],
+  ["shop.orders:create_order", "shop.catalog:prices", 26],
+  ["shop.orders:validate", "shop.orders:OrderError", 18],
+  ["shop.orders:validate", "shop.orders:OrderError", 21],
+  ["shop.summary:summarise", "shop.mail:send", 18],
+  ["shop.tasks:cancel_unpaid", "shop.db:run_write", 20],
+  ["shop.tasks:cancel_unpaid", "shop.orders:cancel_stale", 20],
+  ["shop.tasks:send_summary", "shop.summary:summarise", 13],
+  ["shop.web:place_order", "shop.db:run_write", 41],
+  ["shop.web:place_order", "shop.orders:validate", 31],
+  ["shop.web:place_order.work", "shop.orders:create_order", 36],
+  ["shop.web:place_order.work", "shop.orders:mark_paid", 38],
+  ["shop.web:place_order.work", "shop.payments:charge", 37],
+  ["shop.web:products", "shop.catalog:list_products", 23],
+  ["shop.web:products", "shop.db:connect", 22]
+ ],
+ "refs": [
+  ["shop.web:<module>", "shop.web:login_required", 28],
+  ["shop.web:login_required", "shop.web:login_required.wrapped", 16],
+  ["shop.web:login_required", "shop.web:login_required.wrapped", 17],
+  ["shop.web:place_order", "shop.orders:OrderError", 32],
+  ["shop.web:place_order", "shop.tasks:send_summary", 42],
+  ["shop.web:place_order", "shop.web:place_order.work", 41]
+ ],
+ "constructs": [
+  ["shop.orders:validate", "shop.orders:OrderError", 18],
+  ["shop.orders:validate", "shop.orders:OrderError", 21]
+ ],
+ "sql": [
+  {
+   "symbol": "shop.catalog:list_products",
+   "line": 5,
+   "read": [
+    "products"
+   ]
+  },
+  {
+   "symbol": "shop.catalog:prices",
+   "line": 10,
+   "read": [
+    "products"
+   ]
+  },
+  {
+   "symbol": "shop.db:run_write",
+   "line": 18,
+   "insert": [
+    "audit_log"
+   ]
+  },
+  {
+   "symbol": "shop.orders:cancel_stale",
+   "line": 41,
+   "update": [
+    "orders"
+   ]
+  },
+  {
+   "symbol": "shop.orders:create_order",
+   "line": 28,
+   "insert": [
+    "orders"
+   ]
+  },
+  {
+   "symbol": "shop.orders:create_order",
+   "line": 31,
+   "insert": [
+    "order_items"
+   ]
+  },
+  {
+   "symbol": "shop.orders:mark_paid",
+   "line": 37,
+   "update": [
+    "orders"
+   ]
+  }
+ ],
+ "gateways": [],
+ "external": [
+  {
+   "symbol": "shop.db:connect",
+   "line": 10,
+   "service": "SQLite",
+   "call": "sqlite3.connect"
+  },
+  {
+   "symbol": "shop.mail:send",
+   "line": 5,
+   "service": "SMTP email",
+   "call": "smtplib.SMTP"
+  },
+  {
+   "symbol": "shop.mail:send",
+   "line": 6,
+   "service": "SMTP email",
+   "call": "smtplib.SMTP().sendmail"
+  },
+  {
+   "symbol": "shop.payments:charge",
+   "line": 11,
+   "service": "HTTP (requests)",
+   "call": "requests.post"
+  },
+  {
+   "symbol": "shop.payments:charge",
+   "line": 13,
+   "service": "HTTP (requests)",
+   "call": "requests.post().raise_for_status"
+  },
+  {
+   "symbol": "shop.payments:charge",
+   "line": 14,
+   "service": "HTTP (requests)",
+   "call": "requests.post().json"
+  },
+  {
+   "symbol": "shop.summary:<module>",
+   "line": 7,
+   "service": "Anthropic API",
+   "call": "anthropic.Anthropic"
+  },
+  {
+   "symbol": "shop.summary:summarise",
+   "line": 11,
+   "service": "Anthropic API",
+   "call": "anthropic.Anthropic().messages.create"
+  },
+  {
+   "symbol": "shop.web:products",
+   "line": 24,
+   "service": "Template render",
+   "call": "flask.render_template",
+   "template": "products.html"
+  }
+ ],
+ "import_cycles": [],
+ "lazy_import_cycles": [],
+ "dead_candidates": [],
+ "duplicate_names": {},
+ "parse_errors": [],
+ "profiles": {
+  "llm": [
+   {
+    "symbol": "shop.summary:summarise",
+    "line": 11,
+    "provider": "Anthropic",
+    "call": "anthropic.Anthropic().messages.create",
+    "settings": {
+     "model": "'demo-model'",
+     "temperature": "0.3",
+     "max_tokens": "300"
+    },
+    "message_roles": ["system (system=)", "user"]
+   }
+  ],
+  "jobs": [
+   {
+    "kind": "enqueue",
+    "symbol": "shop.web:place_order",
+    "line": 42,
+    "job": "shop.tasks:send_summary",
+    "how": ".delay()"
+   }
+  ]
+ }
+}

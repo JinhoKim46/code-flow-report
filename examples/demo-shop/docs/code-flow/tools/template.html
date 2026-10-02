@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code flow</title>
+<meta name="description" content="How this codebase actually works: layers, journeys, boundaries, call graph, data lifecycle and findings, generated from the source.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Generated page. Edit tools/template.html and rebuild; never edit the HTML output. */
+:root {
+  --bg: #f5f6f4; --surface: #ffffff; --surface-2: #eef1ef; --ink: #1b2422; --muted: #5b6764; --line: #d5dad7; --grid: #e6eae7;
+  --accent: #0b6e69; --accent-soft: #d8ecea; --amber: #a35b00; --amber-soft: #f6e8d4; --bad: #b3261e; --bad-soft: #f8e1df; --good: #2f7d32; --good-soft: #e1f0e1;
+  --l0: #3b5b92; --l1: #0b6e69; --l2: #7b4f9d; --l3: #a8432f; --l4: #8a5a2b; --l5: #5a5f9e; --l6: #b0476e; --l7: #5b6764; --l8: #7d7a3a; --l9: #2f7d32;
+  --k-born: #2f7d32; --k-transform: #a35b00; --k-store: #0b6e69; --k-read: #3b5b92; --k-delete: #b3261e;
+  --font-body: "IBM Plex Sans", "IBM Plex Sans KR", system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111615; --surface: #18201e; --surface-2: #1f2826; --ink: #e4ebe8; --muted: #9aa8a4; --line: #2c3633; --grid: #222b29;
+    --accent: #4fc0b8; --accent-soft: #163634; --amber: #e3a24a; --amber-soft: #3a2a14; --bad: #ef7a72; --bad-soft: #3a1c1a; --good: #6cc070; --good-soft: #1b3320;
+    --l0: #86a6e0; --l1: #4fc0b8; --l2: #c09ae0; --l3: #ef8f78; --l4: #d8a774; --l5: #a4a9ea; --l6: #e98fb2; --l7: #a3b1ad; --l8: #cfcb7c; --l9: #6cc070;
+    --k-born: #6cc070; --k-transform: #e3a24a; --k-store: #4fc0b8; --k-read: #86a6e0; --k-delete: #ef7a72;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111615; --surface: #18201e; --surface-2: #1f2826; --ink: #e4ebe8; --muted: #9aa8a4; --line: #2c3633; --grid: #222b29;
+  --accent: #4fc0b8; --accent-soft: #163634; --amber: #e3a24a; --amber-soft: #3a2a14; --bad: #ef7a72; --bad-soft: #3a1c1a; --good: #6cc070; --good-soft: #1b3320;
+  --l0: #86a6e0; --l1: #4fc0b8; --l2: #c09ae0; --l3: #ef8f78; --l4: #d8a774; --l5: #a4a9ea; --l6: #e98fb2; --l7: #a3b1ad; --l8: #cfcb7c; --l9: #6cc070;
+  --k-born: #6cc070; --k-transform: #e3a24a; --k-store: #4fc0b8; --k-read: #86a6e0; --k-delete: #ef7a72;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { scroll-padding-top: 60px; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; word-break: keep-all; overflow-wrap: anywhere; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 0 64px; }
+h1, h2, h3, h4 { text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 700; line-height: 1.15; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 16.5px; font-weight: 600; }
+h4 { font-size: 12px; font-family: var(--font-mono); letter-spacing: 0.06em; color: var(--muted); font-weight: 500; }
+p { margin: 0; max-width: 76ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+a { color: var(--accent); }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+pre { margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.topnav { position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+.topnav .wrap { display: flex; gap: 14px; align-items: center; padding-block: 9px; overflow-x: auto; scrollbar-width: none; }
+.topnav .wrap::-webkit-scrollbar { display: none; }
+.topnav a { text-decoration: none; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.topnav a:hover { color: var(--ink); }
+.brand { font-weight: 700; color: var(--ink) !important; font-size: 14.5px !important; margin-right: 2px; }
+.themebtn { margin-left: auto; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+
+.hero { display: grid; gap: 16px; padding-block: 32px 4px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted); }
+.lede { font-size: 17px; max-width: 70ch; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px; }
+.stat { border-top: 2px solid var(--ink); padding-top: 8px; }
+.stat b { font-size: 24px; display: block; font-variant-numeric: tabular-nums; font-weight: 700; }
+.stat span { color: var(--muted); font-size: 13px; }
+.searchbar { position: relative; }
+.searchbar input { width: 100%; font-size: 15px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.results { position: absolute; z-index: 25; left: 0; right: 0; top: calc(100% + 4px); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; max-height: 60vh; overflow-y: auto; box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); }
+.results button { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; width: 100%; text-align: left; border: none; background: none; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--line); font-size: 13px; }
+.results button:hover, .results button.on { background: var(--accent-soft); }
+.results .k { font-family: var(--font-mono); font-size: 11px; color: var(--muted); padding-top: 1px; }
+.results small { display: block; color: var(--muted); font-size: 12px; }
+
+section { padding-block: 34px 8px; border-top: 1px solid var(--line); margin-top: 26px; display: grid; gap: 16px; min-width: 0; }
+.section-head { display: grid; gap: 6px; }
+.section-head p { color: var(--muted); }
+.note { font-size: 13px; color: var(--muted); }
+.howto { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.howto div, .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 6px; font-size: 14px; align-content: start; min-width: 0; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend .ln { display: inline-block; width: 22px; height: 0; border-top: 2px solid; margin-right: 5px; vertical-align: 3px; }
+
+.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 2px 9px; font-size: 12px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.chip.mono { font-family: var(--font-mono); font-size: 11.5px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge { display: inline-block; font-family: var(--font-mono); font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); white-space: nowrap; color: var(--muted); }
+.badge.accent { border-color: var(--accent); color: var(--accent); }
+.badge.amber { border-color: var(--amber); color: var(--amber); }
+.badge.bad { border-color: var(--bad); color: var(--bad); }
+.badge.good { border-color: var(--good); color: var(--good); }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input[type=search], input[type=text] { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 5px 10px; font-size: 13px; min-width: 0; }
+.symlink { background: none; border: none; padding: 0; cursor: pointer; color: var(--accent); font-family: var(--font-mono); font-size: 12.5px; text-align: left; overflow-wrap: anywhere; word-break: break-all; }
+.symlink:hover { text-decoration: underline; }
+.loc { font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; word-break: break-all; }
+.loc a { color: var(--muted); }
+.frame { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: auto; }
+.frame svg { display: block; }
+dl.kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 10px; margin: 0; font-size: 13.5px; }
+dl.kv dt { color: var(--muted); font-size: 12px; padding-top: 2px; }
+dl.kv dd { margin: 0; min-width: 0; }
+@media (max-width: 520px) { dl.kv { grid-template-columns: minmax(0, 1fr); } dl.kv dt { padding-top: 6px; } }
+
+/* 계층 */
+.arch-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.modbox { cursor: pointer; }
+.modbox rect { fill: var(--surface); stroke: var(--line); }
+.modbox:hover rect { stroke: var(--accent); }
+.modbox.sel rect { stroke: var(--accent); stroke-width: 2.4; fill: var(--accent-soft); }
+.modbox.in rect { stroke: var(--amber); stroke-width: 2; fill: var(--amber-soft); }
+.modbox.out rect { stroke: var(--accent); stroke-width: 2; }
+.modbox text { font-family: var(--font-mono); font-size: 10.5px; fill: var(--ink); pointer-events: none; }
+.modbox text.sub { fill: var(--muted); font-size: 9.5px; }
+.colhead { font-size: 11.5px; font-weight: 600; }
+.medge { fill: none; stroke-width: 1.4; stroke-opacity: 0.8; }
+.medge.out { stroke: var(--accent); } .medge.in { stroke: var(--amber); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 24px; min-width: 0; }
+.panel > div { display: grid; gap: 8px; align-content: start; min-width: 0; }
+@media (max-width: 860px) { .panel { grid-template-columns: minmax(0, 1fr); } }
+.panel ul, .plain { margin: 0; padding-left: 0; list-style: none; display: grid; gap: 3px; max-height: 300px; overflow-y: auto; }
+.panel li, .plain li { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.rules { display: grid; gap: 6px; }
+.rule { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px; font-size: 13.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.rule .ok { color: var(--good); font-weight: 700; } .rule .no { color: var(--bad); font-weight: 700; }
+
+/* 여정 */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tabs button { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.tabs button.on { border-color: var(--accent); background: var(--accent-soft); }
+.seq text { font-size: 11px; fill: var(--ink); }
+.seq .actor rect { fill: var(--surface-2); stroke: var(--line); }
+.seq .actor text { font-family: var(--font-mono); font-size: 10.5px; }
+.seq .life { stroke: var(--line); stroke-dasharray: 3 3; }
+.seq .msg line { stroke: var(--muted); stroke-width: 1.3; }
+.seq .msg polygon { fill: var(--muted); }
+.seq .msg text { fill: var(--muted); font-size: 10.5px; }
+.seq .msg { cursor: pointer; }
+.seq .msg.cur line { stroke: var(--accent); stroke-width: 2.4; }
+.seq .msg.cur polygon { fill: var(--accent); }
+.seq .msg.cur text { fill: var(--accent); font-weight: 600; }
+.seq .msg.store line { stroke-dasharray: 5 3; }
+.seq .num { font-family: var(--font-mono); font-size: 9.5px; fill: var(--muted); }
+.journey { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 860px) { .journey { grid-template-columns: minmax(0, 1fr); } .steplist { max-height: 230px; } }
+.steplist { margin: 0; padding: 6px; list-style: none; display: grid; gap: 2px; max-height: 620px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.steplist button { width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 13px; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; }
+.steplist button:hover { background: var(--surface-2); }
+.steplist button.on { background: var(--accent-soft); }
+.steplist .n { font-family: var(--font-mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
+.stepcard { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.stepnav { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.codebox { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; display: grid; gap: 3px; min-width: 0; }
+.payload { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 360px; overflow: auto; }
+
+/* 카드 */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 14px; }
+.role { border-top: 3px solid var(--accent); }
+.role.job { border-top-color: var(--l4); }
+.role.rec { border-top-color: var(--l2); }
+.role .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.msgstack { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 13px; }
+.flow { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 10px; align-items: start; }
+@media (max-width: 700px) { .flow { grid-template-columns: minmax(0, 1fr); } }
+.guards { display: flex; flex-wrap: wrap; gap: 4px 2px; align-items: stretch; }
+.guard { border: 1px solid var(--line); border-left: 3px solid var(--bad); border-radius: 6px; padding: 4px 8px; font-size: 12.5px; background: var(--bg); text-align: left; display: grid; max-width: 280px; cursor: pointer; }
+.guard:hover { border-color: var(--accent); }
+.guard small, .stage small { font-family: var(--font-mono); font-size: 10px; color: var(--muted); overflow-wrap: anywhere; word-break: break-all; }
+.arrow { color: var(--muted); align-self: center; padding: 0 2px; font-size: 12px; }
+
+/* 호출 그래프 */
+.explorer { display: grid; gap: 12px; }
+.suggest { display: grid; gap: 2px; max-height: 240px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+.suggest button { text-align: left; border: none; background: none; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-family: var(--font-mono); font-size: 12px; }
+.suggest button:hover { background: var(--accent-soft); }
+.ego .node { cursor: pointer; }
+.ego .node rect { fill: var(--surface); stroke: var(--line); }
+.ego .node.c rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.ego .node.in rect { stroke: var(--amber); }
+.ego .node.out rect { stroke: var(--accent); }
+.ego .node:hover rect { stroke-width: 2; }
+.ego .node text { font-family: var(--font-mono); font-size: 10.5px; fill: var(--ink); pointer-events: none; }
+.ego .node text.sub { fill: var(--muted); font-size: 9px; }
+.ego .e { fill: none; stroke-opacity: 0.55; stroke-width: 1.2; }
+.ego .e.in { stroke: var(--amber); } .ego .e.out { stroke: var(--accent); }
+.ego .e.ref { stroke-dasharray: 4 3; }
+.ego .colhead { font-family: var(--font-mono); font-size: 10.5px; fill: var(--muted); }
+.sig { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; word-break: break-all; }
+
+/* 데이터 */
+.lifecycles { display: grid; gap: 10px; }
+.lc { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 10px; align-items: start; }
+@media (max-width: 700px) { .lc { grid-template-columns: minmax(0, 1fr); } }
+.stages { display: flex; flex-wrap: wrap; gap: 4px 2px; align-items: stretch; }
+.stage { border: 1px solid var(--line); border-left: 3px solid var(--k-read); border-radius: 6px; padding: 3px 8px; font-size: 12.5px; background: var(--bg); cursor: pointer; text-align: left; display: grid; max-width: 260px; }
+.stage:hover { border-color: var(--accent); }
+.stage.s-born { border-left-color: var(--k-born); } .stage.s-transform, .stage.s-update { border-left-color: var(--k-transform); }
+.stage.s-store, .stage.s-archive, .stage.s-restore { border-left-color: var(--k-store); } .stage.s-read { border-left-color: var(--k-read); } .stage.s-delete { border-left-color: var(--k-delete); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table.data { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.data th, table.data td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.data th { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--muted); background: var(--bg); position: sticky; top: 0; white-space: nowrap; }
+table.data tr:last-child td { border-bottom: none; }
+table.data td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+#table-matrix { min-width: 760px; }
+#mod-table { min-width: 860px; }
+#decision-table { min-width: 640px; }
+tr.pick { cursor: pointer; }
+tr.pick:hover td { background: var(--surface-2); }
+tr.sel td { background: var(--accent-soft); }
+
+/* 발견 사항 */
+.findings { display: grid; gap: 10px; }
+.finding { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 8px; padding: 10px 14px; display: grid; gap: 6px; }
+.finding.sev-high { border-left-color: var(--bad); } .finding.sev-medium { border-left-color: var(--amber); } .finding.sev-low { border-left-color: var(--l0); } .finding.sev-info { border-left-color: var(--muted); }
+.finding .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.warnbox { border: 1px solid var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; }
+footer { margin-top: 48px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 8px; }
+footer pre { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; color: var(--ink); }
+.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* fade: when something is selected, everything not connected to it steps back */
+.fadeable { transition: opacity 0.18s ease; }
+.focus .fadeable.dim { opacity: var(--fade, 0.22); }
+.focus .medge.dim, .focus .e.dim { stroke-opacity: 0.05; }
+.medge.bg { stroke: var(--muted); stroke-opacity: 0.10; stroke-width: 1; }
+.focus .medge.bg { stroke-opacity: 0.03; }
+.medge.hl, .e.hl { stroke-opacity: 1 !important; stroke-width: 2.4 !important; }
+.fadebar { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+.fadebar input[type=range] { width: 120px; accent-color: var(--accent); }
+.todo { color: var(--amber); font-style: italic; }
+.kvgrid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; font-size: 12.5px; }
+.kvgrid b { font-family: var(--font-mono); font-weight: 500; color: var(--muted); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<nav class="topnav" aria-label="Sections">
+  <div class="wrap">
+    <a class="brand" href="#top" id="brand"></a>
+    <a href="#arch" data-i="nav_arch"></a>
+    <a href="#journeys" data-i="nav_journeys"></a>
+    <a href="#roles" data-i="nav_roles"></a>
+    <a href="#flows" data-i="nav_flows"></a>
+    <a href="#graph" data-i="nav_graph"></a>
+    <a href="#data" data-i="nav_data"></a>
+    <a href="#decisions" data-i="nav_decisions"></a>
+    <a href="#findings" data-i="nav_findings"></a>
+    <a href="#modules" data-i="nav_modules"></a>
+    <button class="themebtn" id="themebtn" type="button"></button>
+  </div>
+</nav>
+<main class="wrap" id="top">
+  <header class="hero">
+    <div class="eyebrow" id="eyebrow"></div>
+    <h1 id="title"></h1>
+    <p class="lede" id="lede"></p>
+    <div class="stats" id="stats"></div>
+    <div class="searchbar">
+      <input type="search" id="gsearch" autocomplete="off">
+      <div class="results" id="gresults" hidden></div>
+    </div>
+    <div id="problems"></div>
+  </header>
+
+  <section id="howto">
+    <div class="section-head"><h2 data-i="howto_h"></h2><p data-i="howto_p"></p></div>
+    <div class="howto" id="howto-cards"></div>
+  </section>
+
+  <section id="arch">
+    <div class="section-head"><h2 data-i="arch_h"></h2><p data-i="arch_p"></p></div>
+    <div class="toolbar"><div class="legend" id="layer-legend"></div></div>
+    <div class="fadebar"><label for="fade" data-i="fade_label"></label><input type="range" id="fade" min="0.05" max="0.8" step="0.05"><span id="fade-val"></span><span data-i="fade_hint"></span></div>
+    <div class="arch-layout">
+      <div class="panel" id="mod-panel"></div>
+      <div class="frame" id="arch-frame"></div>
+    </div>
+    <h3 data-i="rules_h"></h3>
+    <div class="rules" id="rules"></div>
+    <div id="lazy-cycles" class="note"></div>
+  </section>
+
+  <section id="journeys">
+    <div class="section-head"><h2 data-i="j_h"></h2><p data-i="j_p"></p></div>
+    <div class="tabs" id="j-tabs" role="tablist"></div>
+    <p id="j-summary"></p>
+    <div class="frame" id="j-seq"></div>
+    <div class="journey">
+      <ol class="steplist" id="j-steps"></ol>
+      <div class="stepcard" id="j-card"></div>
+    </div>
+  </section>
+
+  <section id="roles">
+    <div class="section-head"><h2 data-i="roles_h"></h2><p data-i="roles_p"></p></div>
+    <div class="cards" id="role-cards"></div>
+    <div id="profile-sections" style="display: grid; gap: 14px"></div>
+    <h3 data-i="ext_h"></h3>
+    <div class="toolbar" id="ext-filter"></div>
+    <div class="tablewrap" style="max-height: 420px; overflow: auto"><table class="data" id="ext-table"></table></div>
+  </section>
+
+  <section id="flows">
+    <div class="section-head"><h2 data-i="flows_h"></h2><p data-i="flows_p"></p></div>
+    <div class="lifecycles" id="flow-list"></div>
+  </section>
+
+  <section id="graph">
+    <div class="section-head"><h2 data-i="graph_h"></h2><p data-i="graph_p"></p></div>
+    <div class="explorer">
+      <div class="toolbar">
+        <input type="search" id="fn-search" style="flex: 1 1 260px">
+        <label class="note"><input type="checkbox" id="fn-refs" checked> <span data-i="refs_toggle"></span></label>
+      </div>
+      <div class="suggest" id="fn-suggest" hidden></div>
+      <div class="panel" id="fn-panel"></div>
+      <div class="frame ego" id="fn-ego"></div>
+    </div>
+  </section>
+
+  <section id="data">
+    <div class="section-head"><h2 data-i="data_h"></h2><p data-i="data_p"></p></div>
+    <div class="legend" id="stage-legend"></div>
+    <div class="lifecycles" id="entities"></div>
+    <h3 data-i="matrix_h"></h3>
+    <p class="note" data-i="matrix_p"></p>
+    <div class="toolbar"><input type="search" id="tbl-search"></div>
+    <div class="tablewrap" style="max-height: 520px; overflow: auto"><table class="data" id="table-matrix"></table></div>
+    <div class="panel" id="tbl-panel" hidden></div>
+  </section>
+
+  <section id="decisions">
+    <div class="section-head"><h2 data-i="dec_h"></h2><p data-i="dec_p"></p></div>
+    <div class="toolbar" id="dec-filter"></div>
+    <div class="tablewrap"><table class="data" id="decision-table"></table></div>
+  </section>
+
+  <section id="findings">
+    <div class="section-head"><h2 data-i="find_h"></h2><p data-i="find_p"></p></div>
+    <div class="toolbar" id="find-filter"></div>
+    <div class="findings" id="finding-list"></div>
+  </section>
+
+  <section id="modules">
+    <div class="section-head"><h2 data-i="mod_h"></h2><p data-i="mod_p"></p></div>
+    <div class="toolbar"><input type="search" id="mod-search"><span class="note" id="mod-count"></span></div>
+    <div class="tablewrap" style="max-height: 640px; overflow: auto"><table class="data" id="mod-table"></table></div>
+  </section>
+
+  <footer id="regen"></footer>
+</main>
+
+<script type="application/json" id="code-map">/*__DATA__*/{}</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById("code-map").textContent);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+// ---------------------------------------------------------------- strings
+const STR = {
+  en: {
+    nav_arch: "Structure", nav_journeys: "Journeys", nav_roles: "Boundaries", nav_flows: "Input flow", nav_graph: "Call graph",
+    nav_data: "Data", nav_decisions: "Who decides", nav_findings: "Findings", nav_modules: "Modules",
+    theme_dark: "Dark", theme_light: "Light", audience: "Reader: ", search: "Search everything: functions, modules, URLs, tables, journeys, findings",
+    stats: ["Python files", "lines", "functions & methods", "HTTP routes", "tables & models", "internal call edges", "call sites resolved", "journeys"],
+    problems: "The narrative no longer matches the code", todo_banner: (n) => `${n} explanations are still marked TODO — the structure around them is complete.`,
+    howto_h: "How to read this", howto_p: "Every file:line is a link to the source; click a function name anywhere to open it in the call graph.",
+    howto: [["1. Structure", "Modules by layer. Click one to see its functions, who it calls and who calls it; everything else fades back. Layer rules are re-checked against the import graph on every build."],
+            ["2. Journeys", "The exact chain of calls from a click (or a scheduled job) to the database and back, with what each step receives, returns and stores, and a small example payload."],
+            ["3. Boundaries & input", "Everywhere the code leaves its own process (storage, network, other services, files, subprocesses) and the work that runs without a user, as cards; then how untrusted input travels and where it is checked."],
+            ["4. Data & findings", "For each table, who creates, changes and reads it (pulled from the SQL), what code decides versus people, and where the docs and the code disagree."]],
+    arch_h: "Structure: layers and modules", arch_p: "Box height grows with line count. Click a module: modules it calls turn teal, modules that call it amber, and the rest fade so the connecting edges stand out. Esc or a click on empty space clears it.",
+    fade_label: "Fade unselected", fade_hint: "· Esc clears the selection", calls_out: "calls →", called_by: "← called by",
+    pick_module: "Pick a module", pick_module_p: "Click a box on the map to see its functions, imports and callers here.", layers: "Layers",
+    no_doc: "(no docstring)", lines_u: "lines", funcs_u: "functions", route_fns: "route functions", cli: "python -m entry point", resolved: "calls resolved",
+    functions: "Functions", mod_calls: "Modules it calls", mod_called_by: "Modules that call it", imports: "Imports", top_level: "Module level: ", lazy: "Inside functions (lazy): ",
+    imported_by: "Imported by: ", none: "none", n_calls: (n) => `${n} calls`,
+    rules_h: "Layer rules (checked on every build)", rule_ok: (n) => `holds (${n} modules checked)`, rule_bad: "violations: ",
+    lazy_cycles: (s) => `Cycles avoided only by function-level imports: ${s}. No module-level cycles.`, real_cycles: (s) => `Module-level import cycles (an import order change breaks these): ${s}`, no_cycles: "No import cycles.",
+    j_h: "User journeys", j_p: "For each main action, the call chain from the trigger to storage and back. Click an arrow or a step, or use Previous/Next (← → keys). Example names and amounts are invented.",
+    prev: "← Previous", next: "Next →", caller: "Called by", receives: "Receives", returns: "Returns", stores: "Stores", tables: "Tables", payload: "Example payload (invented values)", docstring: "docstring: ",
+    roles_h: "Boundaries and background work", roles_p: "Each place the code talks to something outside itself, and each job that runs on its own (a worker, a schedule, a hook). What goes out, how it is configured, how failure is handled and recorded. The table below is pulled from the code.",
+    profile_empty: "This stack is in use, but no matching call shape was found.",
+    ext_h: "External call sites found in the code", ext_cols: ["Service", "Call", "Function", "Where"], inferred: " (by method name)",
+    card: { detected: "Detected in code", input: "Input", message: "What is sent", config: "Configured in", output: "What comes back", validation: "Validation & failure", logging: "Recorded in", cost: "Cost & limits", result_use: "What code does with it" },
+    flows_h: "How untrusted input travels", flows_p: "Whatever arrives from outside — user text, uploads, imported files, API payloads, messages from other systems — and where it is parsed, escaped or checked before it reaches storage, output or another system. Red-edged boxes are the guards.",
+    graph_h: "Call graph explorer", graph_p: "Pick a function: callers (amber, left) and callees (teal, right), two hops each way. Hover a box to fade everything not connected to it. Dashed edges are references (a function passed as a value), not calls.",
+    fn_search: "Function name (e.g. create_user)", refs_toggle: "include reference edges", pick_fn: "Search above, or click any function name on the page.",
+    kinds: { function: "function", method: "method", nested: "nested function", class: "class" }, ref: "reference", callers: "Callers", callees: "Callees",
+    ego_heads: ["callers of callers", "callers", "selected", "callees", "callees of callees"], more: (n) => `+${n} more`,
+    data_h: "Data lifecycle", data_p: "Where each main entity is born, transformed, stored and read. The stages are the narrative; the line under them is pulled from the SQL and ORM usage.",
+    stages: { born: "born", transform: "transform", update: "update", store: "store", archive: "archive", restore: "restore", read: "read", delete: "delete" },
+    from_sql: (o) => `From the code: insert ${o.insert.length} · update ${o.update.length} · delete ${o.delete.length} · read ${o.read.length} · ORM use ${(o.uses || []).length} functions`,
+    matrix_h: "Tables × functions (extracted)", matrix_p: "Click a row for the functions. Found by matching INSERT/UPDATE/DELETE/FROM/JOIN in string literals and references to ORM model classes; SQL assembled at runtime can be missed.",
+    tbl_search: "Table name", tbl_cols: ["Table", "INSERT", "UPDATE", "DELETE", "Read", "ORM use", "Busiest modules"], not_found: "not found in code",
+    dec_h: "Who decides: code or people", dec_p: "Which decisions the code makes (counting, limits, permissions, thresholds, state changes) and which are left to a person or to configuration.", all: "All", dec_cols: ["Decision", "By", "How", "Where"],
+    find_h: "Findings", find_p: "Where the docs and the code disagree, dead code, cycles, duplicated logic and risky spots. Hand-checked items say how they were verified; generated ones come from the code map and disappear once fixed.",
+    all_kinds: "all kinds", generated: "generated", verified: "Verified: ", none_match: "Nothing matches.",
+    sev: { high: "high", medium: "medium", low: "low", info: "info" },
+    mod_h: "Module index", mod_p: "Every module with its docstring, size, functions, internal imports and how many of its calls were resolved.", mod_search: "Module, docstring or function", mod_count: (a, b) => `${a} / ${b} modules`,
+    mod_cols: ["Module", "Layer", "Purpose (docstring)", "Lines", "Functions", "Resolved", "Internal imports"],
+    kind_labels: { "journey": "journey", "role": "boundary", "entity": "data", "finding": "finding", "table": "table", "module": "module", "flow": "input flow", "decision": "decision", "fn": "function" },
+    regen_h: "Regenerate", regen_cov: (S) => `${S.call_sites.toLocaleString()} call sites: internal ${S.resolved_internal.toLocaleString()} · library ${S.resolved_external.toLocaleString()} · builtin ${S.resolved_builtin.toLocaleString()} · by naming convention ${S.resolved_by_convention.toLocaleString()} · unresolved ${S.unresolved.toLocaleString()}.`,
+    regen_blind: "Not visible to static analysis: dynamic dispatch (getattr, callback tables), calls inside templates, framework hook registration, SQL assembled at runtime, and code in other languages.",
+    regen_gen: "This file is generated. Edit the narrative or the template under tools/ and rebuild — never this HTML.",
+  },
+  ko: {
+    nav_arch: "구조", nav_journeys: "여정", nav_roles: "경계", nav_flows: "입력 흐름", nav_graph: "호출 그래프",
+    nav_data: "데이터", nav_decisions: "결정 주체", nav_findings: "발견 사항", nav_modules: "모듈",
+    theme_dark: "어둡게", theme_light: "밝게", audience: "독자: ", search: "전체 검색: 함수 · 모듈 · URL · 표 · 여정 · 발견 사항",
+    stats: ["Python 파일", "줄", "함수 · 메서드", "HTTP 라우트", "표 · 모델", "내부 호출 간선", "호출 지점 해석률", "여정"],
+    problems: "서술이 코드와 맞지 않습니다", todo_banner: (n) => `설명 ${n}개가 아직 TODO 입니다 — 그 주변의 구조는 모두 채워져 있습니다.`,
+    howto_h: "읽는 법", howto_p: "모든 파일:줄 은 소스로 가는 링크이고, 함수 이름을 누르면 호출 그래프에서 열린다.",
+    howto: [["1. 구조", "계층별 모듈 지도. 모듈을 누르면 그 모듈의 함수, 누구를 부르고 누가 부르는지가 나오고 나머지는 흐려진다. 계층 규칙은 빌드할 때마다 import 그래프로 다시 확인한다."],
+            ["2. 여정", "클릭(또는 예약 작업) 한 번이 DB 까지 갔다 오는 정확한 함수 사슬. 단계마다 받는 것 · 돌려주는 것 · 저장하는 것과 작은 예시 페이로드."],
+            ["3. 경계 · 입력", "코드가 자기 프로세스 밖으로 나가는 곳(저장소 · 네트워크 · 다른 서비스 · 파일 · 하위 프로세스)과 사람 없이 도는 일을 카드로, 그리고 믿을 수 없는 입력이 어디서 걸러지는지."],
+            ["4. 데이터 · 발견 사항", "표마다 누가 만들고 고치고 읽는지(SQL 에서 자동 추출), 코드가 정하는 것과 사람이 정하는 것, 문서와 코드가 어긋난 곳."]],
+    arch_h: "구조: 계층과 모듈", arch_p: "상자 높이는 줄 수에 비례한다. 모듈을 누르면 그 모듈이 부르는 모듈은 청록, 부르는 쪽은 주황이 되고 나머지는 흐려져 잇는 간선이 또렷해진다. Esc 나 빈 곳을 누르면 풀린다.",
+    fade_label: "선택되지 않은 것 흐리게", fade_hint: "· Esc 로 선택 해제", calls_out: "부르는 모듈 →", called_by: "← 부르는 쪽",
+    pick_module: "모듈을 고르세요", pick_module_p: "지도에서 상자를 누르면 그 모듈의 함수 · import · 호출 관계가 여기에 나온다.", layers: "계층",
+    no_doc: "(docstring 없음)", lines_u: "줄", funcs_u: "함수", route_fns: "라우트 함수", cli: "python -m 진입점", resolved: "호출 해석",
+    functions: "함수", mod_calls: "이 모듈이 부르는 모듈", mod_called_by: "이 모듈을 부르는 모듈", imports: "import", top_level: "모듈 수준: ", lazy: "함수 안(늦은 import): ",
+    imported_by: "import 하는 쪽: ", none: "없음", n_calls: (n) => `호출 ${n}`,
+    rules_h: "계층 규칙 (빌드할 때 확인)", rule_ok: (n) => `지킴 (모듈 ${n}개 확인)`, rule_bad: "위반: ",
+    lazy_cycles: (s) => `함수 안 import 로 피한 순환: ${s} — 모듈 수준 순환은 없다.`, real_cycles: (s) => `모듈 수준 import 순환 (import 순서가 바뀌면 깨진다): ${s}`, no_cycles: "import 순환 없음.",
+    j_h: "사용자 여정", j_p: "주요 동작마다 시작점에서 저장소까지, 그리고 응답까지의 호출 사슬. 화살표나 단계를 누르거나 이전/다음(← → 키)으로 넘긴다. 예시의 이름 · 금액은 모두 지어낸 값이다.",
+    prev: "← 이전", next: "다음 →", caller: "부르는 쪽", receives: "받는 것", returns: "돌려주는 것", stores: "저장", tables: "표", payload: "예시 페이로드 (지어낸 값)", docstring: "docstring: ",
+    roles_h: "경계와 백그라운드 작업", roles_p: "코드가 바깥의 무언가와 이야기하는 곳, 그리고 스스로 도는 일(워커 · 예약 작업 · 훅). 무엇을 보내고, 어디서 설정하고, 실패를 어떻게 다루고 기록하는지. 아래 표는 코드에서 자동으로 뽑았다.",
+    profile_empty: "이 스택을 쓰지만 맞는 호출 모양은 찾지 못했다.",
+    ext_h: "코드에서 찾은 외부 호출 지점", ext_cols: ["서비스", "호출", "함수", "위치"], inferred: " (메서드 이름으로 추정)",
+    card: { detected: "코드에서 찾은 것", input: "입력", message: "보내는 것", config: "설정 위치", output: "돌아오는 것", validation: "검증 · 실패", logging: "기록 위치", cost: "비용 · 한도", result_use: "결과의 쓰임" },
+    flows_h: "믿을 수 없는 입력의 흐름", flows_p: "바깥에서 들어오는 것 — 사용자 글 · 업로드 · 가져온 파일 · API 페이로드 · 다른 시스템의 메시지 — 이 저장소 · 출력 · 다른 시스템에 닿기 전에 어디서 해석되고 걸러지는지. 빨간 테두리가 검사다.",
+    graph_h: "호출 그래프 탐색", graph_p: "함수를 고르면 부르는 쪽(주황, 왼쪽)과 불리는 쪽(청록, 오른쪽)이 두 단계씩 나온다. 상자에 마우스를 올리면 연결되지 않은 것이 흐려진다. 점선은 호출이 아니라 참조다.",
+    fn_search: "함수 이름 (예: create_user)", refs_toggle: "참조 간선 포함", pick_fn: "위에서 함수를 찾거나, 페이지 어디서든 함수 이름을 누르세요.",
+    kinds: { function: "함수", method: "메서드", nested: "중첩 함수", class: "클래스" }, ref: "참조", callers: "부르는 쪽", callees: "부르는 것",
+    ego_heads: ["부르는 쪽의 부르는 쪽", "부르는 쪽", "선택", "부르는 것", "부르는 것이 부르는 것"], more: (n) => `+${n}개 더`,
+    data_h: "데이터의 일생", data_p: "주요 데이터가 어디서 태어나고, 바뀌고, 저장되고, 누가 읽는지. 단계는 서술이고, 그 아래 줄은 SQL 과 ORM 사용에서 자동으로 뽑았다.",
+    stages: { born: "생성", transform: "변환", update: "수정", store: "저장", archive: "보관", restore: "복원", read: "읽기", delete: "삭제" },
+    from_sql: (o) => `코드에서 찾은 것: INSERT ${o.insert.length} · UPDATE ${o.update.length} · DELETE ${o.delete.length} · 읽기 ${o.read.length} · ORM 사용 ${(o.uses || []).length} 개 함수`,
+    matrix_h: "표 × 함수 (자동 추출)", matrix_p: "행을 누르면 함수 목록이 열린다. 문자열의 INSERT/UPDATE/DELETE/FROM/JOIN 과 ORM 모델 클래스 참조로 찾은 것이라, 실행 중에 조립되는 SQL 은 놓칠 수 있다.",
+    tbl_search: "표 이름", tbl_cols: ["표", "INSERT", "UPDATE", "DELETE", "읽기", "ORM 사용", "가장 많이 쓰는 모듈"], not_found: "코드에서 찾지 못함",
+    dec_h: "누가 결정하나: 코드와 사람", dec_p: "코드가 정하는 것(세기 · 한도 · 권한 · 기준값 · 상태 변화)과 사람이나 설정에 맡긴 것.", all: "전체", dec_cols: ["결정", "누가", "어떻게", "어디서"],
+    find_h: "발견 사항", find_p: "문서와 코드가 어긋난 곳, 죽은 코드, 순환, 중복, 위험 지점. 손으로 확인한 항목에는 확인 방법이 붙고, 자동 항목은 고치면 사라진다.",
+    all_kinds: "모든 종류", generated: "자동", verified: "확인: ", none_match: "조건에 맞는 항목이 없다.",
+    sev: { high: "높음", medium: "중간", low: "낮음", info: "정보" },
+    mod_h: "모듈 색인", mod_p: "모든 모듈과 docstring, 크기, 함수, 내부 import, 호출 해석률.", mod_search: "모듈 · 설명 · 함수 이름", mod_count: (a, b) => `${a} / ${b} 모듈`,
+    mod_cols: ["모듈", "계층", "설명 (docstring)", "줄", "함수", "해석률", "내부 import"],
+    kind_labels: { "journey": "여정", "role": "경계", "entity": "데이터", "finding": "발견 사항", "table": "표", "module": "모듈", "flow": "입력 흐름", "decision": "결정", "fn": "함수" },
+    regen_h: "다시 만들기", regen_cov: (S) => `호출 지점 ${S.call_sites.toLocaleString()}개: 내부 ${S.resolved_internal.toLocaleString()} · 라이브러리 ${S.resolved_external.toLocaleString()} · 내장 ${S.resolved_builtin.toLocaleString()} · 이름 관례 ${S.resolved_by_convention.toLocaleString()} · 해석 못 함 ${S.unresolved.toLocaleString()}.`,
+    regen_blind: "정적 분석이 보지 못하는 것: 동적 디스패치(getattr · 콜백 사전), 템플릿 안의 호출, 프레임워크 훅 등록, 실행 중에 조립되는 SQL, 다른 언어의 코드.",
+    regen_gen: "이 파일은 생성물이다. tools/ 아래의 서술이나 템플릿을 고치고 다시 만든다 — 이 HTML 을 고치지 않는다.",
+  },
+};
+const L = STR[D.lang] || STR.en;
+document.documentElement.lang = D.lang || "en";
+document.querySelectorAll("[data-i]").forEach((el) => { el.textContent = L[el.dataset.i]; });
+
+// ---------------------------------------------------------------- helpers
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+function fill(el, ...kids) { el.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false)); }
+const truncate = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + "…" : t || "");
+const shortMod = (m) => { const p = (D.shortPrefix || ""); return p && m.startsWith(p) ? m.slice(p.length) : m; };
+function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* blocked */ } }
+const isTodo = (t) => typeof t === "string" && /^\s*TODO\b/.test(t);
+function txt(v) { if (v === undefined || v === null || v === "") return null; return isTodo(v) ? h("span", { class: "todo" }, v) : v; }
+
+const IDX = new Map(D.keys.map((k, i) => [k, i]));
+const SYM = (k) => D.syms[IDX.get(k)];
+const OUT = new Map(), IN = new Map();
+for (const [a, b, line, kind] of D.edges) {
+  const ka = D.keys[a], kb = D.keys[b];
+  if (!OUT.has(ka)) OUT.set(ka, []);
+  if (!IN.has(kb)) IN.set(kb, []);
+  OUT.get(ka).push({ k: kb, line, ref: kind === 1 });
+  IN.get(kb).push({ k: ka, line, ref: kind === 1 });
+}
+const LAYER = new Map(D.layers.map((l, i) => [l.id, { ...l, i }]));
+const layerColor = (id) => `var(--l${(LAYER.has(id) ? LAYER.get(id).i : 9) % 10})`;
+function srcUrl(file, line) { return D.repo ? D.repo + "/" + file + (line ? "#L" + line : "") : D.relRoot + file; }
+function locLink(file, line) { return h("span", { class: "loc" }, h("a", { href: srcUrl(file, line), target: "_blank", rel: "noopener" }, file + (line ? ":" + line : ""))); }
+function symLink(key, label) {
+  const known = IDX.has(key) || D.modules[key];
+  return h("button", { class: "symlink", type: "button", title: key, onclick: () => (D.modules[key] ? selectModule(key, true) : openInGraph(key)) }, (label || key) + (known ? "" : " ⚠"));
+}
+function flash(el) { if (!el) return; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+function goto(id) { const el = document.getElementById(id); if (el) { el.scrollIntoView({ behavior: "smooth", block: "start" }); flash(el); } }
+
+// ---------------------------------------------------------------- theme + fade level
+function effectiveDark() {
+  const t = document.documentElement.getAttribute("data-theme");
+  if (t) return t === "dark";
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+(function initTheme() {
+  const saved = storageGet("codeflow-theme");
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  const btn = document.getElementById("themebtn");
+  const label = () => { btn.textContent = effectiveDark() ? L.theme_light : L.theme_dark; };
+  label();
+  btn.addEventListener("click", () => {
+    const next = effectiveDark() ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    storageSet("codeflow-theme", next);
+    label();
+  });
+  const fade = document.getElementById("fade"), val = document.getElementById("fade-val");
+  const apply = (v) => { document.documentElement.style.setProperty("--fade", v); val.textContent = Math.round(v * 100) + "%"; };
+  fade.value = storageGet("codeflow-fade") || "0.22";
+  apply(fade.value);
+  fade.addEventListener("input", () => { apply(fade.value); storageSet("codeflow-fade", fade.value); });
+})();
+
+// ---------------------------------------------------------------- hero
+(function hero() {
+  const m = D.meta, S = D.summary;
+  fill(document.getElementById("brand"), m.title || "Code flow");
+  fill(document.getElementById("eyebrow"), m.audience ? L.audience + m.audience : "");
+  fill(document.getElementById("title"), m.title || "Code flow");
+  fill(document.getElementById("lede"), txt(m.lede) || "");
+  document.title = m.title || "Code flow";
+  const values = [S.files, S.lines.toLocaleString(), (S.functions + S.methods).toLocaleString(), S.routes, S.tables, S.internal_edges.toLocaleString(), (S.resolved_ratio * 100).toFixed(1) + "%", D.journeys.length];
+  fill(document.getElementById("stats"), values.map((v, i) => h("div", { class: "stat" }, h("b", {}, v), h("span", {}, L.stats[i]))));
+  document.getElementById("gsearch").placeholder = L.search;
+  document.getElementById("fn-search").placeholder = L.fn_search;
+  document.getElementById("tbl-search").placeholder = L.tbl_search;
+  document.getElementById("mod-search").placeholder = L.mod_search;
+  const box = [];
+  if (D.problems.length) box.push(h("div", { class: "warnbox" }, h("b", {}, L.problems), h("ul", {}, D.problems.map((p) => h("li", {}, p)))));
+  if (D.todo) box.push(h("p", { class: "note todo" }, L.todo_banner(D.todo)));
+  fill(document.getElementById("problems"), box);
+  fill(document.getElementById("howto-cards"), L.howto.map(([a, b]) => h("div", {}, h("h3", {}, a), h("p", { class: "note" }, b))));
+})();
+
+// ---------------------------------------------------------------- structure (with fade)
+const A = { sel: null };
+function selectModule(mod, scroll) { A.sel = mod; drawArch(); renderModPanel(); if (scroll) goto("arch"); }
+const MODLINK = new Map();
+function moduleLinks(mod) {
+  if (MODLINK.has(mod)) return MODLINK.get(mod);
+  const out = new Map(), inn = new Map();
+  for (const f of D.modules[mod].funcs) {
+    for (const e of OUT.get(f) || []) { const t = SYM(e.k).m; if (t !== mod) out.set(t, (out.get(t) || 0) + 1); }
+    for (const e of IN.get(f) || []) { const t = SYM(e.k).m; if (t !== mod) inn.set(t, (inn.get(t) || 0) + 1); }
+  }
+  const r = { out, inn };
+  MODLINK.set(mod, r);
+  return r;
+}
+function drawArch() {
+  const frame = document.getElementById("arch-frame");
+  const colW = 108, gap = 8, top = 34, pad = 10, PER = 18;
+  const cols = [];
+  D.layers.forEach((l) => {
+    const mods = Object.keys(D.modules).filter((m) => D.modules[m].layer === l.id).sort((a, b) => D.modules[b].lines - D.modules[a].lines);
+    const n = Math.max(1, Math.ceil(mods.length / PER)), per = Math.ceil(mods.length / n) || 1;
+    for (let i = 0; i < n; i++) cols.push({ layer: l, first: i === 0, span: n, mods: mods.slice(i * per, (i + 1) * per) });
+  });
+  const scale = (lines) => Math.max(22, Math.min(64, 14 + Math.sqrt(lines) * 0.75));
+  const pos = new Map();
+  let maxY = 0;
+  cols.forEach((c, ci) => {
+    let y = top;
+    for (const m of c.mods) { const hh = scale(D.modules[m].lines); pos.set(m, { x: pad + ci * (colW + gap), y, w: colW, h: hh }); y += hh + 5; }
+    maxY = Math.max(maxY, y);
+  });
+  const W = pad * 2 + cols.length * (colW + gap), H = maxY + pad;
+  const links = A.sel ? moduleLinks(A.sel) : null;
+  const related = links ? new Set([A.sel, ...links.out.keys(), ...links.inn.keys()]) : null;
+  const svg = s("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": L.arch_h, class: links ? "focus" : "" });
+  svg.addEventListener("click", (ev) => { if (ev.target === svg) { A.sel = null; drawArch(); renderModPanel(); } });
+  cols.forEach((c, ci) => {
+    if (!c.first) return;
+    const x = pad + ci * (colW + gap), w = c.span * (colW + gap) - gap;
+    svg.append(s("rect", { x, y: 6, width: w, height: 4, fill: layerColor(c.layer.id), rx: 2 }));
+    svg.append(s("text", { x, y: 26, class: "colhead", fill: "currentColor" }, truncate(c.layer.name, Math.floor(w / 7.5))));
+  });
+  const curve = (p, q) => { const x1 = p.x + p.w / 2, y1 = p.y + p.h / 2, x2 = q.x + q.w / 2, y2 = q.y + q.h / 2, mx = (x1 + x2) / 2; return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`; };
+  // background: every module→module edge, faint; it recedes further when something is selected
+  const bg = s("g", {});
+  svg.append(bg);
+  for (const [m] of pos) for (const t of moduleLinks(m).out.keys()) if (pos.has(t) && (!links || (m !== A.sel && t !== A.sel))) bg.append(s("path", { class: "medge bg", d: curve(pos.get(m), pos.get(t)) }));
+  const hl = s("g", {});
+  svg.append(hl);  // under the boxes: highlighted edges show in the gaps, never across a label
+  for (const [m, p] of pos) {
+    const cls = ["modbox", "fadeable"];
+    if (m === A.sel) cls.push("sel");
+    else if (links && links.inn.has(m)) cls.push("in");
+    else if (links && links.out.has(m)) cls.push("out");
+    if (related && !related.has(m)) cls.push("dim");
+    const g = s("g", { class: cls.join(" "), tabindex: 0, role: "button", "aria-label": m, onclick: () => selectModule(m), onkeydown: (ev) => { if (ev.key === "Enter") selectModule(m); } });
+    g.append(s("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: 5 }));
+    g.append(s("rect", { x: p.x, y: p.y, width: 3, height: p.h, fill: layerColor(D.modules[m].layer), rx: 1.5 }));
+    g.append(s("text", { x: p.x + 8, y: p.y + 14 }, truncate(shortMod(m), 15)));
+    if (p.h > 28) g.append(s("text", { x: p.x + 8, y: p.y + 26, class: "sub" }, `${D.modules[m].lines.toLocaleString()} · ${D.modules[m].funcs.length}f`));
+    g.append(s("title", {}, `${m}\n${D.modules[m].doc || ""}`));
+    svg.append(g);
+  }
+  if (links) {
+    const a = pos.get(A.sel);
+    for (const t of links.out.keys()) if (pos.has(t)) hl.append(s("path", { class: "medge out hl", d: curve(a, pos.get(t)) }));
+    for (const t of links.inn.keys()) if (pos.has(t)) hl.append(s("path", { class: "medge in hl", d: curve(pos.get(t), a) }));
+  }
+  fill(frame, svg);
+}
+function renderModPanel() {
+  const panel = document.getElementById("mod-panel");
+  const mod = A.sel;
+  if (!mod) {
+    fill(panel, h("div", {}, h("h3", {}, L.pick_module), h("p", { class: "note" }, L.pick_module_p)),
+      h("div", {}, h("h4", {}, L.layers), h("ul", {}, D.layers.map((l) => h("li", {}, h("b", { style: `color: ${layerColor(l.id)}` }, l.name), h("span", { class: "note" }, txt(l.owns)))))));
+    return;
+  }
+  const info = D.modules[mod], Ly = LAYER.get(info.layer);
+  const { out, inn } = moduleLinks(mod);
+  const importedBy = Object.keys(D.modules).filter((m) => D.modules[m].imports.includes(mod) || D.modules[m].lazy_imports.includes(mod));
+  const routes = info.funcs.filter((f) => SYM(f).r);
+  const sortMap = (mp) => [...mp.entries()].sort((a, b) => b[1] - a[1]);
+  fill(panel,
+    h("div", {},
+      h("h3", {}, mod), locLink(info.file, 0),
+      h("p", {}, info.doc || h("span", { class: "note" }, L.no_doc)),
+      h("div", { class: "chips" }, h("span", { class: "badge", style: `border-color:${layerColor(info.layer)};color:${layerColor(info.layer)}` }, Ly ? Ly.name : info.layer),
+        h("span", { class: "badge" }, `${info.lines.toLocaleString()} ${L.lines_u}`), h("span", { class: "badge" }, `${info.funcs.length} ${L.funcs_u}`),
+        routes.length ? h("span", { class: "badge accent" }, `${routes.length} ${L.route_fns}`) : null, info.cli ? h("span", { class: "badge amber" }, L.cli) : null,
+        h("span", { class: "badge" }, `${info.call_sites ? Math.round(100 - (info.unresolved / info.call_sites) * 100) : 100}% ${L.resolved}`)),
+      h("h4", {}, `${L.functions} (${info.funcs.length})`),
+      h("ul", {}, info.funcs.map((f) => h("li", {}, symLink(f, SYM(f).q), SYM(f).r ? h("span", { class: "badge accent" }, SYM(f).r[0].join(" ")) : null)))),
+    h("div", {},
+      h("h4", {}, `${L.mod_calls} (${out.size})`), h("ul", {}, sortMap(out).map(([m, c]) => h("li", {}, symLink(m, shortMod(m)), h("span", { class: "note" }, L.n_calls(c))))),
+      h("h4", {}, `${L.mod_called_by} (${inn.size})`), h("ul", {}, sortMap(inn).map(([m, c]) => h("li", {}, symLink(m, shortMod(m)), h("span", { class: "note" }, L.n_calls(c))))),
+      h("h4", {}, L.imports),
+      h("p", { class: "note" }, L.top_level, info.imports.length ? info.imports.map(shortMod).join(", ") : L.none),
+      info.lazy_imports.length ? h("p", { class: "note" }, L.lazy, info.lazy_imports.map(shortMod).join(", ")) : null,
+      h("p", { class: "note" }, L.imported_by, importedBy.length ? importedBy.map(shortMod).join(", ") : L.none)));
+}
+(function arch() {
+  fill(document.getElementById("layer-legend"), D.layers.map((l) => h("span", {}, h("i", { style: `background:${layerColor(l.id)}` }), l.name)),
+    h("span", {}, h("span", { class: "ln", style: "border-color: var(--accent)" }), L.calls_out), h("span", {}, h("span", { class: "ln", style: "border-color: var(--amber)" }), L.called_by));
+  fill(document.getElementById("rules"), D.rules.map((r) => h("div", { class: "rule" },
+    r.violations.length ? h("span", { class: "no" }, "✗") : h("span", { class: "ok" }, "✓"),
+    h("div", {}, r.text, h("div", { class: "note" }, r.violations.length ? L.rule_bad + r.violations.map(([a, b]) => `${a} → ${b}`).join(", ") : L.rule_ok(r.sources))))));
+  const fmt = (cs) => cs.map((c) => c.map(shortMod).join(" ↔ ")).join(" · ");
+  fill(document.getElementById("lazy-cycles"), D.cycles.length ? h("span", { class: "todo" }, L.real_cycles(fmt(D.cycles))) : D.lazyCycles.length ? L.lazy_cycles(fmt(D.lazyCycles)) : L.no_cycles);
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && A.sel) { A.sel = null; drawArch(); renderModPanel(); } });
+  drawArch();
+  renderModPanel();
+})();
+
+// ---------------------------------------------------------------- journeys
+const J = { j: 0, cur: 0 };
+function journeyModel(j) {
+  const parts = [], msgs = [];
+  const add = (p) => { if (!parts.includes(p)) parts.push(p); };
+  let prev = (j.steps[0] && j.steps[0].actor) || (j.actor ? j.actor.split("·").pop().trim() : "user");
+  add(prev);
+  j.steps.forEach((st, i) => {
+    const from = st.actor || prev;
+    add(from);
+    const to = st.symbol.includes(":") ? st.symbol.split(":")[0] : st.symbol;
+    add(to);
+    msgs.push({ i, from, to, label: (!isTodo(st.action) && st.action) || st.symbol.split(":")[1] });
+    if (st.tables && st.tables.length) { add(D.storeName || "database"); msgs.push({ i, from: to, to: D.storeName || "database", label: truncate(st.tables.join(", "), 34), store: true }); }
+    prev = to;
+  });
+  return { parts, msgs };
+}
+function drawSequence() {
+  const j = D.journeys[J.j];
+  const { parts, msgs } = journeyModel(j);
+  const colW = 150, top = 46, rowH = 30, pad = 12;
+  const W = pad * 2 + parts.length * colW, H = top + msgs.length * rowH + 20;
+  const x = (p) => pad + parts.indexOf(p) * colW + colW / 2;
+  const svg = s("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: "seq", role: "img", "aria-label": j.title });
+  parts.forEach((p) => {
+    const g = s("g", { class: "actor" });
+    g.append(s("rect", { x: x(p) - colW / 2 + 6, y: 8, width: colW - 12, height: 26, rx: 5 }));
+    g.append(s("text", { x: x(p), y: 25, "text-anchor": "middle" }, truncate(shortMod(p), 22)));
+    g.append(s("title", {}, p));
+    svg.append(g);
+    svg.append(s("line", { class: "life", x1: x(p), y1: 34, x2: x(p), y2: H - 6 }));
+  });
+  msgs.forEach((m, r) => {
+    const y = top + r * rowH + 12, x1 = x(m.from), x2 = x(m.to);
+    const g = s("g", { class: "msg" + (m.i === J.cur ? " cur" : "") + (m.store ? " store" : ""), onclick: () => goStep(m.i) });
+    if (x1 === x2) {
+      g.append(s("path", { d: `M${x1},${y - 6} h26 v12 h-24`, fill: "none", stroke: "currentColor" }));
+      g.append(s("polygon", { points: `${x1 + 2},${y + 6} ${x1 + 9},${y + 2} ${x1 + 9},${y + 10}` }));
+      g.append(s("text", { x: x1 + 32, y: y + 4 }, truncate(m.label, 30)));
+    } else {
+      const dir = x2 > x1 ? 1 : -1;
+      g.append(s("line", { x1, y1: y, x2: x2 - dir * 6, y2: y }));
+      g.append(s("polygon", { points: `${x2},${y} ${x2 - dir * 8},${y - 4} ${x2 - dir * 8},${y + 4}` }));
+      g.append(s("text", { x: (x1 + x2) / 2, y: y - 5, "text-anchor": "middle" }, truncate(m.label, Math.max(14, Math.floor(Math.abs(x2 - x1) / 7)))));
+    }
+    if (!m.store) g.append(s("text", { class: "num", x: 4, y: y + 4 }, String(m.i + 1)));
+    g.append(s("title", {}, `${m.i + 1}. ${m.label}`));
+    svg.append(g);
+  });
+  fill(document.getElementById("j-seq"), svg);
+}
+function goStep(i) { const j = D.journeys[J.j]; J.cur = Math.max(0, Math.min(j.steps.length - 1, i)); renderJourney(); }
+function renderJourney() {
+  const j = D.journeys[J.j];
+  [...document.getElementById("j-tabs").children].forEach((b, i) => { b.classList.toggle("on", i === J.j); b.setAttribute("aria-selected", i === J.j); });
+  fill(document.getElementById("j-summary"), j.actor ? h("b", {}, j.actor + " · ") : null, txt(j.trigger), j.trigger ? ". " : "", txt(j.summary));
+  drawSequence();
+  fill(document.getElementById("j-steps"), j.steps.map((st, i) => h("li", {}, h("button", { type: "button", class: i === J.cur ? "on" : "", onclick: () => goStep(i) }, h("span", { class: "n" }, i + 1), h("span", {}, (!isTodo(st.action) && st.action) || st.symbol)))));
+  const st = j.steps[J.cur];
+  const row = (k, v) => (v ? [h("dt", {}, k), h("dd", {}, txt(v))] : []);
+  fill(document.getElementById("j-card"),
+    h("div", { class: "stepnav" },
+      h("button", { class: "btn", type: "button", onclick: () => goStep(J.cur - 1), disabled: J.cur === 0 }, L.prev),
+      h("span", { class: "note" }, `${J.cur + 1} / ${j.steps.length}`),
+      h("button", { class: "btn primary", type: "button", onclick: () => goStep(J.cur + 1), disabled: J.cur === j.steps.length - 1 }, L.next)),
+    h("h3", {}, txt(st.action) || st.symbol),
+    h("div", { class: "codebox" }, symLink(st.symbol), locLink(st.file, st.line),
+      st.params && st.params.length ? h("span", { class: "loc" }, "(" + st.params.join(", ") + ")") : null,
+      st.urls ? h("span", { class: "loc" }, st.urls.map((u) => u.join(" ")).join(" · ") + (st.guards && st.guards.length ? "  ← " + st.guards.join(", ") : "")) : null,
+      st.doc ? h("span", { class: "note" }, L.docstring + st.doc) : null),
+    h("dl", { class: "kv" }, row(L.caller, st.actor), row(L.receives, st.receives), row(L.returns, st.returns), row(L.stores, st.stores),
+      st.tables && st.tables.length ? [h("dt", {}, L.tables), h("dd", {}, h("span", { class: "chips" }, st.tables.map((t) => h("button", { class: "chip mono", type: "button", onclick: () => openTable(t) }, t))))] : []),
+    st.note ? h("p", {}, txt(st.note)) : null,
+    st.payload ? [h("h4", {}, L.payload), h("pre", { class: "payload" }, st.payload.trim())] : null);
+}
+(function journeys() {
+  fill(document.getElementById("j-tabs"), D.journeys.map((j, i) => h("button", { type: "button", role: "tab", onclick: () => { J.j = i; J.cur = 0; renderJourney(); } }, j.title)));
+  if (D.journeys.length) renderJourney(); else document.getElementById("journeys").hidden = true;
+  document.addEventListener("keydown", (ev) => {
+    if (ev.target.closest("input, textarea") || !D.journeys.length) return;
+    const r = document.getElementById("journeys").getBoundingClientRect();
+    if (r.top > window.innerHeight || r.bottom < 0) return;
+    if (ev.key === "ArrowRight") goStep(J.cur + 1);
+    if (ev.key === "ArrowLeft") goStep(J.cur - 1);
+  });
+})();
+function openJourney(id) { const i = D.journeys.findIndex((j) => j.id === id); if (i >= 0) { J.j = i; J.cur = 0; renderJourney(); goto("journeys"); } }
+
+// ---------------------------------------------------------------- agents & services
+(function roles() {
+  const kindClass = (k) => ({ "scheduled": "job", "background": "job", "record": "rec" }[k] || "");
+  const row = (k, v) => (v ? [h("dt", {}, k), h("dd", {}, typeof v === "string" ? txt(v) : v)] : []);
+  const cards = D.roles.map((r) => h("article", { class: "card role " + kindClass(r.kind), id: "role-" + r.id },
+    h("div", { class: "top" }, h("h3", {}, r.name), h("span", { class: "badge" }, r.kind || "")),
+    r.purpose ? h("p", {}, txt(r.purpose)) : null,
+    h("div", { class: "chips" }, (r._locs || []).map((l) => h("span", {}, symLink(l.symbol, l.symbol.split(":")[1] || l.symbol), " ", locLink(l.file, l.line)))),
+    h("dl", { class: "kv" },
+      (() => { const ex = (r.symbols || []).flatMap((sym) => (D.cardExtras[sym] || []));
+        return ex.length ? row(L.card.detected, h("div", { class: "kvgrid" }, ex.flatMap(([k, v]) => [h("b", {}, k), h("span", { class: "mono" }, v)]))) : []; })(),
+      row(L.card.input, r.input),
+      row(L.card.message, r.message && r.message.length ? h("ol", { class: "msgstack" }, r.message.map((m) => h("li", {}, txt(m)))) : null),
+      row(L.card.config, r.config), row(L.card.output, r.output), row(L.card.validation, r.validation), row(L.card.logging, r.logging),
+      row(L.card.cost, r.cost), row(L.card.result_use, r.result_use))));
+  fill(document.getElementById("role-cards"), cards);
+  const cell = (c) => (c && typeof c === "object" && c.sym ? h("td", {}, IDX.has(c.sym) ? symLink(c.sym, shortMod(c.sym)) : h("span", { class: "loc" }, c.sym), " ", SYM(c.sym) ? locLink(SYM(c.sym).f, c.line || SYM(c.sym).l) : null) : h("td", { class: "loc" }, c));
+  fill(document.getElementById("profile-sections"), D.profiles.map((p) => h("div", { id: "profile-" + p.name, style: "display: grid; gap: 8px" },
+    h("h3", {}, p.title, " ", h("span", { class: "badge accent" }, "profile: " + p.name)), h("p", { class: "note" }, p.intro),
+    h("div", { class: "tablewrap", style: "max-height: 420px; overflow: auto" }, h("table", { class: "data" },
+      h("thead", {}, h("tr", {}, p.columns.map((c) => h("th", {}, c)))),
+      h("tbody", {}, p.rows.length ? p.rows.map((r) => h("tr", {}, r.map(cell))) : h("tr", {}, h("td", { class: "note" }, L.profile_empty))))))));
+  const services = [...new Set(D.external.map((e) => e.service))].sort();
+  const noisy = new Set(D.noisyServices || []);
+  const state = { svc: new Set(services.filter((x) => !noisy.has(x))) };
+  const draw = () => {
+    fill(document.getElementById("ext-filter"), services.map((sv) => h("button", { type: "button", class: "chip" + (state.svc.has(sv) ? " on" : ""), onclick: () => { state.svc.has(sv) ? state.svc.delete(sv) : state.svc.add(sv); draw(); } }, `${sv} ${D.external.filter((e) => e.service === sv).length}`)));
+    const rows = D.external.filter((e) => state.svc.has(e.service));
+    fill(document.getElementById("ext-table"), h("thead", {}, h("tr", {}, L.ext_cols.map((c) => h("th", {}, c)))),
+      h("tbody", {}, rows.map((e) => { const sy = SYM(e.symbol); const mf = D.modules[e.symbol.split(":")[0]];
+        return h("tr", {}, h("td", {}, e.service + (e.inferred ? L.inferred : "")), h("td", { class: "loc" }, e.template || e.call),
+          h("td", {}, IDX.has(e.symbol) ? symLink(e.symbol, shortMod(e.symbol)) : h("span", { class: "loc" }, e.symbol)), h("td", {}, sy ? locLink(sy.f, e.line) : mf ? locLink(mf.file, e.line) : "")); })));
+  };
+  draw();
+})();
+
+// ---------------------------------------------------------------- input flows
+(function flows() {
+  if (!D.flows.length) { document.getElementById("flows").hidden = true; return; }
+  fill(document.getElementById("flow-list"), D.flows.map((f) => h("div", { class: "flow card", id: "flow-" + f.id },
+    h("div", {}, h("h3", {}, f.source), h("p", { class: "note" }, "→ ", txt(f.sink) || "")),
+    h("div", { class: "guards" }, (f.steps || []).flatMap((st, i) => [i ? h("span", { class: "arrow" }, "→") : null,
+      h("button", { type: "button", class: "guard", onclick: () => openInGraph(st.symbol), title: st.symbol }, h("span", {}, txt(st.guard)), h("small", {}, st.symbol + (st._loc ? `  ${st._loc.file}:${st._loc.line}` : "")))])))));
+})();
+
+// ---------------------------------------------------------------- call graph (with hover fade)
+const G = { sel: null, refs: true };
+function openInGraph(key) { if (!IDX.has(key)) { if (D.modules[key]) selectModule(key, true); return; } G.sel = key; renderGraph(); goto("graph"); }
+function neighbors(key, dir) {
+  const list = (dir === "in" ? IN : OUT).get(key) || [];
+  const seen = new Map();
+  for (const e of list) { if (!G.refs && e.ref) continue; if (e.k === key) continue; if (!seen.has(e.k)) seen.set(e.k, e); }
+  return [...seen.values()];
+}
+function tableChips(key) {
+  const t = D.symTables[key];
+  if (!t) return null;
+  const parts = [];
+  for (const [op, label] of [["insert", "INSERT"], ["update", "UPDATE"], ["delete", "DELETE"], ["read", "READ"], ["uses", "ORM"]])
+    for (const tb of t[op] || []) parts.push(h("button", { class: "chip mono", type: "button", onclick: () => openTable(tb) }, `${label} ${tb}`));
+  return h("div", { class: "chips" }, parts);
+}
+function renderGraph() {
+  const panel = document.getElementById("fn-panel"), ego = document.getElementById("fn-ego");
+  const key = G.sel;
+  if (!key) { fill(panel, h("div", {}, h("p", { class: "note" }, L.pick_fn))); fill(ego); return; }
+  const sy = SYM(key);
+  const ins = neighbors(key, "in"), outs = neighbors(key, "out");
+  const gws = Object.entries(D.gateways).filter(([, v]) => v.some(([k]) => k === key)).map(([a]) => a);
+  const ext = D.external.filter((e) => e.symbol === key);
+  const li = (e) => h("li", {}, symLink(e.k, shortMod(e.k)), e.ref ? h("span", { class: "badge" }, L.ref) : null, h("span", { class: "loc" }, ":" + e.line));
+  fill(panel,
+    h("div", {}, h("h3", {}, sy.q), h("div", { class: "sig" }, `${sy.m}:${sy.q}(${(sy.p || []).join(", ")})`), locLink(sy.f, sy.l),
+      h("p", {}, sy.d || h("span", { class: "note" }, L.no_doc)),
+      h("div", { class: "chips" }, h("span", { class: "badge" }, L.kinds[sy.t] || sy.t), h("span", { class: "badge" }, `${sy.e - sy.l + 1} ${L.lines_u}`),
+        sy.r ? sy.r.map((u) => h("span", { class: "badge accent" }, u.join(" "))) : null, sy.g && sy.g.length ? h("span", { class: "badge amber" }, sy.g.join(", ")) : null,
+        gws.map((w) => h("span", { class: "badge bad" }, w)), sy.tp ? sy.tp.map((t) => h("span", { class: "badge" }, t)) : null,
+        ext.map((e) => h("span", { class: "badge" }, e.service))),
+      tableChips(key)),
+    h("div", {}, h("h4", {}, `${L.callers} (${ins.length})`), h("ul", {}, ins.map(li)), h("h4", {}, `${L.callees} (${outs.length})`), h("ul", {}, outs.map(li))));
+  const LIM = 18;
+  const cols = [[], [], [key], [], []];
+  const in1 = ins.map((e) => e.k).slice(0, LIM), out1 = outs.map((e) => e.k).slice(0, LIM);
+  const in2 = new Set(), out2 = new Set();
+  for (const k of in1) for (const e of neighbors(k, "in")) if (e.k !== key && !in1.includes(e.k)) in2.add(e.k);
+  for (const k of out1) for (const e of neighbors(k, "out")) if (e.k !== key && !out1.includes(e.k)) out2.add(e.k);
+  cols[0] = [...in2].slice(0, LIM); cols[1] = in1; cols[3] = out1; cols[4] = [...out2].slice(0, LIM);
+  const more = [in2.size - cols[0].length, ins.length - in1.length, 0, outs.length - out1.length, out2.size - cols[4].length];
+  const colW = 200, gapX = 34, nodeH = 30, gapY = 6, top = 26, pad = 10;
+  const rowsMax = Math.max(...cols.map((c) => c.length)) + 1;
+  const W = pad * 2 + 5 * colW + 4 * gapX, H = top + rowsMax * (nodeH + gapY) + pad;
+  const svg = s("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": key });
+  const pos = new Map();
+  cols.forEach((c, ci) => {
+    const x = pad + ci * (colW + gapX);
+    svg.append(s("text", { x, y: 14, class: "colhead" }, L.ego_heads[ci]));
+    const offset = ci === 2 ? Math.max(0, Math.floor((rowsMax - 1) / 2)) * (nodeH + gapY) : 0;
+    c.forEach((k, ri) => pos.set(ci + "|" + k, { x, y: top + offset + ri * (nodeH + gapY) }));
+    if (more[ci] > 0) svg.append(s("text", { x, y: top + c.length * (nodeH + gapY) + 14, class: "colhead" }, L.more(more[ci])));
+  });
+  const edgeG = s("g", {}); svg.append(edgeG);
+  const edges = [];
+  const link = (ka, kb, cls) => {
+    const a = pos.get(ka), b = pos.get(kb);
+    if (!a || !b) return;
+    const x1 = a.x + colW, y1 = a.y + nodeH / 2, x2 = b.x, y2 = b.y + nodeH / 2, mx = (x1 + x2) / 2;
+    const p = s("path", { class: "e fadeable " + cls, d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}` });
+    edgeG.append(p);
+    edges.push({ a: ka, b: kb, el: p });
+  };
+  const isRef = (a, b) => ((OUT.get(a) || []).find((e) => e.k === b) || {}).ref;
+  for (const k of cols[1]) { link("1|" + k, "2|" + key, "in" + (isRef(k, key) ? " ref" : "")); for (const e of neighbors(k, "in")) if (pos.has("0|" + e.k)) link("0|" + e.k, "1|" + k, "in" + (e.ref ? " ref" : "")); }
+  for (const k of cols[3]) { link("2|" + key, "3|" + k, "out" + (isRef(key, k) ? " ref" : "")); for (const e of neighbors(k, "out")) if (pos.has("4|" + e.k)) link("3|" + k, "4|" + e.k, "out" + (e.ref ? " ref" : "")); }
+  const nodes = new Map();
+  cols.forEach((c, ci) => c.forEach((k) => {
+    const id = ci + "|" + k, p = pos.get(id), sk = SYM(k);
+    const g = s("g", { class: "node fadeable " + (ci === 2 ? "c" : ci < 2 ? "in" : "out"), onclick: () => { G.sel = k; renderGraph(); } });
+    g.append(s("rect", { x: p.x, y: p.y, width: colW, height: nodeH, rx: 5 }));
+    g.append(s("text", { x: p.x + 7, y: p.y + 12 }, truncate(sk.q, 28)));
+    g.append(s("text", { x: p.x + 7, y: p.y + 24, class: "sub" }, truncate(shortMod(sk.m) + ":" + sk.l, 34)));
+    g.append(s("title", {}, k + (sk.d ? "\n" + sk.d : "")));
+    nodes.set(id, g);
+    svg.append(g);
+  }));
+  // hover fade: keep the hovered box, its neighbours in the drawing and the edges between them
+  const focus = (id) => {
+    if (!id) { svg.classList.remove("focus"); nodes.forEach((g) => g.classList.remove("dim")); edges.forEach((e) => e.el.classList.remove("dim", "hl")); return; }
+    const keep = new Set([id]);
+    for (const e of edges) { if (e.a === id) keep.add(e.b); if (e.b === id) keep.add(e.a); }
+    svg.classList.add("focus");
+    nodes.forEach((g, nid) => g.classList.toggle("dim", !keep.has(nid)));
+    edges.forEach((e) => { const on = e.a === id || e.b === id; e.el.classList.toggle("hl", on); e.el.classList.toggle("dim", !on); });
+  };
+  nodes.forEach((g, id) => { g.addEventListener("mouseenter", () => focus(id)); g.addEventListener("focus", () => focus(id)); });
+  svg.addEventListener("mouseleave", () => focus(null));
+  fill(ego, svg);
+}
+(function graph() {
+  const input = document.getElementById("fn-search"), sug = document.getElementById("fn-suggest");
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    if (q.length < 2) { sug.hidden = true; return; }
+    const hits = D.keys.filter((k) => k.toLowerCase().includes(q)).sort((a, b) => a.split(":")[1].length - b.split(":")[1].length).slice(0, 40);
+    fill(sug, hits.map((k) => h("button", { type: "button", onclick: () => { sug.hidden = true; input.value = k; G.sel = k; renderGraph(); } }, k)));
+    sug.hidden = !hits.length;
+  });
+  document.getElementById("fn-refs").addEventListener("change", (ev) => { G.refs = ev.target.checked; renderGraph(); });
+  G.sel = D.startSymbol && IDX.has(D.startSymbol) ? D.startSymbol : null;
+  renderGraph();
+})();
+
+// ---------------------------------------------------------------- data
+function openTable(t) { showTable(t); goto("data"); const row = document.querySelector(`#table-matrix tr[data-t="${CSS.escape(t)}"]`); if (row) { row.scrollIntoView({ block: "nearest" }); flash(row); } }
+function showTable(t) {
+  const panel = document.getElementById("tbl-panel");
+  document.querySelectorAll("#table-matrix tr.sel").forEach((r) => r.classList.remove("sel"));
+  const row = document.querySelector(`#table-matrix tr[data-t="${CSS.escape(t)}"]`); if (row) row.classList.add("sel");
+  const ops = D.tables[t];
+  if (!ops) return;
+  panel.hidden = false;
+  const col = (op, label) => h("div", {}, h("h4", {}, `${label} (${(ops[op] || []).length})`), h("ul", {}, (ops[op] || []).map((k) => h("li", {}, IDX.has(k) ? symLink(k, shortMod(k)) : h("span", { class: "loc" }, k)))));
+  fill(panel, h("div", {}, h("h3", {}, t), col("insert", "INSERT"), col("update", "UPDATE"), col("delete", "DELETE")), h("div", {}, col("read", "READ"), col("uses", "ORM")));
+}
+(function data() {
+  fill(document.getElementById("stage-legend"), ["born", "transform", "store", "read", "delete"].map((k) => h("span", {}, h("i", { style: `background: var(--k-${k === "born" ? "born" : k})` }), L.stages[k])));
+  if (!D.entities.length) document.getElementById("entities").hidden = true;
+  fill(document.getElementById("entities"), D.entities.map((e) => h("div", { class: "lc", id: "ent-" + e.id },
+    h("div", {}, h("h3", {}, e.name), e.table ? h("button", { class: "chip mono", type: "button", onclick: () => openTable(e.table) }, e.table) : null, e.summary ? h("p", { class: "note" }, txt(e.summary)) : null),
+    h("div", { style: "display: grid; gap: 8px" },
+      h("div", { class: "stages" }, (e.events || []).flatMap((ev, i) => [i ? h("span", { class: "arrow" }, "→") : null,
+        h("button", { type: "button", class: "stage s-" + ev.stage, onclick: () => openInGraph(ev.symbol), title: ev.symbol }, h("span", {}, h("b", {}, L.stages[ev.stage] || ev.stage), " · ", txt(ev.text)), h("small", {}, (ev.by ? ev.by + " · " : "") + ev.symbol))])),
+      e.auto ? h("p", { class: "note" }, L.from_sql(e.auto)) : null))));
+  const input = document.getElementById("tbl-search");
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    const names = Object.keys(D.tables).filter((t) => !q || t.toLowerCase().includes(q));
+    fill(document.getElementById("table-matrix"),
+      h("thead", {}, h("tr", {}, L.tbl_cols.map((c) => h("th", {}, c)))),
+      h("tbody", {}, names.map((t) => {
+        const o = D.tables[t], mods = {};
+        for (const op of ["insert", "update", "delete", "read", "uses"]) for (const k of o[op] || []) { const m = k.split(":")[0]; mods[m] = (mods[m] || 0) + 1; }
+        const top = Object.entries(mods).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([m, c]) => `${shortMod(m)} ${c}`).join(", ");
+        const n = (op) => h("td", { class: "num" }, (o[op] || []).length || "·");
+        return h("tr", { class: "pick", "data-t": t, onclick: () => showTable(t) }, h("td", { class: "mono" }, t), n("insert"), n("update"), n("delete"), n("read"), n("uses"), h("td", { class: "note" }, top || L.not_found));
+      })));
+  };
+  input.addEventListener("input", draw);
+  draw();
+})();
+
+// ---------------------------------------------------------------- decisions
+(function decisions() {
+  if (!D.decisions.length) { document.getElementById("decisions").hidden = true; return; }
+  const whos = [...new Set(D.decisions.map((d) => d.by))];
+  const state = { who: null };
+  const draw = () => {
+    fill(document.getElementById("dec-filter"), h("button", { type: "button", class: "chip" + (state.who ? "" : " on"), onclick: () => { state.who = null; draw(); } }, `${L.all} ${D.decisions.length}`),
+      whos.map((w) => h("button", { type: "button", class: "chip" + (state.who === w ? " on" : ""), onclick: () => { state.who = w; draw(); } }, `${w} ${D.decisions.filter((d) => d.by === w).length}`)));
+    const rows = D.decisions.filter((d) => !state.who || d.by === state.who);
+    fill(document.getElementById("decision-table"), h("thead", {}, h("tr", {}, L.dec_cols.map((c) => h("th", {}, c)))),
+      h("tbody", {}, rows.map((d) => h("tr", {}, h("td", {}, txt(d.decision)), h("td", {}, h("span", { class: "badge " + (/code|코드/.test(d.by) ? "accent" : "amber") }, d.by)), h("td", {}, txt(d.how) || ""),
+        h("td", {}, d.symbol ? [symLink(d.symbol, shortMod(d.symbol)), h("br"), d._loc ? locLink(d._loc.file, d._loc.line) : null] : "")))));
+  };
+  draw();
+})();
+
+// ---------------------------------------------------------------- findings
+(function findings() {
+  const SEV = ["high", "medium", "low", "info"];
+  const cats = [...new Set(D.findings.map((f) => f.category))];
+  const state = { sev: new Set(SEV), cat: null };
+  const draw = () => {
+    fill(document.getElementById("find-filter"),
+      SEV.map((sv) => h("button", { type: "button", class: "chip" + (state.sev.has(sv) ? " on" : ""), onclick: () => { state.sev.has(sv) ? state.sev.delete(sv) : state.sev.add(sv); draw(); } }, `${L.sev[sv]} ${D.findings.filter((f) => f.severity === sv).length}`)),
+      h("span", { class: "note" }, "·"),
+      h("button", { type: "button", class: "chip" + (state.cat ? "" : " on"), onclick: () => { state.cat = null; draw(); } }, L.all_kinds),
+      cats.map((c) => h("button", { type: "button", class: "chip" + (state.cat === c ? " on" : ""), onclick: () => { state.cat = c; draw(); } }, c)));
+    const rows = D.findings.filter((f) => state.sev.has(f.severity) && (!state.cat || f.category === state.cat)).sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity));
+    fill(document.getElementById("finding-list"), rows.length ? rows.map((f) => h("article", { class: "finding sev-" + f.severity, id: "finding-" + f.id },
+      h("div", { class: "top" }, h("span", { class: "badge " + ({ high: "bad", medium: "amber", low: "accent" }[f.severity] || "") }, L.sev[f.severity] || f.severity), h("span", { class: "badge" }, f.category), f.generated ? h("span", { class: "badge" }, L.generated) : null, h("h3", {}, f.title)),
+      h("p", {}, txt(f.detail)),
+      (f._locs || []).length ? h("div", { class: "chips" }, f._locs.map((l) => h("span", {}, symLink(l.symbol, shortMod(l.symbol)), " ", locLink(l.file, l.line)))) : null,
+      f.evidence ? h("p", { class: "note" }, L.verified + f.evidence) : null)) : h("p", { class: "note" }, L.none_match));
+  };
+  draw();
+})();
+
+// ---------------------------------------------------------------- module index
+(function modules() {
+  const input = document.getElementById("mod-search");
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    const mods = Object.keys(D.modules).filter((m) => !q || m.toLowerCase().includes(q) || (D.modules[m].doc || "").toLowerCase().includes(q) || D.modules[m].funcs.some((f) => f.toLowerCase().includes(q)));
+    fill(document.getElementById("mod-count"), L.mod_count(mods.length, Object.keys(D.modules).length));
+    fill(document.getElementById("mod-table"), h("thead", {}, h("tr", {}, L.mod_cols.map((c) => h("th", {}, c)))),
+      h("tbody", {}, mods.map((m) => { const i = D.modules[m], Ly = LAYER.get(i.layer);
+        return h("tr", { class: "pick", onclick: () => selectModule(m, true) }, h("td", { class: "mono" }, m, h("br"), locLink(i.file, 0)), h("td", {}, h("span", { style: `color:${layerColor(i.layer)}` }, Ly ? Ly.name : i.layer)),
+          h("td", {}, truncate(i.doc, 160)), h("td", { class: "num" }, i.lines.toLocaleString()), h("td", { class: "num" }, i.funcs.length),
+          h("td", { class: "num" }, i.call_sites ? Math.round(100 - (i.unresolved / i.call_sites) * 100) + "%" : "–"), h("td", { class: "note" }, [...i.imports, ...i.lazy_imports.map((x) => x + "*")].map(shortMod).join(", "))); })));
+  };
+  input.addEventListener("input", draw);
+  draw();
+})();
+
+// ---------------------------------------------------------------- global search
+(function globalSearch() {
+  const input = document.getElementById("gsearch"), box = document.getElementById("gresults"), K = L.kind_labels;
+  const items = [];
+  for (const k of D.keys) { const sy = SYM(k); items.push({ kind: "fn", label: k, sub: (sy.r ? sy.r.map((u) => u.join(" ")).join(" · ") + " — " : "") + (sy.d || ""), hay: (k + " " + (sy.r ? sy.r.map((u) => u[1]).join(" ") : "") + " " + sy.d).toLowerCase(), go: () => openInGraph(k) }); }
+  for (const m of Object.keys(D.modules)) items.push({ kind: "module", label: m, sub: D.modules[m].doc, hay: (m + " " + D.modules[m].doc).toLowerCase(), go: () => selectModule(m, true) });
+  for (const t of Object.keys(D.tables)) items.push({ kind: "table", label: t, sub: "", hay: t.toLowerCase(), go: () => openTable(t) });
+  for (const j of D.journeys) items.push({ kind: "journey", label: j.title, sub: j.summary, hay: (j.title + " " + (j.summary || "") + " " + j.steps.map((x) => x.symbol + " " + (x.action || "")).join(" ")).toLowerCase(), go: () => openJourney(j.id) });
+  for (const r of D.roles) items.push({ kind: "role", label: r.name, sub: r.purpose, hay: (r.name + " " + (r.purpose || "") + " " + (r.symbols || []).join(" ")).toLowerCase(), go: () => goto("role-" + r.id) });
+  for (const f of D.flows) items.push({ kind: "flow", label: f.source, sub: f.sink, hay: (f.source + " " + (f.sink || "")).toLowerCase(), go: () => goto("flow-" + f.id) });
+  for (const e of D.entities) items.push({ kind: "entity", label: e.name, sub: e.summary, hay: (e.name + " " + (e.table || "") + " " + (e.summary || "")).toLowerCase(), go: () => goto("ent-" + e.id) });
+  for (const f of D.findings) items.push({ kind: "finding", label: f.title, sub: f.category, hay: (f.title + " " + (f.detail || "") + " " + (f.symbols || []).join(" ")).toLowerCase(), go: () => goto("finding-" + f.id) });
+  for (const d of D.decisions) items.push({ kind: "decision", label: d.decision, sub: d.by + " · " + (d.how || ""), hay: (d.decision + " " + (d.how || "")).toLowerCase(), go: () => goto("decisions") });
+  const RANK = { journey: 0, role: 1, entity: 2, finding: 3, table: 4, module: 5, flow: 6, decision: 7, fn: 8 };
+  let hits = [], cur = 0;
+  const pick = (i) => { const it = hits[i]; if (!it) return; box.hidden = true; it.go(); };
+  const draw = () => fill(box, hits.map((it, i) => h("button", { type: "button", class: i === cur ? "on" : "", onclick: () => pick(i) }, h("span", { class: "k" }, K[it.kind]), h("span", {}, it.label, it.sub ? h("small", {}, truncate(it.sub, 110)) : null))));
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    if (q.length < 2) { box.hidden = true; return; }
+    const terms = q.split(/\s+/);
+    hits = items.filter((it) => terms.every((t) => it.hay.includes(t) || it.label.toLowerCase().includes(t))).sort((a, b) => (RANK[a.kind] - RANK[b.kind]) || (a.label.length - b.label.length)).slice(0, 30);
+    cur = 0; draw(); box.hidden = !hits.length;
+  });
+  input.addEventListener("keydown", (ev) => {
+    if (box.hidden) return;
+    if (ev.key === "ArrowDown") { cur = Math.min(hits.length - 1, cur + 1); draw(); ev.preventDefault(); }
+    if (ev.key === "ArrowUp") { cur = Math.max(0, cur - 1); draw(); ev.preventDefault(); }
+    if (ev.key === "Enter") { pick(cur); ev.preventDefault(); }
+    if (ev.key === "Escape") box.hidden = true;
+  });
+  document.addEventListener("click", (ev) => { if (!ev.target.closest(".searchbar")) box.hidden = true; });
+})();
+
+// ---------------------------------------------------------------- footer
+(function footer() {
+  fill(document.getElementById("regen"), h("h3", {}, L.regen_h), h("pre", {}, D.regenCommand), h("p", {}, L.regen_cov(D.summary)), h("p", {}, L.regen_blind), h("p", {}, L.regen_gen));
+})();
+</script>
+</body>
+</html>

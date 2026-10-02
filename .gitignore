@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.parts/
+.DS_Store
+PLAN.md

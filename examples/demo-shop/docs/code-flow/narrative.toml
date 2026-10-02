@@ -1,0 +1,458 @@
+# Narrative for the code-flow report — the only hand-written input.
+#
+# Structure (modules, functions, call edges, routes, SQL access, boundaries) comes from code_map.json.
+# This file adds the explanation around it. Every `symbol` / `module` / `table` named here is checked
+# against the code on every build; a name that no longer exists fails the build and the staleness test.
+# Never write line numbers — the builder adds file:line from the code map.
+#
+# Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
+# A finding with check = "no_callers" fails the build once its first symbol gains a caller.
+# Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+
+
+[meta]
+title = "demo-shop"
+lede = "demo-shop is a small Flask shop: a customer lists products, posts an order, is charged through an external payment API, and later receives an AI-written confirmation email. Every database change goes through one gateway, shop.db:run_write, which wraps the change and its audit_log row in a single SQLite transaction; slow work (the model call and email, and the stale-order sweep) runs as Celery tasks."
+audience = "someone learning the code: knows Python and Flask basics, has not seen this repository"
+
+[[layers]]
+id = "web"
+name = "Web routes"
+owns = "Flask app factory and the HTTP handlers: check the session, parse the JSON body, hand the write to run_write, queue background work, respond."
+modules = ["shop", "shop.web"]
+
+[[layers]]
+id = "jobs"
+name = "Background tasks"
+owns = "Celery tasks: the order-summary email (queued per order) and the stale-order sweep (meant to run nightly)."
+modules = ["shop.tasks"]
+
+[[layers]]
+id = "domain"
+name = "Order and catalog rules"
+owns = "Business rules over a cursor it is given: quantity limits, totals computed from database prices (never from the client), status changes, product reads."
+modules = ["shop.orders", "shop.catalog"]
+
+[[layers]]
+id = "adapters"
+name = "Database and outside services"
+owns = "The SQLite connection and the audited write gateway, plus thin wrappers around the payment API, the Anthropic model and SMTP."
+modules = ["shop.db", "shop.payments", "shop.summary", "shop.mail"]
+
+[[layer_rules]]
+text = "The order and catalog rules never import the web layer or the task layer."
+from_layers = ["domain"]
+forbid = ["shop.web", "shop.tasks"]
+
+[[layer_rules]]
+text = "Adapters never import routes, tasks or business rules; they only talk to the outside world."
+from_layers = ["adapters"]
+forbid = ["shop.web", "shop.tasks", "shop.orders", "shop.catalog"]
+
+[[journeys]]
+id = "place-order"
+title = "Place and pay for an order"
+actor = "customer · browser or app"
+trigger = "POST /shop/orders"
+summary = "A signed-in customer posts items and a card token; the order is priced from the database, charged, and marked paid inside one audited SQLite transaction. The response is a redirect to the order page, and a Celery task later writes and emails the confirmation."
+  [[journeys.steps]]
+  symbol = "shop.web:place_order"
+  actor = "browser"
+  action = "Behind login_required (401 without customer_id in the session). Validates the JSON body, then hands the whole write to run_write with the audit action 'order_place' and the customer's email as actor."
+  receives = "JSON body: items [[product_id, qty], ...], card_token"
+  returns = "302 to /shop/orders/<order_id>, or 400 {\"error\": ...} when validation fails"
+  payload = '''
+{"items": [[3, 2], [7, 1]], "card_token": "tok_test_4242"}
+'''
+  [[journeys.steps]]
+  symbol = "shop.orders:validate"
+  action = "Turns the items list into (product_id, qty) integer pairs and rejects an empty order or a quantity outside 1..MAX_QTY (20) with OrderError."
+  receives = "the parsed JSON body"
+  returns = "list of (product_id, qty) tuples, e.g. [(3, 2), (7, 1)]"
+  note = "Only OrderError is caught by the route; a non-numeric id or qty raises ValueError and becomes a 500."
+  [[journeys.steps]]
+  symbol = "shop.db:run_write"
+  action = "Opens a connection, calls work(cur), then inserts the audit_log row (action, actor, JSON of the payload, UTC time); the connection context manager commits both or rolls both back."
+  receives = "action='order_place', actor=email, payload=the request JSON, work=the nested work function"
+  returns = "whatever work returned"
+  tables = ["audit_log"]
+  note = "Docstring: 'so a change is never unrecorded'. The payload passed here is the full request body, card_token included."
+  [[journeys.steps]]
+  symbol = "shop.db:connect"
+  action = "Opens the SQLite file named by DB_PATH."
+  receives = "nothing"
+  returns = "a sqlite3.Connection, used as a transaction context manager"
+  stores = "SQLite"
+  [[journeys.steps]]
+  symbol = "shop.web:place_order.work"
+  action = "The body of the transaction: create the order, charge the card, mark it paid."
+  receives = "cur (the transaction's cursor)"
+  returns = "{order_id, total_cents, payment}"
+  [[journeys.steps]]
+  symbol = "shop.orders:create_order"
+  action = "Looks up current prices, computes the total server-side, inserts the orders row with status 'new' and one order_items row per line."
+  receives = "cur, customer_id from the session, the validated items"
+  returns = "{\"order_id\": 41, \"total_cents\": 5980}"
+  tables = ["order_items", "orders"]
+  note = "Module docstring: totals are computed here, never taken from the client."
+  [[journeys.steps]]
+  symbol = "shop.catalog:prices"
+  action = "Reads price_cents for the requested product ids with one parameterised IN query."
+  receives = "cur, product_ids"
+  returns = "dict product_id → price_cents, e.g. {3: 1990, 7: 2000}"
+  tables = ["products"]
+  note = "An id that is not in products is simply missing from the dict, so create_order raises KeyError (500)."
+  [[journeys.steps]]
+  symbol = "shop.payments:charge"
+  action = "POSTs the amount (EUR) and card token to the provider's /charges endpoint, with Idempotency-Key 'order-<id>' and a 10 s timeout."
+  receives = "order_id, total_cents, card_token"
+  returns = "the provider's charge id, e.g. \"ch_8Hq2\"; any non-2xx raises and rolls the transaction back"
+  stores = "HTTP (requests)"
+  [[journeys.steps]]
+  symbol = "shop.orders:mark_paid"
+  action = "Sets the order's status to 'paid'."
+  receives = "cur, order_id"
+  returns = "nothing"
+  tables = ["orders"]
+  [[journeys.steps]]
+  symbol = "shop.tasks:send_summary"
+  action = "Queued with .delay() after the transaction commits; a Celery worker runs it later, outside the request."
+  receives = "the result dict and the customer's email"
+  returns = "nothing (the HTTP response does not wait for it)"
+  [[journeys.steps]]
+  symbol = "shop.summary:summarise"
+  action = "Asks the model for a two-sentence confirmation from the order id and total, then emails the text."
+  receives = "order dict, customer_email"
+  returns = "nothing"
+  stores = "Anthropic API"
+  [[journeys.steps]]
+  symbol = "shop.mail:send"
+  action = "Sends a plain-text email through the SMTP server on localhost."
+  receives = "to, subject 'Your order', body = model text"
+  returns = "nothing; an SMTP error raises inside the worker"
+  stores = "SMTP email"
+
+[[journeys]]
+id = "cancel-unpaid"
+title = "Cancel orders left unpaid"
+actor = "Celery worker"
+trigger = "@shared_task cancel_unpaid (README: nightly)"
+summary = "The task computes 'now minus one day' and, through run_write, sets every order still 'new' and older than that to 'cancelled'. It ends with an audit_log row and the number of rows changed."
+  [[journeys.steps]]
+  symbol = "shop.tasks:cancel_unpaid"
+  actor = "Celery worker"
+  action = "Computes the cut-off timestamp and calls run_write with action 'order_cancel_stale' and actor 'scheduler'."
+  receives = "no arguments"
+  returns = "number of orders cancelled"
+  payload = '''
+{"before": "2026-01-14T03:00:00+00:00"}
+'''
+  note = "The payload above is the audit payload the task builds; the task itself takes no arguments."
+  [[journeys.steps]]
+  symbol = "shop.db:run_write"
+  action = "Runs the lambda inside one transaction and appends the audit row."
+  receives = "action, actor, {before}, lambda cur: cancel_stale(cur, before)"
+  returns = "the rowcount from cancel_stale"
+  tables = ["audit_log"]
+  [[journeys.steps]]
+  symbol = "shop.db:connect"
+  action = "Opens the SQLite file named by DB_PATH."
+  receives = "nothing"
+  returns = "a sqlite3.Connection"
+  stores = "SQLite"
+  [[journeys.steps]]
+  symbol = "shop.orders:cancel_stale"
+  action = "One UPDATE: status 'new' and created_at before the cut-off become 'cancelled'."
+  receives = "cur, before_iso"
+  returns = "cur.rowcount"
+  tables = ["orders"]
+
+[[journeys]]
+id = "browse-products"
+title = "Browse the product list"
+actor = "visitor · browser"
+trigger = "GET /shop/products"
+summary = "Anyone (no login) gets the product list read straight from SQLite, sorted by title. It ends in a rendered products.html page."
+  [[journeys.steps]]
+  symbol = "shop.web:products"
+  actor = "browser"
+  action = "Opens a connection, reads the products, renders products.html."
+  receives = "nothing (no query parameters)"
+  returns = "HTML page listing products"
+  [[journeys.steps]]
+  symbol = "shop.db:connect"
+  action = "Opens the SQLite file named by DB_PATH."
+  receives = "nothing"
+  returns = "a sqlite3.Connection"
+  stores = "SQLite"
+  [[journeys.steps]]
+  symbol = "shop.catalog:list_products"
+  action = "SELECT id, sku, title, price_cents ordered by title."
+  receives = "cur"
+  returns = "list of rows, e.g. [(3, \"MUG-01\", \"Blue mug\", 1990)]"
+  tables = ["products"]
+
+[[roles]]
+id = "http-requests"
+name = "Payment provider (HTTP)"
+kind = "external"
+symbols = ["shop.payments:charge"]
+purpose = "Charges the customer's card for the order total while the order transaction is still open."
+input = "order_id, total_cents and the client's card_token"
+message = ["POST {PAYMENTS_URL}/charges", "header: Idempotency-Key order-<order_id>", "JSON body: amount (cents), currency 'EUR', source (card token)"]
+config = "env var PAYMENTS_URL (falls back to a built-in example URL)"
+output = "JSON with the charge id; success = any 2xx (raise_for_status)"
+validation = "10 s timeout, no retry; a timeout or non-2xx raises, which rolls back the order. The idempotency key makes a client retry of the same order id safe."
+logging = "Nothing is logged for the call; the request body (with card_token) ends up in audit_log via run_write's payload"
+cost = "not measured"
+result_use = "Returned as payment in the order result and passed to send_summary"
+
+[[roles]]
+id = "smtp-email"
+name = "SMTP email"
+kind = "external"
+symbols = ["shop.mail:send"]
+purpose = "Delivers the order confirmation email."
+message = ["From shop@example.invalid to the customer", "Subject line, blank line, plain-text body"]
+config = "Hard-coded: SMTP on localhost, sender address in code; no env var"
+output = "Nothing returned; success = sendmail does not raise"
+validation = "No retry or timeout set in code; a failure raises inside the Celery worker"
+logging = "Not logged by the app; only the worker's own task failure log"
+cost = "not measured"
+result_use = "None"
+
+[[roles]]
+id = "sqlite"
+name = "SQLite"
+kind = "external"
+symbols = ["shop.db:connect"]
+purpose = "The only data store: products, orders, order_items, audit_log (customers exists in the schema but is unused)."
+message = ["Parameterised SQL from catalog, orders and run_write"]
+config = "DB_PATH constant in shop.db ('shop.db'); schema in schema.sql"
+output = "Rows and rowcount/lastrowid"
+validation = "Each connect() used as a context manager commits on success and rolls back on an exception"
+logging = "Writes through run_write get an audit_log row; reads are not logged"
+cost = "not measured"
+result_use = "Feeds the domain functions"
+
+[[roles]]
+id = "job-send-summary"
+name = "Background job: send_summary"
+kind = "background"
+symbols = ["shop.tasks:send_summary"]
+purpose = "Writes and emails the order confirmation after the order is paid; it waits on a model call and SMTP, which should not hold up the HTTP response."
+config = "Celery @shared_task; broker and worker configuration are not in this repository"
+validation = "No retries or idempotency: a failed run sends no email, a re-run sends a second one"
+logging = "Only Celery's own task-failure logging"
+
+[[roles]]
+id = "job-cancel-unpaid"
+name = "Background job: cancel_unpaid"
+kind = "background"
+symbols = ["shop.tasks:cancel_unpaid"]
+purpose = "Sweeps orders still 'new' after a day and cancels them; it is a time-based sweep, so no request triggers it."
+config = "Celery @shared_task; the README says nightly, but no beat schedule exists in the repository"
+validation = "Idempotent: re-running only cancels what is still 'new' and old enough"
+logging = "Each run writes an audit_log row 'order_cancel_stale' with actor 'scheduler'"
+
+[[roles]]
+id = "model-summarise"
+name = "Model call: summarise"
+kind = "model"
+symbols = ["shop.summary:summarise"]
+purpose = "Writes the friendly two-sentence order confirmation text that is emailed to the customer."
+input = "Inline strings in shop.summary: a fixed system prompt plus a user message built from order_id and total_cents"
+message = ["system: 'Write a two-sentence, friendly order confirmation. Never invent items or prices.'", "user: 'Order <id>: total <cents> cents'"]
+config = "MODEL constant and max_tokens/temperature at the call site; the Anthropic client reads its key from the environment"
+output = "Free text; the first content block's text is used"
+validation = "None: no check of the text, no retry"
+logging = "Not logged or costed"
+cost = "not measured"
+result_use = "Sent unchanged as the email body via shop.mail:send"
+
+[[input_flows]]
+id = "order-json"
+source = "POST /shop/orders JSON body (client-supplied)"
+sink = "orders and order_items rows, the payment provider, audit_log"
+  [[input_flows.steps]]
+  symbol = "shop.web:place_order"
+  guard = "Session must hold customer_id (login_required); customer id and email come from the session, never the body"
+  [[input_flows.steps]]
+  symbol = "shop.orders:validate"
+  guard = "Non-empty, integer ids and quantities 1..20; only OrderError is turned into a 400"
+  [[input_flows.steps]]
+  symbol = "shop.orders:create_order"
+  guard = "Price and total come from the products table, not the body; SQL is parameterised"
+  [[input_flows.steps]]
+  symbol = "shop.db:run_write"
+  guard = "None: the raw body, card_token included, is stored as the audit detail"
+
+[[input_flows]]
+id = "model-output"
+source = "Model text from the Anthropic API"
+sink = "The customer's email"
+  [[input_flows.steps]]
+  symbol = "shop.summary:summarise"
+  guard = "None: the text is emailed as-is"
+
+[[entities]]
+id = "orders"
+name = "Order"
+table = "orders"
+summary = "One row = one order a customer placed: who, status (new → paid, or new → cancelled), total in cents, UTC creation time."
+  [[entities.events]]
+  stage = "born"
+  symbol = "shop.orders:create_order"
+  by = "place-order (customer)"
+  text = "Inserted with status 'new' and the server-computed total"
+  [[entities.events]]
+  stage = "update"
+  symbol = "shop.orders:mark_paid"
+  by = "place-order (customer), same transaction"
+  text = "Status set to 'paid' after the charge succeeds"
+  [[entities.events]]
+  stage = "update"
+  symbol = "shop.orders:cancel_stale"
+  by = "cancel_unpaid (worker)"
+  text = "Status 'new' older than a day set to 'cancelled'"
+
+[[entities]]
+id = "audit-log"
+name = "Audit entry"
+table = "audit_log"
+summary = "One row = one write that went through run_write: action name, actor, JSON detail, UTC time."
+  [[entities.events]]
+  stage = "born"
+  symbol = "shop.db:run_write"
+  by = "every audited write"
+  text = "Inserted in the same transaction as the change it records; never updated or deleted by the code"
+
+[[entities]]
+id = "order-items"
+name = "Order line"
+table = "order_items"
+summary = "One row = one product and quantity on an order."
+  [[entities.events]]
+  stage = "born"
+  symbol = "shop.orders:create_order"
+  by = "place-order (customer)"
+  text = "One row per validated (product_id, qty) pair, inserted with executemany"
+
+[[entities]]
+id = "products"
+name = "Product"
+table = "products"
+summary = "One row = one sellable product with SKU, title and price in cents. No code in this repository writes it."
+  [[entities.events]]
+  stage = "read"
+  symbol = "shop.catalog:list_products"
+  by = "browse-products (visitor)"
+  text = "All rows listed, sorted by title"
+  [[entities.events]]
+  stage = "read"
+  symbol = "shop.catalog:prices"
+  by = "place-order (customer)"
+  text = "Prices for the ordered ids, used to compute the total"
+
+[[decisions]]
+decision = "What an order costs"
+by = "code"
+how = "Total = sum of database price_cents × qty; the client sends no prices"
+symbol = "shop.orders:create_order"
+
+[[decisions]]
+decision = "How many of one item a customer may order"
+by = "code"
+how = "MAX_QTY = 20 checked in validate"
+symbol = "shop.orders:validate"
+
+[[decisions]]
+decision = "When an unpaid order is given up"
+by = "code"
+how = "Fixed one-day cut-off computed in the task"
+symbol = "shop.tasks:cancel_unpaid"
+
+[[decisions]]
+decision = "What the confirmation email says"
+by = "model"
+how = "Two sentences written by the model from order id and total, sent without review"
+symbol = "shop.summary:summarise"
+
+[[decisions]]
+decision = "Which products exist and what they cost"
+by = "people"
+how = "No code writes products; rows are loaded outside this application"
+symbol = "shop.catalog:list_products"
+
+[[findings]]
+id = "card-token-in-audit"
+severity = "high"
+category = "risk"
+title = "The card token is stored in audit_log on every order"
+detail = "Now: place_order passes request.get_json() as run_write's payload, and run_write stores json.dumps(payload) in audit_log.detail, so every order row in audit_log contains card_token. Trigger: every successful order. Reach: every paid order's payment token sits in the database, readable by anyone with database or backup access."
+symbols = ["shop.web:place_order", "shop.db:run_write"]
+evidence = "Read shop/web.py place_order (run_write called with request.get_json()) and shop/db.py run_write (json.dumps(payload) inserted into audit_log)."
+
+[[findings]]
+id = "charge-inside-transaction"
+severity = "medium"
+category = "risk"
+title = "The card is charged inside the open database transaction"
+detail = "Now: payments.charge runs inside work(cur), before mark_paid, the audit insert and the commit. Trigger: any exception after a successful charge (a failing audit insert, a locked database at commit). Reach: that customer is charged while the order row is rolled back, so there is no order to refund against; because orders.id is an INTEGER PRIMARY KEY without AUTOINCREMENT, the next order can reuse the same id and its Idempotency-Key 'order-<id>'. The open transaction also holds the SQLite write lock for up to the 10 s HTTP timeout."
+symbols = ["shop.web:place_order.work", "shop.payments:charge"]
+evidence = "Read shop/web.py work (create_order, then charge, then mark_paid) and shop/payments.py charge (timeout=10, key order-<id>); schema.sql orders.id INTEGER PRIMARY KEY."
+
+[[findings]]
+id = "nightly-not-scheduled"
+severity = "medium"
+category = "doc vs code"
+title = "README says the stale-order sweep runs nightly; nothing schedules it"
+detail = "README: 'cancelled by a nightly job'. Code: cancel_unpaid is a bare @shared_task with no beat schedule or crontab anywhere in the repository and no caller. Trigger: deploying as-is. Reach: the sweep never runs unless a schedule is configured outside the repo."
+symbols = ["shop.tasks:cancel_unpaid"]
+evidence = "README.md; grep for beat/crontab/schedule over shop/, README.md and schema.sql found only the 'scheduler' actor string in shop/tasks.py; codeflow query shows 0 callers."
+check = "no_callers"
+
+[[findings]]
+id = "cancel-has-nothing-to-cancel"
+severity = "low"
+category = "risk"
+title = "No committed order is ever left in status 'new', so cancel_unpaid matches nothing"
+detail = "Now: create_order inserts 'new' and mark_paid sets 'paid' in the same transaction; if the charge fails the insert is rolled back too. So committed orders are always 'paid' and cancel_stale's WHERE status = 'new' finds no rows. Trigger: none today; it starts to matter the day payment is moved out of the transaction. Reach: the job and its audit rows are noise until then."
+symbols = ["shop.orders:cancel_stale", "shop.web:place_order.work"]
+evidence = "Read shop/web.py work and shop/db.py run_write (single 'with connect()' transaction) and shop/orders.py cancel_stale."
+
+[[findings]]
+id = "redirect-to-missing-route"
+severity = "medium"
+category = "risk"
+title = "A successful order redirects to /shop/orders/<id>, which has no route"
+detail = "Now: place_order returns redirect('/shop/orders/<id>') but the blueprint defines only GET /products and POST /orders. Trigger: every successful order. Reach: the customer lands on a 404 right after paying."
+symbols = ["shop.web:place_order"]
+evidence = "Read shop/web.py (two routes); codeflow map reports routes 2."
+
+[[findings]]
+id = "no-login-route"
+severity = "medium"
+category = "risk"
+title = "Nothing sets the session values that login_required and place_order need"
+detail = "Now: login_required checks session['customer_id'] and place_order reads session['email'], but no code in the repository writes either, and the customers table is never read or written. Trigger: any order attempt against this code alone. Reach: POST /shop/orders always returns 401 unless sign-in lives elsewhere."
+symbols = ["shop.web:login_required", "shop.web:place_order"]
+evidence = "grep for session[ over shop/ finds only reads in shop/web.py; grep for customers finds only schema.sql."
+
+[[findings]]
+id = "missing-template"
+severity = "low"
+category = "risk"
+title = "GET /shop/products renders products.html, which is not in the repository"
+detail = "Now: products calls render_template('products.html') and there is no templates folder. Trigger: every product-list request. Reach: the browse page fails with a template error (500) unless templates are supplied outside the repo."
+symbols = ["shop.web:products"]
+evidence = "Read shop/web.py products; listed the repository (README.md, schema.sql, shop/*.py only)."
+
+[[findings]]
+id = "unhandled-bad-input"
+severity = "low"
+category = "risk"
+title = "Some bad order input becomes a 500 instead of a 400"
+detail = "Now: validate catches only its own OrderError; int() on a non-numeric id or qty raises ValueError, a body that is not JSON makes form.get fail, and an unknown product id raises KeyError in create_order. Trigger: a malformed or stale client request. Reach: that request gets a 500; no data is written because the transaction rolls back."
+symbols = ["shop.orders:validate", "shop.orders:create_order"]
+evidence = "Read shop/orders.py validate and create_order, shop/catalog.py prices (dict of found rows only), shop/web.py place_order (except orders.OrderError only)."
