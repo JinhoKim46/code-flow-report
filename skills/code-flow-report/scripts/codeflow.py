@@ -36,6 +36,7 @@ sys.dont_write_bytecode = True  # never leave __pycache__ inside the target repo
 import build as builder  # noqa: E402
 import draft as drafter  # noqa: E402
 import extract  # noqa: E402
+import infra as infra_scanner  # noqa: E402
 from common import CONFIG_NAME, Paths, count_todo, load_map, load_narrative  # noqa: E402
 
 SAMPLE_DIRS = {"examples", "example", "samples", "demos", "demo", "benchmarks", "benchmark", "notebooks", "cookbook", "docs_src"}
@@ -265,6 +266,27 @@ def cmd_query(a) -> int:
         print(f"callers ({len(callers)}): " + ", ".join(f"{c}@{l}" for l, c in callers[:12]) + (" …" if len(callers) > 12 else ""))
         show(t, a.depth, 0)
         print()
+    return 0
+
+
+def cmd_infra(a) -> int:
+    """The infrastructure read from CDK code: resources (with the Python handler a Lambda runs) and their wiring."""
+    paths = Paths.find()
+    infra = load_map(paths).get("infra") or {}
+    if not infra.get("resources"):
+        print("no infrastructure found (AWS CDK in TypeScript or Python)")
+        return 0
+    q = (a.filter or "").lower()
+    for i, r in enumerate(infra["resources"]):
+        line = f"[{i}] {r['service']} {r['id']}  {r['file']}:{r['line']}" + (f"  runs {r['handler_symbol']}" if r.get("handler_symbol") else
+                                                                            f"  handler {r['handler']}" if r.get("handler") else "")
+        if not q or q in line.lower():
+            print(line)
+    print("wiring:")
+    for e in infra["edges"]:
+        line = f"  {infra_scanner.describe(infra, e['from'])} --{e['kind']} {e['label']}--> {infra_scanner.describe(infra, e['to'])}  ({e['file']}:{e['line']})"
+        if not q or q in line.lower():
+            print(line)
     return 0
 
 
@@ -513,6 +535,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_draft)
     p = sub.add_parser("query"); p.add_argument("symbol"); p.add_argument("--depth", type=int, default=2); p.set_defaults(fn=cmd_query)
     p = sub.add_parser("find"); p.add_argument("text"); p.set_defaults(fn=cmd_find)
+    p = sub.add_parser("infra"); p.add_argument("filter", nargs="?"); p.set_defaults(fn=cmd_infra)
     p = sub.add_parser("module"); p.add_argument("modules", nargs="+"); p.add_argument("--limit", type=int, default=60); p.set_defaults(fn=cmd_module)
     sub.add_parser("todo").set_defaults(fn=cmd_todo)
     p = sub.add_parser("candidates"); p.add_argument("--limit", type=int, default=30); p.set_defaults(fn=cmd_candidates)

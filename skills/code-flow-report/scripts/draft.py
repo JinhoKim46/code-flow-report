@@ -375,7 +375,7 @@ def infra_roles(cm: dict) -> list[dict]:
         inbound = [f"{infra_scanner.describe(infra, e['from'])} ({e['label']})" for e in edges if e["to"] == i and e["kind"] != "env"]
         grants = [f"{infra_scanner.describe(infra, e['to'])} ({e['label']})" for e in edges if e["from"] == i and e["kind"] == "grant"]
         env = [f"{e['label']} → {infra_scanner.describe(infra, e['to'])}" for e in edges if e["from"] == i and e["kind"] == "env"]
-        roles.append({"id": "lambda-" + _slug(r["id"] + "-" + r["file"].rsplit("/", 1)[-1].split(".")[0]), "kind": "infra",
+        roles.append({"id": "lambda-" + _slug(r["id"] + "-" + "-".join(r["file"].split("/")[-2:]).rsplit(".", 1)[0]), "kind": "infra",
                       "name": f"Lambda {r['id']}", "symbols": [r["handler_symbol"]],
                       "purpose": "TODO: what this function is for, in one sentence",
                       "message": [f"invoked by: {x}" for x in inbound] or ["TODO: what invokes it (no trigger found in the CDK code)"],

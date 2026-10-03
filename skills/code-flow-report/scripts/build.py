@@ -47,6 +47,9 @@ def auto_layers(modules: dict) -> list[dict]:
             if "." in rest:
                 head = prefix + rest.split(".")[0]
                 pattern[head] = True
+            elif any(x.startswith(m + ".") for x in names):
+                head = m  # a subpackage's own __init__: its `pkg.sub.*` layer already covers it
+                pattern[head] = True
             else:
                 head = prefix[:-1]
         else:

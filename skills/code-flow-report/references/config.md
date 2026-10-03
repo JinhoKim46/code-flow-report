@@ -19,6 +19,7 @@
 | `conventions.route_prefixes` | Extra blueprint/router variable → URL prefix: `{api = "/api/v1"}` | Prefix set in a way the extractor cannot see |
 | `conventions.entry_names` | Function names never reported as dead code (entry points) | Framework hooks reported as dead |
 | `conventions.noisy_services` | Boundary services hidden by default in the call-site table | Template rendering, IaC |
+| `infra.enabled` | Read AWS CDK code (TypeScript or Python) for resources, wiring and the Python handler of each Lambda; on by default, and it only does something when CDK code is present | Switch off for a repo whose CDK code is unrelated to the scanned Python |
 | `profiles.enable` / `disable` | Force a stack profile on or off (normally routed by imports) | False positive / negative |
 
 Reading the `map` summary:

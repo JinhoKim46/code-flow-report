@@ -10,12 +10,15 @@ Language: write all prose in **{LANGUAGE}**. Reader: **{AUDIENCE}**. Plain, conc
 python3 docs/code-flow/tools/codeflow.py query <symbol-or-name> [--depth 2]   # callers, callees, SQL, boundaries, routes
 python3 docs/code-flow/tools/codeflow.py find <text>                          # symbol names containing text
 python3 docs/code-flow/tools/codeflow.py todo                                 # what is still TODO
+python3 docs/code-flow/tools/codeflow.py infra [filter]                       # CDK resources, which Python handler each Lambda runs, and the wiring
 python3 docs/code-flow/tools/codeflow.py merge --check docs/code-flow/.parts/<your-name>.toml   # validate your fragment (writes nothing)
 ```
 
 The drafted `narrative.toml` already holds call chains for the journeys — start from it, then read each step's function. Read only what you need: the functions on your chains and the files they live in. Do not sweep the whole repository.
 
 ## Rules
+
+- **Infrastructure** (when `infra` prints resources): journey steps name Python symbols; when a journey crosses infrastructure (an API route, a queue, a topic, a Step Functions state machine), say so in the step's text ("publishes to SNS MessagesTopic → SQS → Lambda RequestHandler") and continue with the next Lambda's handler. DynamoDB tables and S3 buckets are not SQL tables: name them in text, not in a `tables` field. Read the `.ts` / CDK files when you need detail.
 
 0. A drafted entry that is wrong (a false detection, a duplicate) is removed by writing `{ id = "<its id>", drop = true }` — as `[[roles]]` / `[[journeys]]` … with just `id` and `drop = true`.
 

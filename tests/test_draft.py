@@ -41,6 +41,13 @@ class DemoDraft(unittest.TestCase):
     def test_input_flows_are_proposed_for_write_routes(self):
         self.assertEqual(self.n["input_flows"][0]["steps"][0]["symbol"], "shop.web:place_order")
 
+    def test_drafted_layers_put_each_module_in_exactly_one(self):
+        import build
+        cm = {"modules": {m: {"lines": 10} for m in ("lib", "lib.api", "lib.api.handler", "lib.core", "lib.core.db", "lib.util")}}
+        _, mod_layer, problems = build.assign_layers(cm, {"layers": build.auto_layers(cm["modules"])})
+        self.assertEqual(problems, [])  # lib.api (a subpackage's __init__) sits only in the lib.api.* layer
+        self.assertEqual(set(mod_layer), set(cm["modules"]))
+
     def test_todo_counts_agree(self):
         drafted = int(self.out.split("·")[-1].split()[0])
         code, listed = run(self.repo, "todo")

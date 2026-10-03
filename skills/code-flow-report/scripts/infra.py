@@ -45,7 +45,7 @@ CLASS_RE = re.compile(r"\bclass\s+(\w+)\s*(?:extends\s+([\w.]+)|\(([^)]*)\))")
 WIRING = [  # (regex, kind, groups → (from, to, label))
     (re.compile(r"\b" + REF + r"\.(grant\w*)\(\s*" + REF), "grant"),
     (re.compile(r"\b" + REF + r"\.(?:addEventSource|add_event_source)\(\s*(?:new\s+)?[\w.]*?(\w+?)EventSource\(\s*" + REF), "trigger"),
-    (re.compile(r"\b" + REF + r"\.(?:addEventNotification|add_event_notification)\([^,]+,\s*(?:new\s+)?[\w.]*LambdaDestination\(\s*" + REF), "notify"),
+    (re.compile(r"\b" + REF + r"\.(?:addEventNotification|add_event_notification)\([^,]+,\s*(?:new\s+)?[\w.]*?(?:Lambda|Sqs|Sns)Destination\(\s*" + REF), "notify"),
     (re.compile(r"\b" + REF + r"\.(?:addSubscription|add_subscription)\(\s*(?:new\s+)?[\w.]*(Lambda|Sqs)Subscription\(\s*" + REF), "subscribe"),
     (re.compile(r"\b" + REF + r"\.(?:addTarget|add_target)\(\s*(?:new\s+)?[\w.]*(LambdaFunction|SqsQueue|SfnStateMachine)\(\s*" + REF), "target"),
     (re.compile(r"\b" + REF + r"\.(?:addLambdaDataSource|add_lambda_data_source)\(\s*[\"'`]([^\"'`]+)[\"'`]\s*,\s*" + REF), "datasource"),
@@ -340,6 +340,12 @@ def scan(root: Path, cfg: dict, modules: dict, symbols: dict, exclude: set[str],
                 if fn:
                     edges.append({"from": m.group(5), "to": _last(fn), "kind": "invoke", "label": "Step Functions task",
                                   "file": rel, "line": r["line"], "_from_id": True})
+            elif cls_name == "Rule":  # targets: [new targets.LambdaFunction(fn)], schedule: Schedule.rate(...)
+                schedule = _prop(args, "schedule")
+                label = re.sub(r"\b(?:events|cdk|core)\.", "", " ".join(schedule.split()))[:60] if schedule else "event pattern"
+                for t in re.finditer(r"(?:new\s+)?[\w.]*?(?:LambdaFunction|SqsQueue|SfnStateMachine)\(\s*" + REF, _prop(args, "targets") or ""):
+                    edges.append({"from": m.group(5), "to": _last(t.group(1)), "kind": "target", "label": label,
+                                  "file": rel, "line": r["line"], "_from_id": True})
             resources.append(r)
         for m in ADD_RESOURCE.finditer(text):
             base = _last(m.group(2))
@@ -483,8 +489,16 @@ def triggers(infra: dict) -> list[tuple[str, str]]:
     for i, r in enumerate(infra.get("resources", [])):
         if not r.get("handler_symbol"):
             continue
-        inbound = [e for e in infra["edges"] if e["to"] == i and e["kind"] in ("trigger", "notify", "subscribe", "target", "datasource", "route", "invoke")]
-        how = "; ".join(f"{describe(infra, e['from'])} ({e['label']})" for e in inbound[:3])
+        kinds = ("trigger", "notify", "subscribe", "target", "datasource", "route", "invoke")
+        inbound = [e for e in infra["edges"] if e["to"] == i and (e["kind"] in kinds or e["label"] in ("grantInvoke", "grant_invoke"))]
+        inbound = [e for k, e in enumerate(inbound) if (e["from"], e["label"]) not in {(x["from"], x["label"]) for x in inbound[:k]}]
+
+        def upstream(e):  # one hop further up: S3 UploadBucket → SQS IngestionQueue → Lambda
+            feed = next((f for f in infra["edges"] if f["to"] == e["from"] and f["kind"] in kinds and f["from"] != i), None)
+            return f"{describe(infra, feed['from'])} ({feed['label']}) → " if feed else ""
+
+        how = "; ".join(f"{upstream(e)}{describe(infra, e['from'])} ({'invokes it' if e['kind'] == 'grant' else e['label']})"
+                        for e in inbound[:3])
         out.append((r["handler_symbol"], f"{how} → Lambda {r['id']}" if how else f"Lambda {r['id']}"))
     return out
 

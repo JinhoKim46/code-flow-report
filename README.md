@@ -54,6 +54,7 @@ claude plugin update code-flow-report@code-flow-report             # third-party
 | **Layers** and a note for every module | What is each part for? Who calls it, what does it go through, and where does it write? Which import rules hold between layers? (They are re-checked on every build.) |
 | **Journeys** | What happens, call by call, when a user signs in, submits, or opens the main screen, or when the nightly job runs? |
 | **Boundaries and background work** | Where does the code leave its process: HTTP, cloud SDKs, databases, queues, email, files? What runs on its own? |
+| **Infrastructure** *(AWS CDK, TypeScript or Python)* | Which Lambda runs which Python function? What invokes it (an API route, a queue, a schedule, a Step Functions task)? What may it touch (grants), and which resources is it told about through environment variables? |
 | **Model calls** *(when an LLM SDK is used)* | Which roles call a model, with which prompt builder, model setting and output schema, and through which gateway? |
 | **UI triggers** *(Streamlit, Gradio, NiceGUI)* | Which button, chat box or upload runs which code? |
 | **Untrusted input** | Where does outside text enter, and which checks does it pass before it is stored or sent on? |
@@ -99,6 +100,7 @@ Optional, and only if you say yes: `tests/test_code_flow.py`, a unittest that fa
 | **Entry points** | Flask, FastAPI and Django routes, with blueprint/router prefixes per module. `main()` scripts and `[project.scripts]` console commands, and scripts whose work is top-level code. A library's public API (`__all__` and package re-exports, with entry methods found through the base classes). Streamlit, Gradio and NiceGUI widgets and callbacks. Celery, RQ and APScheduler tasks and schedules. |
 | **Data** | SQL in strings (with tables from `.sql` and SurrealQL schemas), SQLAlchemy and SQLModel session calls, Django and active-record models (`obj.save()`, `Model.get()`, `Model.objects.filter()`), shared write/audit wrappers. |
 | **Calls** | Types from annotations, `with … as` (including `@contextmanager`), return types, `__init__` parameters, inherited attributes, injected callables (`Deps(make_llm=…)`), and parameter types agreed by every call site. Virtual calls get dashed edges to every override. |
+| **Infrastructure** | AWS CDK apps in TypeScript or Python: Lambda, API Gateway, AppSync, SQS, SNS, EventBridge, Step Functions, DynamoDB, S3, Aurora, OpenSearch, IAM roles and more. It reads their wiring (routes, event sources, subscriptions, data sources, Step Functions tasks, `grant*` permissions, environment variables), follows resources passed between constructs through `props`, and links each Lambda's `handler` and code asset to the Python function it runs. Those functions become journey entries. |
 | **Boundaries** | HTTP clients, cloud SDKs, databases, queues, email, subprocesses. Model calls through openai, anthropic, litellm, Gemini, LangChain, esperanto or plain HTTP to a model host, plus the repo's own wrappers around them. |
 | **Tests** | Read only for callers: "only tests call this" and "nothing calls this". |
 
@@ -194,7 +196,7 @@ What static analysis cannot see, and what the report does about it:
 - **Dynamic dispatch**: `getattr`, callback tables, plugin registries. These calls are not edges. The page shows the most frequent unresolved names, so you can tell how much is hidden.
 - **Calls from outside Python**: templates, SQL built at runtime, framework hooks registered by name. Journeys stop at the boundary, and the step says so.
 - **Values known only at run time**: environment-dependent config, feature flags. Cards name *where* a value is configured, never its value.
-- **Python only.** Other languages would need an extractor adapter.
+- **Python code, plus AWS CDK infrastructure.** The application code must be Python. CDK in TypeScript or Python is read for its wiring, with a scanner rather than a full TypeScript parser, so a resource built through a loop or a factory may show as an unresolved name. Terraform, SAM/CloudFormation templates, Pulumi and Azure Bicep are not read yet, and a container-image Lambda's handler lives inside the image.
 - **Newer syntax than the running Python**: such files are skipped and listed as a finding.
 
 ## Privacy
@@ -206,6 +208,8 @@ What static analysis cannot see, and what the report does about it:
 ## FAQ
 
 **Does it run my code?** No. It parses the source with `ast` and never imports it.
+
+**Does it cover infrastructure?** AWS CDK, in TypeScript or Python. The report gets an "Infrastructure" section, each Lambda gets a card, and its Python handler becomes a journey entry, so a journey can cross from an API route through a queue into the next Lambda. See the [aws-genai-llm-chatbot example](examples/aws-genai-llm-chatbot).
 
 **How long does it take?** The map takes seconds. Writing takes about 10 minutes at `quick`, 30 at `standard`, and longer at `deep`, mostly spent reading functions.
 
