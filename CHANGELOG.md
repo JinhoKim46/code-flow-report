@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10
+
+- `[module_notes]` in the narrative: one line per module, what it owns. Shown first in the module panel, map tooltips, the module index and search; the docstring stays as the fallback (and is shown under the note when both exist). Modules without a docstring no longer show an empty description.
+- `draft` proposes a note for every module — the docstring's first sentence where there is one, a TODO where there is none. A note for a module that no longer exists fails the build.
+- SKILL.md and the writer brief: one line per module, essentials only.
+- Module index columns sized so names and layers no longer wrap.
+
 ## 0.2.0 — 2026-10
 
 Call resolution, measured on three real repositories (all call sites → function calls):

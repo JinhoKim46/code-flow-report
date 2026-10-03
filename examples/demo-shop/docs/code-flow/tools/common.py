@@ -110,6 +110,9 @@ def narrative_problems(narrative: dict, code_map: dict) -> list[str]:
             out.append(f"{where}.severity: {value!r} must be one of {sorted(SEVERITIES)}")
         elif key == "stage" and value not in STAGES:
             out.append(f"{where}.stage: {value!r} must be one of {sorted(STAGES)}")
+    for mod in narrative.get("module_notes", {}):
+        if mod not in modules:
+            out.append(f"narrative.module_notes: module not in code: {mod}")
     ids = [j.get("id") for j in narrative.get("journeys", [])]
     if len(ids) != len(set(ids)):
         out.append("journeys: duplicate id")

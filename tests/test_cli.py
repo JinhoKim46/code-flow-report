@@ -63,6 +63,7 @@ class FullRun(unittest.TestCase):
         self.assertGreater(data["todo"], 0)
         self.assertEqual(html.count("</script>"), 2)  # the JSON cannot close its own script tag
         self.assertEqual(data["profiles"], [])
+        self.assertIn("note", data["modules"]["app.orders"])
 
     def test_check_passes_right_after_build(self):
         self.assertEqual(run(self.repo, "check")[0], 0)
@@ -103,6 +104,15 @@ class Staleness(unittest.TestCase):
         code, out = run(repo, "check")
         self.assertEqual(code, 1)
         self.assertIn("module newtop is in no layer", out)
+
+    def test_module_note_for_a_missing_module_fails(self):
+        repo = setup("flask_app")
+        n = repo / "docs" / "code-flow" / "narrative.toml"
+        text = n.read_text(encoding="utf-8")
+        n.write_text(text.replace("\n[module_notes]\n", '\n[module_notes]\n"app.gone" = "was here"\n', 1), encoding="utf-8")
+        code, out = run(repo, "build")
+        self.assertEqual(code, 1)
+        self.assertIn("module_notes: module not in code: app.gone", out)
 
     def test_no_callers_finding_breaks_when_a_caller_appears(self):
         repo = setup("flask_app")

@@ -214,7 +214,10 @@ table.data th { font-family: var(--font-mono); font-size: 11px; font-weight: 500
 table.data tr:last-child td { border-bottom: none; }
 table.data td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 #table-matrix { min-width: 760px; }
-#mod-table { min-width: 860px; }
+#mod-table { min-width: 960px; }
+#mod-table td:first-child { min-width: 210px; }
+#mod-table td:nth-child(2) { white-space: nowrap; }
+#mod-table td:nth-child(3) { min-width: 300px; }
 #decision-table { min-width: 640px; }
 tr.pick { cursor: pointer; }
 tr.pick:hover td { background: var(--surface-2); }
@@ -411,8 +414,8 @@ const STR = {
     find_h: "Findings", find_p: "Where the docs and the code disagree, dead code, cycles, duplicated logic and risky spots. Hand-checked items say how they were verified; generated ones come from the code map and disappear once fixed.",
     all_kinds: "all kinds", generated: "generated", verified: "Verified: ", none_match: "Nothing matches.",
     sev: { high: "high", medium: "medium", low: "low", info: "info" },
-    mod_h: "Module index", mod_p: "Every module with its docstring, size, functions, internal imports and how many of its calls were resolved.", mod_search: "Module, docstring or function", mod_count: (a, b) => `${a} / ${b} modules`,
-    mod_cols: ["Module", "Layer", "Purpose (docstring)", "Lines", "Functions", "Resolved", "Internal imports"],
+    mod_h: "Module index", mod_p: "Every module with its one-line note (or its docstring), size, functions, internal imports and how many of its calls were resolved.", mod_search: "Module, docstring or function", mod_count: (a, b) => `${a} / ${b} modules`,
+    mod_cols: ["Module", "Layer", "What it owns", "Lines", "Functions", "Resolved", "Internal imports"],
     kind_labels: { "journey": "journey", "role": "boundary", "entity": "data", "finding": "finding", "table": "table", "module": "module", "flow": "input flow", "decision": "decision", "fn": "function" },
     regen_h: "Regenerate", regen_cov: (S) => `${S.call_sites.toLocaleString()} call sites: internal ${S.resolved_internal.toLocaleString()} · library ${S.resolved_external.toLocaleString()} · builtin ${S.resolved_builtin.toLocaleString()} · by naming convention ${S.resolved_by_convention.toLocaleString()} · unresolved ${S.unresolved.toLocaleString()} (${S.unresolved_value_like.toLocaleString()} of them look like value methods) → ${(S.resolved_ratio * 100).toFixed(1)}% of all call sites, ${(S.graph_coverage * 100).toFixed(1)}% of function calls. ${S.inferred_edges.toLocaleString()} inferred edges.`,
     regen_blind: "Not visible to static analysis: dynamic dispatch (getattr, callback tables), calls inside templates, framework hook registration, SQL assembled at runtime, and code in other languages.",
@@ -458,8 +461,8 @@ const STR = {
     find_h: "발견 사항", find_p: "문서와 코드가 어긋난 곳, 죽은 코드, 순환, 중복, 위험 지점. 손으로 확인한 항목에는 확인 방법이 붙고, 자동 항목은 고치면 사라진다.",
     all_kinds: "모든 종류", generated: "자동", verified: "확인: ", none_match: "조건에 맞는 항목이 없다.",
     sev: { high: "높음", medium: "중간", low: "낮음", info: "정보" },
-    mod_h: "모듈 색인", mod_p: "모든 모듈과 docstring, 크기, 함수, 내부 import, 호출 해석률.", mod_search: "모듈 · 설명 · 함수 이름", mod_count: (a, b) => `${a} / ${b} 모듈`,
-    mod_cols: ["모듈", "계층", "설명 (docstring)", "줄", "함수", "해석률", "내부 import"],
+    mod_h: "모듈 색인", mod_p: "모든 모듈과 한 줄 설명(없으면 docstring), 크기, 함수, 내부 import, 호출 해석률.", mod_search: "모듈 · 설명 · 함수 이름", mod_count: (a, b) => `${a} / ${b} 모듈`,
+    mod_cols: ["모듈", "계층", "맡는 일", "줄", "함수", "해석률", "내부 import"],
     kind_labels: { "journey": "여정", "role": "경계", "entity": "데이터", "finding": "발견 사항", "table": "표", "module": "모듈", "flow": "입력 흐름", "decision": "결정", "fn": "함수" },
     regen_h: "다시 만들기", regen_cov: (S) => `호출 지점 ${S.call_sites.toLocaleString()}개: 내부 ${S.resolved_internal.toLocaleString()} · 라이브러리 ${S.resolved_external.toLocaleString()} · 내장 ${S.resolved_builtin.toLocaleString()} · 이름 관례 ${S.resolved_by_convention.toLocaleString()} · 해석 못 함 ${S.unresolved.toLocaleString()}(그중 값 메서드처럼 보이는 것 ${S.unresolved_value_like.toLocaleString()}) → 전체의 ${(S.resolved_ratio * 100).toFixed(1)}%, 함수 호출의 ${(S.graph_coverage * 100).toFixed(1)}%. 추정 간선 ${S.inferred_edges.toLocaleString()}개.`,
     regen_blind: "정적 분석이 보지 못하는 것: 동적 디스패치(getattr · 콜백 사전), 템플릿 안의 호출, 프레임워크 훅 등록, 실행 중에 조립되는 SQL, 다른 언어의 코드.",
@@ -494,6 +497,7 @@ function s(tag, attrs, ...kids) {
 }
 function fill(el, ...kids) { el.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false)); }
 const truncate = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + "…" : t || "");
+const modDesc = (m) => (D.modules[m] && (D.modules[m].note || D.modules[m].doc)) || "";
 const shortMod = (m) => { const p = (D.shortPrefix || ""); return p && m.startsWith(p) ? m.slice(p.length) : m; };
 function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* blocked */ } }
@@ -628,7 +632,7 @@ function drawArch() {
     g.append(s("rect", { x: p.x, y: p.y, width: 3, height: p.h, fill: layerColor(D.modules[m].layer), rx: 1.5 }));
     g.append(s("text", { x: p.x + 8, y: p.y + 14 }, truncate(shortMod(m), 15)));
     if (p.h > 28) g.append(s("text", { x: p.x + 8, y: p.y + 26, class: "sub" }, `${D.modules[m].lines.toLocaleString()} · ${D.modules[m].funcs.length}f`));
-    g.append(s("title", {}, `${m}\n${D.modules[m].doc || ""}`));
+    g.append(s("title", {}, `${m}\n${modDesc(m)}`));
     svg.append(g);
   }
   if (links) {
@@ -654,7 +658,8 @@ function renderModPanel() {
   fill(panel,
     h("div", {},
       h("h3", {}, mod), locLink(info.file, 0),
-      h("p", {}, info.doc || h("span", { class: "note" }, L.no_doc)),
+      h("p", {}, txt(info.note) || info.doc || h("span", { class: "note" }, L.no_doc)),
+      info.note && info.doc && info.doc !== info.note && !isTodo(info.note) ? h("p", { class: "note" }, L.docstring + truncate(info.doc, 220)) : null,
       h("div", { class: "chips" }, h("span", { class: "badge", style: `border-color:${layerColor(info.layer)};color:${layerColor(info.layer)}` }, Ly ? Ly.name : info.layer),
         h("span", { class: "badge" }, `${info.lines.toLocaleString()} ${L.lines_u}`), h("span", { class: "badge" }, `${info.funcs.length} ${L.funcs_u}`),
         routes.length ? h("span", { class: "badge accent" }, `${routes.length} ${L.route_fns}`) : null, info.cli ? h("span", { class: "badge amber" }, L.cli) : null,
@@ -1004,12 +1009,12 @@ function showTable(t) {
   const input = document.getElementById("mod-search");
   const draw = () => {
     const q = input.value.trim().toLowerCase();
-    const mods = Object.keys(D.modules).filter((m) => !q || m.toLowerCase().includes(q) || (D.modules[m].doc || "").toLowerCase().includes(q) || D.modules[m].funcs.some((f) => f.toLowerCase().includes(q)));
+    const mods = Object.keys(D.modules).filter((m) => !q || m.toLowerCase().includes(q) || modDesc(m).toLowerCase().includes(q) || D.modules[m].funcs.some((f) => f.toLowerCase().includes(q)));
     fill(document.getElementById("mod-count"), L.mod_count(mods.length, Object.keys(D.modules).length));
     fill(document.getElementById("mod-table"), h("thead", {}, h("tr", {}, L.mod_cols.map((c) => h("th", {}, c)))),
       h("tbody", {}, mods.map((m) => { const i = D.modules[m], Ly = LAYER.get(i.layer);
         return h("tr", { class: "pick", onclick: () => selectModule(m, true) }, h("td", { class: "mono" }, m, h("br"), locLink(i.file, 0)), h("td", {}, h("span", { style: `color:${layerColor(i.layer)}` }, Ly ? Ly.name : i.layer)),
-          h("td", {}, truncate(i.doc, 160)), h("td", { class: "num" }, i.lines.toLocaleString()), h("td", { class: "num" }, i.funcs.length),
+          h("td", {}, txt(truncate(i.note || i.doc, 160))), h("td", { class: "num" }, i.lines.toLocaleString()), h("td", { class: "num" }, i.funcs.length),
           h("td", { class: "num" }, i.call_sites ? Math.round(100 - (i.unresolved / i.call_sites) * 100) + "%" : "–"), h("td", { class: "note" }, [...i.imports, ...i.lazy_imports.map((x) => x + "*")].map(shortMod).join(", "))); })));
   };
   input.addEventListener("input", draw);
@@ -1021,7 +1026,7 @@ function showTable(t) {
   const input = document.getElementById("gsearch"), box = document.getElementById("gresults"), K = L.kind_labels;
   const items = [];
   for (const k of D.keys) { const sy = SYM(k); items.push({ kind: "fn", label: k, sub: (sy.r ? sy.r.map((u) => u.join(" ")).join(" · ") + " — " : "") + (sy.d || ""), hay: (k + " " + (sy.r ? sy.r.map((u) => u[1]).join(" ") : "") + " " + sy.d).toLowerCase(), go: () => openInGraph(k) }); }
-  for (const m of Object.keys(D.modules)) items.push({ kind: "module", label: m, sub: D.modules[m].doc, hay: (m + " " + D.modules[m].doc).toLowerCase(), go: () => selectModule(m, true) });
+  for (const m of Object.keys(D.modules)) items.push({ kind: "module", label: m, sub: modDesc(m), hay: (m + " " + modDesc(m)).toLowerCase(), go: () => selectModule(m, true) });
   for (const t of Object.keys(D.tables)) items.push({ kind: "table", label: t, sub: "", hay: t.toLowerCase(), go: () => openTable(t) });
   for (const j of D.journeys) items.push({ kind: "journey", label: j.title, sub: j.summary, hay: (j.title + " " + (j.summary || "") + " " + j.steps.map((x) => x.symbol + " " + (x.action || "")).join(" ")).toLowerCase(), go: () => openJourney(j.id) });
   for (const r of D.roles) items.push({ kind: "role", label: r.name, sub: r.purpose, hay: (r.name + " " + (r.purpose || "") + " " + (r.symbols || []).join(" ")).toLowerCase(), go: () => goto("role-" + r.id) });

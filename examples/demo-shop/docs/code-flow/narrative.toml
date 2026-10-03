@@ -10,6 +10,17 @@
 # Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
 
 
+[module_notes]
+"shop" = "App factory: builds the Flask app and mounts the shop blueprint under /shop."
+"shop.web" = "HTTP routes: product list and checkout; checkout validates, charges and records the order in one audited write."
+"shop.orders" = "Order rules: input validation, totals priced from the catalog (never from the client), paid and cancelled states."
+"shop.catalog" = "Product reads: the list for the shop page and current prices by id."
+"shop.db" = "SQLite connection and run_write, the gateway that pairs every change with its audit_log row in one transaction."
+"shop.payments" = "Payment provider client: one charge per order, the order id as idempotency key."
+"shop.summary" = "Model call that writes the two-sentence order confirmation and hands it to mail."
+"shop.mail" = "Sends an email through the local SMTP server."
+"shop.tasks" = "Celery tasks: the confirmation email after checkout, and cancelling orders left unpaid."
+
 [meta]
 title = "demo-shop"
 lede = "demo-shop is a small Flask shop: a customer lists products, posts an order, is charged through an external payment API, and later receives an AI-written confirmation email. Every database change goes through one gateway, shop.db:run_write, which wraps the change and its audit_log row in a single SQLite transaction; slow work (the model call and email, and the stale-order sweep) runs as Celery tasks."

@@ -7,7 +7,7 @@
       "name": "code-flow-report",
       "source": "./",
       "description": "Interactive, self-checking report of how a Python codebase actually works.",
-      "version": "0.2.0"
+      "version": "0.3.0"
     }
   ]
 }

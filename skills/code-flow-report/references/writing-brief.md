@@ -21,10 +21,11 @@ The drafted `narrative.toml` already holds call chains for the journeys — star
 2. **Symbols, not line numbers**: `pkg.mod:function`, `pkg.mod:Class.method`, `pkg.mod:outer.inner`. Use `find` when unsure of the exact name.
 3. **Never read or quote** `.env*`, secrets, credentials, or real personal/customer data. Example payloads use invented values (e.g. "Jane Doe", "ACME Ltd", order 1042, 4200 cents).
 4. **Journey steps** must be on the real call chain, in order. For each: what it receives, what it returns, what it stores, and one small realistic payload where data changes shape. Usually 6–12 steps; fewer is right when that is the whole chain. Add a missing validation or permission step; drop plumbing that adds nothing.
-5. **Cards**: configuration means *where* (env var / config field names), never values. Unknown cost → "not measured".
-6. **Findings**: state what is true now, the trigger that makes it go wrong, and how far it reaches. Severity `high` only for data loss, security, or money. A dead-code finding gets `check = "no_callers"`. Each finding has `evidence` saying how you verified it.
-7. **Decisions**: one row per real decision — who makes it (`code` / `people` / `people (config file)` / `model`) and how.
-8. Field reference: `references/narrative-schema.md` (in the skill) — severities `high|medium|low|info`; stages `born|transform|update|store|archive|restore|read|delete`.
+5. **Module notes** (`[module_notes]`): one line per module — what it owns and why it exists, ~10–20 words, no filler and no function lists. Read the module before writing; tighten a prefilled docstring sentence rather than copying it.
+6. **Cards**: configuration means *where* (env var / config field names), never values. Unknown cost → "not measured".
+7. **Findings**: state what is true now, the trigger that makes it go wrong, and how far it reaches. Severity `high` only for data loss, security, or money. A dead-code finding gets `check = "no_callers"`. Each finding has `evidence` saying how you verified it.
+8. **Decisions**: one row per real decision — who makes it (`code` / `people` / `people (config file)` / `model`) and how.
+9. Field reference: `references/narrative-schema.md` (in the skill) — severities `high|medium|low|info`; stages `born|transform|update|store|archive|restore|read|delete`.
 
 ## Done when
 

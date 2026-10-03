@@ -4,7 +4,7 @@ How the skill was checked before release. Every number below was measured on the
 
 ## 1. Test suite
 
-`python3 -m unittest discover -s tests -t tests` → **47 tests, OK** (≈5 s, no network, no packages). Seven fixture repos under `tests/fixtures/`, all invented:
+`python3 -m unittest discover -s tests -t tests` → **49 tests, OK** (≈5 s, no network, no packages). Seven fixture repos under `tests/fixtures/`, all invented:
 
 | Fixture | Pins down |
 |---|---|

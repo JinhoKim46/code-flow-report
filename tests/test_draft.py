@@ -46,6 +46,13 @@ class DemoDraft(unittest.TestCase):
         code, listed = run(self.repo, "todo")
         self.assertEqual(int(listed.strip().splitlines()[-1].split()[0]), drafted)
 
+    def test_every_module_gets_a_note_prefilled_or_todo(self):
+        notes = self.n["module_notes"]
+        self.assertEqual(set(notes), {"shop", "shop.web", "shop.orders", "shop.catalog", "shop.db", "shop.payments", "shop.summary",
+                                      "shop.mail", "shop.tasks"})
+        self.assertEqual(notes["shop.orders"], "Order rules: totals are computed here, never taken from the client.")  # from the docstring
+        self.assertTrue(notes["shop.mail"].startswith("TODO"))  # no docstring
+
     def test_no_bytecode_left_in_the_target_repo(self):
         run(self.repo, "build")
         self.assertEqual(list((self.repo / "docs" / "code-flow" / "tools").rglob("__pycache__")), [])

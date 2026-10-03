@@ -331,6 +331,12 @@ def propose_entities(cm: dict, n: int) -> list[dict]:
     return out
 
 
+def propose_module_notes(cm: dict) -> dict:
+    """One line per module: the docstring's first sentence where there is one, else a TODO."""
+    return {m: (_first_sentence(info.get("doc", "")) or f"TODO: one line — what {m} owns")
+            for m, info in sorted(cm["modules"].items())}
+
+
 def draft(cm: dict, cfg: dict, depth: str = "quick") -> dict:
     lim = DEPTH.get(depth, DEPTH["quick"])
     g = Graph(cm)
@@ -341,6 +347,7 @@ def draft(cm: dict, cfg: dict, depth: str = "quick") -> dict:
         "meta": {"title": cfg["project"].get("name") or "Code flow",
                  "lede": "TODO: two sentences — what this system does and how the main parts connect",
                  "audience": cfg["project"].get("audience") or ("Python 은 알지만 이 코드는 처음 보는 사람" if cfg["project"].get("language") == "ko" else "someone who knows Python but not this code")},
+        "module_notes": propose_module_notes(cm),
         "layers": layers,
         "layer_rules": [],
         "journeys": propose_journeys(cm, g, lim["journeys"], cfg["conventions"].get("noisy_services", [])),
@@ -363,4 +370,5 @@ HEADER = """# Narrative for the code-flow report — the only hand-written input
 # Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
 # A finding with check = "no_callers" fails the build once its first symbol gains a caller.
 # Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+# [module_notes]: one line per module — what it owns, essentials only (prefilled from the docstring where there is one).
 """

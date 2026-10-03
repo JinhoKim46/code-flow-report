@@ -2,7 +2,7 @@
 
 A Claude Code skill that builds an **interactive report of how a Python codebase actually works** — and keeps it honest.
 
-- **Layers** of the codebase, with the import rules between them re-checked on every build.
+- **Layers** of the codebase, every module with a one-line note of what it owns, and the import rules between layers re-checked on every build.
 - **User journeys as exact call chains**: from the click (or the scheduled job) to the database and back, step by step, with what each function receives, returns and stores, and a small example payload.
 - **Boundaries and background work**: every place the code leaves its process (HTTP, cloud SDKs, databases, queues, email, files, subprocesses) and every job that runs on its own.
 - **Stack profiles**, switched on only when the repo uses that stack: model calls (provider, model, settings, message roles, output schema) for LLM SDKs; tasks, schedules and enqueue sites for Celery/RQ/APScheduler/….
@@ -100,7 +100,7 @@ A stack profile is one Python file: the import names that switch it on, a call-s
 ## Development
 
 ```
-python3 -m unittest discover -s tests -t tests     # 47 tests on fixture repos under tests/fixtures/
+python3 -m unittest discover -s tests -t tests     # 49 tests on fixture repos under tests/fixtures/
 python3 tests/make_fixtures.py                      # regenerate the fixtures
 python3 examples/make_demo.py                       # regenerate the example app
 claude plugin validate . --strict

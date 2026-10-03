@@ -13,6 +13,16 @@ Symbols: `pkg.mod:function` · `pkg.mod:Class.method` · `pkg.mod:outer.inner` (
 | `audience` | who the report is written for |
 | `start_symbol` | optional: the function the call-graph explorer opens on (default: first journey's first step) |
 
+## [module_notes]
+
+One line per module: what it owns, the essentials only. Shown in the module panel, map tooltips, the module index and search, before the docstring (which stays as a fallback). Keys must be modules in the code.
+
+```toml
+[module_notes]
+"shop.web" = "HTTP routes: product list and checkout; every write goes through db.run_write."
+"shop.orders" = "Order rules: validation, totals priced from the catalog (never from the client), status changes."
+```
+
 ## [[layers]]
 
 ```toml

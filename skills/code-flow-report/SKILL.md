@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py *) Bash(pyth
 license: MIT
 compatibility: Claude Code with Python 3.11+ on PATH as python3. Standard library only; the generated page works offline.
 metadata:
-  version: 0.2.0
+  version: 0.3.0
   repository: https://github.com/JinhoKim46/code-flow-report
 ---
 
@@ -63,9 +63,9 @@ Replace every `TODO:`; delete a TODO'd item instead if it is not worth explainin
 | journeys-a | first half of the journeys + the input flows they pass through |
 | journeys-b | second half of the journeys |
 | boundaries | every `[[roles]]` card (external services, background work, profile cards) + `[[decisions]]` |
-| data | `[[entities]]`, `[[layers]]` `owns` text and `[[layer_rules]]`, doc-vs-code `[[findings]]` |
+| data | `[module_notes]`, `[[entities]]`, `[[layers]]` `owns` text and `[[layer_rules]]`, doc-vs-code `[[findings]]` |
 
-Always add, whatever the depth: `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Mark a dead-code finding with `check = "no_callers"` so it re-checks itself.
+Always add, whatever the depth: `[module_notes]` — **one line per module**, what it owns and why it exists, essentials only (no "This module…", no lists of every function; ~10–20 words). The draft prefilled modules that have a docstring: tighten those, write the TODO ones from the code. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Mark a dead-code finding with `check = "no_callers"` so it re-checks itself.
 
 ## 5. Build and self-check
 

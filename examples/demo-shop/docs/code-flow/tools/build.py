@@ -210,7 +210,8 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
     tables = {t: {op: sorted(v) for op, v in ops.items()} for t, ops in tables.items()}
     sym_tables = {k: {op: sorted(v) for op, v in ops.items()} for k, ops in sym_tables.items()}
 
-    modules = {m: {**info, "layer": mod_layer.get(m, "?"), "funcs": [k for k in keys if k.startswith(m + ":")]}
+    notes = narrative.get("module_notes", {})
+    modules = {m: {**info, "layer": mod_layer.get(m, "?"), "note": notes.get(m, ""), "funcs": [k for k in keys if k.startswith(m + ":")]}
                for m, info in code_map["modules"].items()}
 
     journeys = []
