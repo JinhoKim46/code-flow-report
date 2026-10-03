@@ -105,14 +105,24 @@ class Staleness(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("module newtop is in no layer", out)
 
-    def test_module_note_for_a_missing_module_fails(self):
-        repo = setup("flask_app")
-        n = repo / "docs" / "code-flow" / "narrative.toml"
-        text = n.read_text(encoding="utf-8")
-        n.write_text(text.replace("\n[module_notes]\n", '\n[module_notes]\n"app.gone" = "was here"\n', 1), encoding="utf-8")
-        code, out = run(repo, "build")
-        self.assertEqual(code, 1)
-        self.assertIn("module_notes: module not in code: app.gone", out)
+    def test_module_notes_are_checked(self):
+        cases = [("app.gone", 'purpose = "p"\ndoes = "d"\nflow = "f"', "module_notes: module not in code: app.gone"),
+                 ("app.orders", 'purpose = "p"\ndoes = "d"', "module_notes.app.orders: empty flow")]
+        for mod, body, expected in cases:
+            with self.subTest(mod):
+                repo = setup("flask_app")
+                n = repo / "docs" / "code-flow" / "narrative.toml"
+                text = n.read_text(encoding="utf-8")
+                if mod == "app.orders":  # replace the drafted entry with an incomplete one
+                    start = text.index('[module_notes."app.orders"]')
+                    end = text.index("\n[", start + 1)
+                    text = text[:start] + f'[module_notes."{mod}"]\n{body}\n' + text[end:]
+                else:
+                    text += f'\n[module_notes."{mod}"]\n{body}\n'
+                n.write_text(text, encoding="utf-8")
+                code, out = run(repo, "build")
+                self.assertEqual(code, 1)
+                self.assertIn(expected, out)
 
     def test_no_callers_finding_breaks_when_a_caller_appears(self):
         repo = setup("flask_app")

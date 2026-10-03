@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py *) Bash(pyth
 license: MIT
 compatibility: Claude Code with Python 3.11+ on PATH as python3. Standard library only; the generated page works offline.
 metadata:
-  version: 0.3.0
+  version: 0.4.0
   repository: https://github.com/JinhoKim46/code-flow-report
 ---
 
@@ -63,9 +63,15 @@ Replace every `TODO:`; delete a TODO'd item instead if it is not worth explainin
 | journeys-a | first half of the journeys + the input flows they pass through |
 | journeys-b | second half of the journeys |
 | boundaries | every `[[roles]]` card (external services, background work, profile cards) + `[[decisions]]` |
-| data | `[module_notes]`, `[[entities]]`, `[[layers]]` `owns` text and `[[layer_rules]]`, doc-vs-code `[[findings]]` |
+| data | `[[entities]]`, `[[layers]]` `owns` text and `[[layer_rules]]`, doc-vs-code `[[findings]]` |
+| modules-1 … n | `[module_notes]` for one or two layers each (split so each writer has ≤ ~25 modules); start after the journeys are merged so the writers can read them |
 
-Always add, whatever the depth: `[module_notes]` — **one line per module**, what it owns and why it exists, essentials only (no "This module…", no lists of every function; ~10–20 words). The draft prefilled modules that have a docstring: tighten those, write the TODO ones from the code. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Mark a dead-code finding with `check = "no_callers"` so it re-checks itself.
+Always add, whatever the depth, **`[module_notes]` for every module — written last, once you understand the whole flow** (the journeys are done). For each module run `CF module <name>` (callers, callees, tables, boundaries, functions), read its header and the few functions that carry it, then fill:
+  - `purpose` — why it exists: what would not work without it (one sentence);
+  - `does` — what it does, as 2–5 capabilities, not a function list;
+  - `flow` — who calls it and when → what it goes through → where it writes (name the real modules, tables, services);
+  - `note` (optional) — a rule, trap or deliberate exception worth knowing.
+  Concrete and short; never copy the docstring's first sentence, never pad ("This module is responsible for various…"). The draft leaves all of them as TODO on purpose. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Mark a dead-code finding with `check = "no_callers"` so it re-checks itself.
 
 ## 5. Build and self-check
 

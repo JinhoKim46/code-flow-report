@@ -110,9 +110,18 @@ def narrative_problems(narrative: dict, code_map: dict) -> list[str]:
             out.append(f"{where}.severity: {value!r} must be one of {sorted(SEVERITIES)}")
         elif key == "stage" and value not in STAGES:
             out.append(f"{where}.stage: {value!r} must be one of {sorted(STAGES)}")
-    for mod in narrative.get("module_notes", {}):
+    for mod, note in narrative.get("module_notes", {}).items():
         if mod not in modules:
             out.append(f"narrative.module_notes: module not in code: {mod}")
+        if isinstance(note, dict):
+            missing = [k for k in ("purpose", "does", "flow") if not note.get(k)]
+            extra = [k for k in note if k not in ("purpose", "does", "flow", "note")]
+            if missing:
+                out.append(f"narrative.module_notes.{mod}: empty {', '.join(missing)}")
+            if extra:
+                out.append(f"narrative.module_notes.{mod}: unknown field {', '.join(extra)} (purpose, does, flow, note)")
+        elif not isinstance(note, str):
+            out.append(f"narrative.module_notes.{mod}: must be a string or a table of purpose / does / flow / note")
     ids = [j.get("id") for j in narrative.get("journeys", [])]
     if len(ids) != len(set(ids)):
         out.append("journeys: duplicate id")

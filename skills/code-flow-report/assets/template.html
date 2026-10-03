@@ -217,7 +217,9 @@ table.data td.num { font-variant-numeric: tabular-nums; text-align: right; white
 #mod-table { min-width: 960px; }
 #mod-table td:first-child { min-width: 210px; }
 #mod-table td:nth-child(2) { white-space: nowrap; }
-#mod-table td:nth-child(3) { min-width: 300px; }
+#mod-table td:nth-child(3) { min-width: 340px; }
+dl.modnote { grid-template-columns: 76px minmax(0, 1fr); font-size: 14px; }
+dl.modnote dd { line-height: 1.55; }
 #decision-table { min-width: 640px; }
 tr.pick { cursor: pointer; }
 tr.pick:hover td { background: var(--surface-2); }
@@ -389,7 +391,7 @@ const STR = {
     arch_h: "Structure: layers and modules", arch_p: "Box height grows with line count. Click a module: modules it calls turn teal, modules that call it amber, and the rest fade so the connecting edges stand out. Esc or a click on empty space clears it.",
     fade_label: "Fade unselected", fade_hint: "· Esc clears the selection", calls_out: "calls →", called_by: "← called by",
     pick_module: "Pick a module", pick_module_p: "Click a box on the map to see its functions, imports and callers here.", layers: "Layers",
-    no_doc: "(no docstring)", lines_u: "lines", funcs_u: "functions", route_fns: "route functions", cli: "python -m entry point", resolved: "calls resolved",
+    no_doc: "(no description)", note_purpose: "Purpose", note_does: "Does", note_flow: "Flow", note_note: "Note", lines_u: "lines", funcs_u: "functions", route_fns: "route functions", cli: "python -m entry point", resolved: "calls resolved",
     functions: "Functions", mod_calls: "Modules it calls", mod_called_by: "Modules that call it", imports: "Imports", top_level: "Module level: ", lazy: "Inside functions (lazy): ",
     imported_by: "Imported by: ", none: "none", n_calls: (n) => `${n} calls`,
     rules_h: "Layer rules (checked on every build)", rule_ok: (n) => `holds (${n} modules checked)`, rule_bad: "violations: ",
@@ -436,7 +438,7 @@ const STR = {
     arch_h: "구조: 계층과 모듈", arch_p: "상자 높이는 줄 수에 비례한다. 모듈을 누르면 그 모듈이 부르는 모듈은 청록, 부르는 쪽은 주황이 되고 나머지는 흐려져 잇는 간선이 또렷해진다. Esc 나 빈 곳을 누르면 풀린다.",
     fade_label: "선택되지 않은 것 흐리게", fade_hint: "· Esc 로 선택 해제", calls_out: "부르는 모듈 →", called_by: "← 부르는 쪽",
     pick_module: "모듈을 고르세요", pick_module_p: "지도에서 상자를 누르면 그 모듈의 함수 · import · 호출 관계가 여기에 나온다.", layers: "계층",
-    no_doc: "(docstring 없음)", lines_u: "줄", funcs_u: "함수", route_fns: "라우트 함수", cli: "python -m 진입점", resolved: "호출 해석",
+    no_doc: "(설명 없음)", note_purpose: "목적", note_does: "하는 일", note_flow: "흐름", note_note: "참고", lines_u: "줄", funcs_u: "함수", route_fns: "라우트 함수", cli: "python -m 진입점", resolved: "호출 해석",
     functions: "함수", mod_calls: "이 모듈이 부르는 모듈", mod_called_by: "이 모듈을 부르는 모듈", imports: "import", top_level: "모듈 수준: ", lazy: "함수 안(늦은 import): ",
     imported_by: "import 하는 쪽: ", none: "없음", n_calls: (n) => `호출 ${n}`,
     rules_h: "계층 규칙 (빌드할 때 확인)", rule_ok: (n) => `지킴 (모듈 ${n}개 확인)`, rule_bad: "위반: ",
@@ -497,7 +499,10 @@ function s(tag, attrs, ...kids) {
 }
 function fill(el, ...kids) { el.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false)); }
 const truncate = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + "…" : t || "");
-const modDesc = (m) => (D.modules[m] && (D.modules[m].note || D.modules[m].doc)) || "";
+const noteOf = (m) => (D.modules[m] && D.modules[m].note) || "";
+const notePurpose = (n) => (typeof n === "string" ? n : (n && n.purpose) || "");
+const modDesc = (m) => { const p = notePurpose(noteOf(m)); return (p && !isTodo(p) ? p : "") || (D.modules[m] && D.modules[m].doc) || p || ""; };
+const noteText = (m) => { const n = noteOf(m); return typeof n === "string" ? n : [n.purpose, n.does, n.flow, n.note].filter(Boolean).join(" "); };
 const shortMod = (m) => { const p = (D.shortPrefix || ""); return p && m.startsWith(p) ? m.slice(p.length) : m; };
 function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* blocked */ } }
@@ -658,8 +663,11 @@ function renderModPanel() {
   fill(panel,
     h("div", {},
       h("h3", {}, mod), locLink(info.file, 0),
-      h("p", {}, txt(info.note) || info.doc || h("span", { class: "note" }, L.no_doc)),
-      info.note && info.doc && info.doc !== info.note && !isTodo(info.note) ? h("p", { class: "note" }, L.docstring + truncate(info.doc, 220)) : null,
+      info.note && typeof info.note === "object"
+        ? h("dl", { class: "kv modnote" }, [[L.note_purpose, info.note.purpose], [L.note_does, info.note.does], [L.note_flow, info.note.flow], [L.note_note, info.note.note]]
+            .filter(([, v]) => v).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, txt(v))]))
+        : h("p", {}, txt(info.note) || info.doc || h("span", { class: "note" }, L.no_doc)),
+      info.doc && info.note && typeof info.note === "object" ? h("p", { class: "note" }, L.docstring + truncate(info.doc, 220)) : null,
       h("div", { class: "chips" }, h("span", { class: "badge", style: `border-color:${layerColor(info.layer)};color:${layerColor(info.layer)}` }, Ly ? Ly.name : info.layer),
         h("span", { class: "badge" }, `${info.lines.toLocaleString()} ${L.lines_u}`), h("span", { class: "badge" }, `${info.funcs.length} ${L.funcs_u}`),
         routes.length ? h("span", { class: "badge accent" }, `${routes.length} ${L.route_fns}`) : null, info.cli ? h("span", { class: "badge amber" }, L.cli) : null,
@@ -1009,12 +1017,12 @@ function showTable(t) {
   const input = document.getElementById("mod-search");
   const draw = () => {
     const q = input.value.trim().toLowerCase();
-    const mods = Object.keys(D.modules).filter((m) => !q || m.toLowerCase().includes(q) || modDesc(m).toLowerCase().includes(q) || D.modules[m].funcs.some((f) => f.toLowerCase().includes(q)));
+    const mods = Object.keys(D.modules).filter((m) => !q || m.toLowerCase().includes(q) || (noteText(m) + " " + (D.modules[m].doc || "")).toLowerCase().includes(q) || D.modules[m].funcs.some((f) => f.toLowerCase().includes(q)));
     fill(document.getElementById("mod-count"), L.mod_count(mods.length, Object.keys(D.modules).length));
     fill(document.getElementById("mod-table"), h("thead", {}, h("tr", {}, L.mod_cols.map((c) => h("th", {}, c)))),
       h("tbody", {}, mods.map((m) => { const i = D.modules[m], Ly = LAYER.get(i.layer);
         return h("tr", { class: "pick", onclick: () => selectModule(m, true) }, h("td", { class: "mono" }, m, h("br"), locLink(i.file, 0)), h("td", {}, h("span", { style: `color:${layerColor(i.layer)}` }, Ly ? Ly.name : i.layer)),
-          h("td", {}, txt(truncate(i.note || i.doc, 160))), h("td", { class: "num" }, i.lines.toLocaleString()), h("td", { class: "num" }, i.funcs.length),
+          h("td", {}, txt(truncate(modDesc(m), 160)), i.note && typeof i.note === "object" && i.note.does && !isTodo(i.note.does) ? h("div", { class: "note" }, truncate(i.note.does, 180)) : null), h("td", { class: "num" }, i.lines.toLocaleString()), h("td", { class: "num" }, i.funcs.length),
           h("td", { class: "num" }, i.call_sites ? Math.round(100 - (i.unresolved / i.call_sites) * 100) + "%" : "–"), h("td", { class: "note" }, [...i.imports, ...i.lazy_imports.map((x) => x + "*")].map(shortMod).join(", "))); })));
   };
   input.addEventListener("input", draw);
@@ -1026,7 +1034,7 @@ function showTable(t) {
   const input = document.getElementById("gsearch"), box = document.getElementById("gresults"), K = L.kind_labels;
   const items = [];
   for (const k of D.keys) { const sy = SYM(k); items.push({ kind: "fn", label: k, sub: (sy.r ? sy.r.map((u) => u.join(" ")).join(" · ") + " — " : "") + (sy.d || ""), hay: (k + " " + (sy.r ? sy.r.map((u) => u[1]).join(" ") : "") + " " + sy.d).toLowerCase(), go: () => openInGraph(k) }); }
-  for (const m of Object.keys(D.modules)) items.push({ kind: "module", label: m, sub: modDesc(m), hay: (m + " " + modDesc(m)).toLowerCase(), go: () => selectModule(m, true) });
+  for (const m of Object.keys(D.modules)) items.push({ kind: "module", label: m, sub: modDesc(m), hay: (m + " " + noteText(m) + " " + (D.modules[m].doc || "")).toLowerCase(), go: () => selectModule(m, true) });
   for (const t of Object.keys(D.tables)) items.push({ kind: "table", label: t, sub: "", hay: t.toLowerCase(), go: () => openTable(t) });
   for (const j of D.journeys) items.push({ kind: "journey", label: j.title, sub: j.summary, hay: (j.title + " " + (j.summary || "") + " " + j.steps.map((x) => x.symbol + " " + (x.action || "")).join(" ")).toLowerCase(), go: () => openJourney(j.id) });
   for (const r of D.roles) items.push({ kind: "role", label: r.name, sub: r.purpose, hay: (r.name + " " + (r.purpose || "") + " " + (r.symbols || []).join(" ")).toLowerCase(), go: () => goto("role-" + r.id) });

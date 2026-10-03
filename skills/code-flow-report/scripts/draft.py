@@ -52,7 +52,12 @@ def to_toml(doc: dict, header: str = "") -> str:
     for k, v in simple.items():
         out.append(f"{_toml_key(k)} = {_toml_value(v)}")
     for k, v in doc.items():
-        if isinstance(v, dict):
+        if isinstance(v, dict) and v and all(isinstance(x, dict) for x in v.values()):
+            for kk, vv in v.items():
+                out.append(f"\n[{k}.{_toml_key(kk)}]")
+                for k3, v3 in vv.items():
+                    out.append(f"{_toml_key(k3)} = {_toml_value(v3)}")
+        elif isinstance(v, dict):
             out.append(f"\n[{k}]")
             for kk, vv in v.items():
                 out.append(f"{_toml_key(kk)} = {_toml_value(vv)}")
@@ -332,9 +337,12 @@ def propose_entities(cm: dict, n: int) -> list[dict]:
 
 
 def propose_module_notes(cm: dict) -> dict:
-    """One line per module: the docstring's first sentence where there is one, else a TODO."""
-    return {m: (_first_sentence(info.get("doc", "")) or f"TODO: one line — what {m} owns")
-            for m, info in sorted(cm["modules"].items())}
+    """A place for every module. Never prefilled from the docstring — a copied first sentence says
+    too little to follow the flow; the writer reads the module (`codeflow.py module <name>`)."""
+    return {m: {"purpose": "TODO: why this module exists — what would not work without it",
+                "does": "TODO: what it does, grouped into 2–5 capabilities (not a function list)",
+                "flow": "TODO: who calls it and when → what it goes through → where it writes (tables, files, services)"}
+            for m in sorted(cm["modules"])}
 
 
 def draft(cm: dict, cfg: dict, depth: str = "quick") -> dict:
@@ -370,5 +378,5 @@ HEADER = """# Narrative for the code-flow report — the only hand-written input
 # Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
 # A finding with check = "no_callers" fails the build once its first symbol gains a caller.
 # Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
-# [module_notes]: one line per module — what it owns, essentials only (prefilled from the docstring where there is one).
+# [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
 """

@@ -2,7 +2,7 @@
 
 A Claude Code skill that builds an **interactive report of how a Python codebase actually works** — and keeps it honest.
 
-- **Layers** of the codebase, every module with a one-line note of what it owns, and the import rules between layers re-checked on every build.
+- **Layers** of the codebase, and for every module a written note — its purpose, what it does, and where it sits in the flow (who calls it, what it goes through, where it writes) — plus the import rules between layers, re-checked on every build.
 - **User journeys as exact call chains**: from the click (or the scheduled job) to the database and back, step by step, with what each function receives, returns and stores, and a small example payload.
 - **Boundaries and background work**: every place the code leaves its process (HTTP, cloud SDKs, databases, queues, email, files, subprocesses) and every job that runs on its own.
 - **Stack profiles**, switched on only when the repo uses that stack: model calls (provider, model, settings, message roles, output schema) for LLM SDKs; tasks, schedules and enqueue sites for Celery/RQ/APScheduler/….
@@ -67,6 +67,7 @@ All through one script (`python3 docs/code-flow/tools/codeflow.py <command>` aft
 | `draft` | propose the narrative (`--depth quick\|standard\|deep`) |
 | `candidates` | every entry point ranked as a journey candidate |
 | `query SYMBOL` / `find TEXT` | a function's callers, callees, SQL, boundaries — for whoever writes the narrative |
+| `module NAME` | a module's callers, callees, tables, boundaries and functions — to write its note |
 | `todo` | what is still unwritten |
 | `merge` | fold fragments written by parallel writers into the narrative |
 | `build` | validate the narrative and write the page |

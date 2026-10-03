@@ -15,13 +15,17 @@ Symbols: `pkg.mod:function` · `pkg.mod:Class.method` · `pkg.mod:outer.inner` (
 
 ## [module_notes]
 
-One line per module: what it owns, the essentials only. Shown in the module panel, map tooltips, the module index and search, before the docstring (which stays as a fallback). Keys must be modules in the code.
+Every module, written from the code once the whole flow is understood (never a copied docstring). Shown in the module panel (labelled rows), map tooltips (purpose), the module index (purpose + does) and search. Keys must be modules in the code; `purpose`, `does` and `flow` are required, `note` is optional. A plain string is still accepted for a trivial module.
 
 ```toml
-[module_notes]
-"shop.web" = "HTTP routes: product list and checkout; every write goes through db.run_write."
-"shop.orders" = "Order rules: validation, totals priced from the catalog (never from the client), status changes."
+[module_notes."shop.web"]
+purpose = "The only HTTP entry point: without it nothing reaches the order rules."
+does = "Lists products; takes an order: validates the JSON, prices it, charges the card and marks it paid, then queues the confirmation."
+flow = "Browser → place_order → orders.validate → db.run_write(work) → orders.create_order (orders, order_items) → payments.charge → orders.mark_paid → tasks.send_summary.delay."
+note = "The whole request body is passed to run_write as the audit payload — including the card token."
 ```
+
+Get the facts with `codeflow.py module shop.web`.
 
 ## [[layers]]
 

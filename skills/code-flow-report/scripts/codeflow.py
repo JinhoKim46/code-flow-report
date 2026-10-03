@@ -9,6 +9,7 @@
     codeflow.py draft  [--depth quick|standard|deep] [--force]   propose narrative.toml (TODO where prose is needed)
     codeflow.py query  SYMBOL [--depth 2]   a function's neighbourhood: calls, tables, boundaries, routes
     codeflow.py find   TEXT                 symbols whose name contains TEXT
+    codeflow.py module NAME [NAME ...]      a module's overview (callers, callees, tables, boundaries, functions) to write its note
     codeflow.py todo                        list the narrative entries still marked TODO
     codeflow.py candidates [--limit 30]     every entry point ranked as a journey candidate
     codeflow.py build                       map + validate narrative + write the HTML (fails on stale narrative)
@@ -253,6 +254,48 @@ def cmd_query(a) -> int:
     return 0
 
 
+def cmd_module(a) -> int:
+    """What a writer needs before describing a module: callers, callees, tables, boundaries, routes, functions."""
+    from collections import Counter, defaultdict
+    paths = Paths.find()
+    cm = load_map(paths) if paths.code_map.exists() else make_map(paths)
+    callers, callees = defaultdict(Counter), defaultdict(Counter)
+    for x, y, _ in cm["calls"] + cm["refs"]:
+        mx, my = x.split(":")[0], y.split(":")[0]
+        if mx != my:
+            callees[mx][my] += 1
+            callers[my][mx] += 1
+    tables = defaultdict(lambda: defaultdict(set))
+    for e in cm["sql"]:
+        for op in ("insert", "update", "delete", "read"):
+            for t in e.get(op, []):
+                tables[e["symbol"].split(":")[0]][op].add(t)
+    ext = defaultdict(Counter)
+    for e in cm["external"]:
+        ext[e["symbol"].split(":")[0]][e["service"]] += 1
+    for mod in a.modules:
+        info = cm["modules"].get(mod)
+        if not info:
+            print(f"no module {mod!r}; modules look like: {', '.join(list(cm['modules'])[:5])} …")
+            continue
+        print(f"## {mod}  ({info['file']}, {info['lines']} lines{', python -m entry point' if info.get('cli') else ''})")
+        print("docstring:", info["doc"] or "–")
+        print("called by:", ", ".join(f"{m}×{c}" for m, c in callers[mod].most_common(10)) or "–")
+        print("calls:", ", ".join(f"{m}×{c}" for m, c in callees[mod].most_common(12)) or "–")
+        print("tables:", "; ".join(f"{op} {', '.join(sorted(v)[:10])}" for op, v in tables[mod].items()) or "–")
+        print("boundaries:", ", ".join(f"{k}×{v}" for k, v in ext[mod].most_common()) or "–")
+        fns = sorted(((k, s) for k, s in cm["symbols"].items() if k.startswith(mod + ":") and s["kind"] in ("function", "class", "method")),
+                     key=lambda x: x[1]["line"])
+        print(f"functions & classes ({len(fns)}):")
+        for k, s in fns[: a.limit]:
+            r = cm["routes"].get(k)
+            print(f"  {k.split(':', 1)[1]}" + (f"  [{', '.join(f'{m} {u}' for m, u in r['urls'][:2])}]" if r else "") + (f" — {s['doc'][:110]}" if s["doc"] else ""))
+        if len(fns) > a.limit:
+            print(f"  … +{len(fns) - a.limit} more")
+        print()
+    return 0
+
+
 def cmd_find(a) -> int:
     paths = Paths.find()
     cm = load_map(paths) if paths.code_map.exists() else make_map(paths)
@@ -429,6 +472,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_draft)
     p = sub.add_parser("query"); p.add_argument("symbol"); p.add_argument("--depth", type=int, default=2); p.set_defaults(fn=cmd_query)
     p = sub.add_parser("find"); p.add_argument("text"); p.set_defaults(fn=cmd_find)
+    p = sub.add_parser("module"); p.add_argument("modules", nargs="+"); p.add_argument("--limit", type=int, default=60); p.set_defaults(fn=cmd_module)
     sub.add_parser("todo").set_defaults(fn=cmd_todo)
     p = sub.add_parser("candidates"); p.add_argument("--limit", type=int, default=30); p.set_defaults(fn=cmd_candidates)
     sub.add_parser("build").set_defaults(fn=cmd_build)

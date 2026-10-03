@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-10
+
+- Module notes are now written, not copied: `[module_notes."pkg.mod"]` has `purpose` (why it exists), `does` (2–5 capabilities), `flow` (who calls it → what it goes through → where it writes) and an optional `note`. The module panel shows them as labelled rows, the index shows purpose and does, tooltips the purpose; search covers all four.
+- `draft` no longer prefills notes from docstrings (a first sentence says too little to follow the flow); every module starts as a structured TODO.
+- `codeflow.py module NAME …` prints what a writer needs first: callers, callees, tables, boundaries, functions.
+- SKILL.md: module notes are written last, once the journeys are understood; large repos split them across parallel writers by layer. A missing `purpose`/`does`/`flow` or an unknown field fails the build.
+
 ## 0.3.0 — 2026-10
 
 - `[module_notes]` in the narrative: one line per module, what it owns. Shown first in the module panel, map tooltips, the module index and search; the docstring stays as the fallback (and is shown under the note when both exist). Modules without a docstring no longer show an empty description.

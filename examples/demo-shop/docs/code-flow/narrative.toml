@@ -10,16 +10,54 @@
 # Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
 
 
-[module_notes]
-"shop" = "App factory: builds the Flask app and mounts the shop blueprint under /shop."
-"shop.web" = "HTTP routes: product list and checkout; checkout validates, charges and records the order in one audited write."
-"shop.orders" = "Order rules: input validation, totals priced from the catalog (never from the client), paid and cancelled states."
-"shop.catalog" = "Product reads: the list for the shop page and current prices by id."
-"shop.db" = "SQLite connection and run_write, the gateway that pairs every change with its audit_log row in one transaction."
-"shop.payments" = "Payment provider client: one charge per order, the order id as idempotency key."
-"shop.summary" = "Model call that writes the two-sentence order confirmation and hands it to mail."
-"shop.mail" = "Sends an email through the local SMTP server."
-"shop.tasks" = "Celery tasks: the confirmation email after checkout, and cancelling orders left unpaid."
+[module_notes."shop"]
+purpose = "Builds the Flask app; without it nothing is served."
+does = "Creates the app and mounts the shop blueprint under /shop."
+flow = "The WSGI server calls create_app() → imports shop.web.bp → register_blueprint(url_prefix=\"/shop\")."
+
+[module_notes."shop.web"]
+purpose = "The only HTTP entry point: every customer action reaches the order rules through it."
+does = "Lists products for the shop page. Takes an order: validates the JSON, prices and stores it, charges the card and marks it paid, then queues the confirmation email."
+flow = "Browser → place_order → orders.validate → db.run_write(work) → orders.create_order (orders, order_items) → payments.charge → orders.mark_paid → tasks.send_summary.delay(); products → catalog.list_products → render_template."
+note = "login_required checks session keys that no route in the repo ever sets."
+
+[module_notes."shop.orders"]
+purpose = "Holds the order rules so the price a customer pays never comes from the client."
+does = "Validates quantities (1–20, not empty); prices items from the catalog and inserts the order and its lines; marks an order paid; cancels orders still new before a cut-off."
+flow = "Called inside db.run_write by shop.web (create, mark paid) and shop.tasks (cancel) → reads prices through shop.catalog → writes orders and order_items."
+
+[module_notes."shop.catalog"]
+purpose = "One place that reads products, so the shop page and pricing agree."
+does = "Lists products for the shop page; returns current prices for a set of product ids."
+flow = "shop.web.products and shop.orders.create_order → SELECT from products."
+
+[module_notes."shop.db"]
+purpose = "Makes every change and its audit record a single transaction."
+does = "Opens the SQLite connection; run_write runs a work function and inserts the audit_log row (action, actor, payload) before commit."
+flow = "shop.web and shop.tasks pass a work(cur) callback → run_write → work writes the business tables → audit_log insert → commit on leaving the with block."
+note = "The payload is stored as given — whatever the caller passes ends up in audit_log."
+
+[module_notes."shop.payments"]
+purpose = "The boundary to the external payment provider."
+does = "Charges an order once, using the order id as the idempotency key; raises on an HTTP error."
+flow = "Called from shop.web's run_write work → POST {PAYMENTS_URL}/charges → returns the charge id stored with the result."
+note = "The charge happens inside the open database transaction; a later failure rolls the order back but not the charge."
+
+[module_notes."shop.summary"]
+purpose = "Writes the friendly order confirmation with a language model."
+does = "Asks the model for a two-sentence confirmation of the order total and mails it to the customer."
+flow = "shop.tasks.send_summary (Celery worker) → Anthropic messages.create (system + user) → shop.mail.send."
+
+[module_notes."shop.mail"]
+purpose = "The single way the app sends email."
+does = "Sends one plain-text message through the local SMTP server."
+flow = "shop.summary.summarise → smtplib.SMTP(localhost).sendmail."
+
+[module_notes."shop.tasks"]
+purpose = "Work that must not hold up a request, run by Celery workers."
+does = "Sends the order confirmation after checkout; cancels orders left unpaid for a day."
+flow = "send_summary is queued by shop.web (.delay) → shop.summary; cancel_unpaid → db.run_write → orders.cancel_stale (orders)."
+note = "README says cancel_unpaid runs nightly, but nothing in the repo schedules it."
 
 [meta]
 title = "demo-shop"
