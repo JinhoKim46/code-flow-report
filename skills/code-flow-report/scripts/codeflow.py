@@ -65,10 +65,14 @@ def detect_config(root: Path, lang: str, name: str | None, audience: str = "") -
     # first-parameter names used often enough to be a convention worth typing
     counts = Counter()
     cfg = {"scan": {"include": include or ["."], "exclude": exclude}}
+    import ast
+    import warnings
     for f in extract.source_files(root, cfg):
         try:
-            import ast
-            for n in ast.walk(ast.parse(f.read_text(encoding="utf-8", errors="replace"))):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # the analysed code's own SyntaxWarnings are not ours to print
+                tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+            for n in ast.walk(tree):
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.args.args:
                     a = n.args.args[0].arg
                     if a not in ("self", "cls"):

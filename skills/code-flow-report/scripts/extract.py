@@ -218,7 +218,9 @@ def test_callers(root: Path, cfg: dict, res: "Resolver", strip: list[str]) -> tu
     files = [f for d in TEST_DIRS if (root / d).is_dir() for f in sorted((root / d).rglob("*.py")) if "__pycache__" not in f.parts]
     for f in files:
         try:
-            tree = ast.parse(f.read_text(encoding="utf-8"))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                tree = ast.parse(f.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError, ValueError):
             continue
         mod = module_name(root, f, strip)
