@@ -31,6 +31,6 @@ The drafted `narrative.toml` already holds call chains for the journeys — star
 
 ## Done when
 
-- `codeflow.py merge --check docs/code-flow/.parts/<your-name>.toml` reports **0 problems** for your fragment. Never run `merge` without `--check`: other writers are working at the same time, and the dispatcher merges all fragments once you are all done.
+- `codeflow.py merge --check docs/code-flow/.parts/<your-name>.toml` reports **0 problems** for your fragment (it also prints any layer rule the code breaks, marked `!`). Never run `merge` without `--check`: other writers are working at the same time, and the dispatcher merges all fragments once you are all done.
 - No `TODO` remains in your entries.
 - Your final message lists: the file you wrote, counts per section, and anything you are unsure of. Do not paste the narrative back.

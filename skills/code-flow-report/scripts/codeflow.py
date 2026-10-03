@@ -416,9 +416,17 @@ def cmd_merge(a) -> int:
         print(f"merged {part.name}: " + ", ".join(f"{k} {len(v) if isinstance(v, list) else 1}" for k, v in frag.items()))
     if not a.check:
         paths.narrative.write_text(drafter.to_toml(doc, drafter.HEADER), encoding="utf-8")
-    problems = narrative_problems(doc, load_map(paths))
+    cm = load_map(paths)
+    problems = narrative_problems(doc, cm)
+    # layers and layer rules, as the build will see them: a writer can check a rule before anything is merged
+    _, mod_layer, layer_problems = builder.assign_layers(cm, doc)
+    problems += layer_problems
     for p in problems:
         print("  -", p)
+    for r in builder.check_rules(cm, doc, mod_layer):  # shown on the page, not a build failure: say it, do not fail
+        if r["violations"]:
+            print(f"  ! layer rule broken ({len(r['violations'])}×): {r['text'][:80]} — e.g. "
+                  + ", ".join(f"{a} → {b}" for a, b in r["violations"][:3]))
     print(f"{count_todo(doc)} TODO(s) left · {len(problems)} problem(s)")
     return 1 if problems else 0
 
