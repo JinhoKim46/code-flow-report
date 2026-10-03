@@ -1,0 +1,3 @@
+image:
+  repository: ghcr.io/example/web
+command: ["streamlit", "run", "ui/app.py"]

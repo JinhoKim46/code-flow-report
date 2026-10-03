@@ -11,10 +11,11 @@ What this example shows: a web app: 116 FastAPI routes, SurrealDB tables from Su
 | Size | 84 files · 20,952 lines · 523 functions and methods |
 | Resolved | 87.9% of function calls (graph coverage) · 89.1% of all call sites |
 | Journeys | 6, 61 steps |
-| Boundary and model cards | 18 |
+| Boundary and model cards | 19 |
 | Entities · input paths · decisions | 15 · 5 · 13 |
 | Layers · layer rules | 10 · 8 |
 | Module notes | 84 |
+| Infrastructure (Docker Compose CDK) | 2 resources · 4 wiring edges · 1 of 1 Lambdas linked to their Python handler |
 | Findings | 31 — 0 high, 8 medium, 16 low, 7 info |
 
 Files: `code-flow-report.html` (the page), `narrative.toml` (everything Claude wrote: prose naming symbols only), `code_map.json` (extracted structure), `codeflow.toml` (settings).

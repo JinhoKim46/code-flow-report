@@ -1,0 +1,1608 @@
+# Narrative for the code-flow report — the only hand-written input.
+#
+# Structure (modules, functions, call edges, routes, SQL access, boundaries) comes from code_map.json.
+# This file adds the explanation around it. Every `symbol` / `module` / `table` named here is checked
+# against the code on every build; a name that no longer exists fails the build and the staleness test.
+# Never write line numbers — the builder adds file:line from the code map.
+#
+# Proposed by `codeflow.py draft`. Replace every "TODO: …" (the report shows how many are left).
+# Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
+# A finding with a `check` retires itself: once the code no longer shows it, it moves to the page's Fixed list.
+# Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+# [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
+
+
+[meta]
+title = "production-stack"
+lede = "production-stack serves several vLLM inference engines behind one OpenAI-compatible endpoint: a Python router (vllm_router) receives each request and decides which engine answers it. Clients reach the router through the Ingress and the release-router-service Service in front of the release-deployment-router Deployment, where the routing logic picks an engine using the engine list from service discovery and the router's own request statistics, then streams the request to one of the per-model vLLM engine Deployments; the Helm chart creates all of these, and an LMCache server plus KV-cache-aware routing are optional."
+audience = "learning the code"
+
+[module_notes."examples.example_file_upload"]
+purpose = "Shows how a client puts a file into the router's file store, the first step before a batch job can refer to it."
+does = "Reads a local file and posts it as multipart form data with purpose 'unknown'; prints the returned file metadata or the error text."
+flow = "Run by hand (`--path`, `--url`) → aiohttp POST to the router's /v1/files → vllm_router.routers.files_router:route_files → app.state.batch_storage.save_file. Nothing reaches an engine."
+note = "route_files uses app.state.batch_storage, which vllm_router.app:initialize_all only sets with --enable-batch-api; see finding batch-api-cannot-start for why that flag currently stops the router."
+
+[module_notes."examples.tool_calling_example"]
+purpose = "Demonstrates OpenAI-style tool calling against a model served through the stack."
+does = "Declares one get_weather function as a tool and asks a chat question that should trigger it; reads the first tool call from the reply and runs a local mock with its JSON arguments."
+flow = "Run by hand → openai.ChatCompletion.create to http://localhost:8000/v1 → router POST /v1/chat/completions (the chat-completion journey) → the engine must be deployed with modelSpec enableTool / toolCallParser / chatTemplate (tutorials/assets/values-13-tool-enabled.yaml) → the script executes get_weather locally."
+note = "It uses the pre-1.0 openai module interface (openai.api_base, openai.ChatCompletion), so it fails with openai>=1.0; the tutorials use the OpenAI client class instead."
+
+[module_notes."scripts.huggingface_downloader"]
+purpose = "A small sidecar service that downloads a LoRA adapter from the Hugging Face Hub onto an engine pod's disk, so the operator can load it into vLLM."
+does = "Exposes POST /model/download taking model_id, local_dir and an optional Hub token; resolves local_dir under LORA_DOWNLOAD_BASE_DIR (default /data/lora-adapters) and rejects paths that leave it; downloads the snapshot with huggingface_hub.snapshot_download and returns the target path."
+flow = "Packaged by docker/Dockerfile.sidecar (uvicorn on $PORT) → called by the Go operator's LoraAdapterReconciler.downloadHuggingFaceAdapter at /model/download on port 30090 of the engine pod → writes adapter files to the shared volume. Not on the router's request path."
+
+[module_notes."tutorials.assets.example-04-openai"]
+purpose = "Tutorial check that every model deployed by the chart answers through the single router address."
+does = "Lists models, then sends one short deterministic completion to each and prints the text."
+flow = "Run by hand after port-forwarding the router (default base http://localhost:30080/v1/) → GET /v1/models (the router's aggregated model list from service discovery) → POST /v1/completions per model, routed as in the chat-completion journey."
+
+[module_notes."tutorials.assets.example-10-load-generator"]
+purpose = "Generates enough load on the engines to make the autoscaling tutorials (HPA, KEDA) scale out."
+does = "Builds long dummy prompts (--prompt-len repetitions) and opens --num-requests streaming completions per model before reading any of them, so requests overlap on the engines; then drains and prints each stream."
+flow = "Run by hand against the router (default http://localhost:30080/v1/) → GET /v1/models → many POST /v1/completions with stream=true → the engines' vllm_num_requests_waiting rises → the HPA (via Prometheus Adapter) or KEDA reads it and adds engine replicas."
+
+[module_notes.vllm_router]
+purpose = "Marks src/vllm_router as the importable package that the `vllm-router` console script and the Helm router Deployment load."
+does = "Nothing at run time: the file is empty, so importing the package runs no set-up code and every subsystem is wired explicitly by vllm_router.app."
+flow = "Imported implicitly whenever any vllm_router.* module loads; sits in the shared layer and calls nothing."
+
+[module_notes."vllm_router.aiohttp_client"]
+purpose = "Holds the single shared aiohttp session that the request proxy uses for every call to a vLLM engine, so connections are pooled instead of opened per request."
+does = "Opens one ClientSession with an unlimited TCPConnector when the app starts; hands that session to callers by calling the wrapper object; closes it on shutdown."
+flow = "vllm_router.app puts an AiohttpClientWrapper on app.state at import time → app:lifespan calls start() before serving and stop() on shutdown → services.request_service.request:process_request calls app.state.aiohttp_client_wrapper() to stream each proxied request to the chosen engine (chat-completion journey)."
+note = "Calling the wrapper before lifespan has run fails an assert, so anything that proxies outside a running FastAPI app (tests, scripts) must call start() first. The disaggregated paths and /sleep, /wake_up do not use this session; they open their own."
+
+[module_notes."vllm_router.app"]
+purpose = "The router's composition root: it is the only place that turns the parsed command line into running singletons and the FastAPI app that the Helm router Deployment starts."
+does = "Builds the FastAPI app and mounts the four routers (main, files, batches, metrics); initialize_all creates service discovery (static, k8s or external-only), engine and request stats, the optional batch API, dynamic config watcher, callbacks, routing logic, feature gates, semantic cache and external providers, and pins them on app.state; lifespan starts the shared aiohttp session and batch loop, prepares discovery's prefill/decode sessions, validates external models, and closes every thread and session on shutdown; main sets logging, starts the optional log_stats thread, raises the file-descriptor limit and runs uvicorn."
+flow = "Router start-up journey: `vllm-router` (K8s Deployment release-deployment-router runs vllm_router.app:main) → parsers.parser:parse_args → initialize_all → service_discovery:initialize_service_discovery, stats.engine_stats:initialize_engine_stats_scraper, stats.request_stats:initialize_request_stats_monitor, dynamic_config:initialize_dynamic_config_watcher, routers.routing_logic:initialize_routing_logic → uvicorn.run → lifespan. Every request handler later reads the singletons from app.state."
+note = "The rewriter is attached unconditionally (see finding noop-rewriter-always-active); Sentry options are covered by sentry-default-pii; --enable-batch-api fails here (batch-api-cannot-start)."
+
+[module_notes."vllm_router.dynamic_config"]
+purpose = "Lets an operator change service discovery, routing logic and callbacks on a running router by editing a mounted YAML or JSON file, without restarting the pod."
+does = "Defines DynamicRouterConfig, the subset of command-line options that may change, built from args or from the file; runs a background thread that re-reads the file every 10 seconds and, when the parsed config differs, rebuilds service discovery, routing logic and callbacks; exposes the current config so /health can report it."
+flow = "Start-up layer. app:initialize_all starts DynamicConfigWatcher when --dynamic-config-yaml/--dynamic-config-json is set → _watch_worker (thread) → parsers.yaml_utils:read_and_process_yaml_config_file → reconfigure_all → service_discovery:reconfigure_service_discovery, routers.routing_logic:reconfigure_routing_logic (sets app.state.router), services.callbacks_service.callbacks:configure_custom_callbacks. routers.main_router:health reads get_current_config; app:lifespan closes the thread."
+note = "The batch and stats reconfigure hooks are empty. What a reload loses is recorded in findings dynamic-config-routing-drops-args and dynamic-config-sd-drops-type."
+
+[module_notes."vllm_router.experimental"]
+purpose = "Marks the boundary for features that may change or vanish, and re-exports the feature-gate API the router imports at start-up."
+does = "Re-exports initialize_feature_gates, get_feature_gates, Feature and FeatureStage from feature_gates."
+flow = "vllm_router.app imports initialize_feature_gates / get_feature_gates from here during the router-startup journey; the sub-packages otel, pii and semantic_cache are imported directly by their users."
+
+[module_notes."vllm_router.experimental.feature_gates"]
+purpose = "Lets an operator switch experimental features on with one command-line string instead of a flag per feature."
+does = "Parses '--feature-gates' text like 'SemanticCache=true,X=false' into a set of enabled names; answers is_enabled for a name; holds that set in a process-wide singleton (SingletonMeta)."
+flow = "vllm_router.app:initialize_all calls initialize_feature_gates(args.feature_gates) during router-startup, then asks is_enabled('SemanticCache'); vllm_router.experimental.semantic_cache:is_semantic_cache_enabled asks the same singleton on every chat request."
+note = "Any name is accepted without validation, so a misspelt gate is silently ignored. The Feature/FeatureStage classes and the PII_DETECTION name are defined but nothing registers or reads them (see finding pii-feature-not-wired)."
+
+[module_notes."vllm_router.experimental.otel"]
+purpose = "Package entry for OpenTelemetry tracing, so callers can import it in one try block and run without it when the opentelemetry packages are missing."
+does = "Re-exports the tracing functions from otel.tracing."
+flow = "vllm_router.app and vllm_router.services.request_service.request import from here inside try/except ImportError; on failure they set otel_available = False and skip all tracing."
+
+[module_notes."vllm_router.experimental.otel.tracing"]
+purpose = "Gives each proxied request a trace that continues the caller's trace and carries on to the engine, so latency can be followed across router and vLLM."
+does = "Sets up a global TracerProvider with a batching OTLP gRPC exporter; reads W3C trace context from incoming headers and writes it into outgoing ones; starts and ends spans with HTTP attributes, recording errors and status codes; flushes spans on shutdown."
+flow = "vllm_router.app:initialize_all calls initialize_tracing when --otel-endpoint is set (service name and TLS from --otel-service-name, --otel-secure) → in the chat-completion journey route_general_request opens a SERVER span 'router <endpoint>' from the client's headers → process_request opens a CLIENT span and inject_context adds traceparent to the request sent to the engine → spans end with the response status → exported to the OTLP collector."
+note = "Not behind a feature gate: --otel-endpoint alone turns it on."
+
+[module_notes."vllm_router.experimental.pii"]
+purpose = "Holds the one PII analyzer instance a router process would check requests with."
+does = "Creates and initializes the analyzer chosen by name (presidio by default) and keeps it in a module global; shuts it down; reports whether one is active; re-exports the config, types and check_pii."
+flow = "Nothing in the router calls initialize_pii_detection or check_pii today, and the parser has no PII option; see finding pii-feature-not-wired."
+
+[module_notes."vllm_router.experimental.pii.analyzers"]
+purpose = "Groups the PII analyzer implementations behind one import."
+does = "Re-exports the analyzer base types, create_analyzer and PresidioAnalyzer."
+flow = "Imported by vllm_router.experimental.pii; RegexAnalyzer is reached through the factory registry, not through this package's exports."
+
+[module_notes."vllm_router.experimental.pii.analyzers.base"]
+purpose = "Fixes the contract every PII analyzer follows, so the check code does not depend on which engine finds the PII."
+does = "Defines the async analyze / initialize / shutdown interface; defines the result shape: whether PII was found, which PIIType values, and each match's span, text and confidence score."
+flow = "Subclassed by analyzers.presidio and analyzers.regex; created through analyzers.factory; its results are read by pii.middleware:check_pii_content."
+
+[module_notes."vllm_router.experimental.pii.analyzers.factory"]
+purpose = "Turns an analyzer name from configuration into a ready-to-use analyzer."
+does = "Looks the name up in a registry ('presidio', 'regex'), raising ValueError for anything else; instantiates it with the optional config and awaits its initialize, wrapping failures in RuntimeError."
+flow = "Called by vllm_router.experimental.pii:initialize_pii_detection, which itself has no caller in the router."
+
+[module_notes."vllm_router.experimental.pii.analyzers.presidio"]
+purpose = "The thorough PII analyzer, using Microsoft Presidio's NLP-based recognisers."
+does = "Checks at initialize time that presidio-analyzer and pydantic 2 are installed and prints the pip command if not; builds a Presidio AnalyzerEngine on spaCy en_core_web_sm; maps six PIIType values to Presidio entity names and back, dropping entity types it has no mapping for."
+flow = "Created by analyzers.factory:create_analyzer('presidio') → analyze runs Presidio synchronously on the text check_pii_content passes in (the whole request body as JSON text) → returns a PIIAnalysisResult."
+note = "Optional dependencies are imported in try blocks, so the module always imports; the missing-package error appears only when initialize runs."
+
+[module_notes."vllm_router.experimental.pii.analyzers.regex"]
+purpose = "A dependency-free PII analyzer for when Presidio is not installed."
+does = "Compiles fixed patterns for email, phone, SSN, credit card and IPv4 address; reports every match with score 1.0, limited to the requested types."
+flow = "Created by analyzers.factory:create_analyzer('regex') → analyze is called from pii.middleware:check_pii_content → returns a PIIAnalysisResult."
+note = "The patterns are broad (any 9-digit run matches SSN, 13–16 digits match credit card), so numeric IDs inside prompts are reported as PII."
+
+[module_notes."vllm_router.experimental.pii.config"]
+purpose = "Describes which PII to look for and how confident a match must be."
+does = "Holds enabled, the optional set of PIIType values and score_threshold; converts to and from a plain dict."
+flow = "Passed to pii.middleware:check_pii / check_pii_content, which hand pii_types and score_threshold to the analyzer; no router code builds one."
+
+[module_notes."vllm_router.experimental.pii.middleware"]
+purpose = "The request check that would turn an analyzer's findings into a 400 response before routing."
+does = "Serialises the whole JSON body and asks the analyzer for PII; returns a 400 JSON error naming the detected types, or None to let the request through; counts checks, detections, scores, timings and analyzer errors in Prometheus metrics."
+flow = "Meant to run before route_general_request in the chat-completion journey, but has no caller; see finding pii-feature-not-wired."
+note = "Despite the name it is not a FastAPI middleware: check_pii is a plain async function a route would have to call. An analyzer exception counts as 'PII found' and blocks."
+
+[module_notes."vllm_router.experimental.pii.types"]
+purpose = "The shared vocabulary of the PII feature."
+does = "Lists the PII categories (PIIType), the only action (BLOCK; redaction is a comment), and what to check (request, with response and both reserved)."
+flow = "Imported by pii.config, analyzers.base, analyzers.presidio and analyzers.regex."
+
+[module_notes."vllm_router.experimental.semantic_cache"]
+purpose = "Package entry for the semantic cache, answering one question on every chat request: is the cache switched on."
+does = "Re-exports SemanticCache, initialize_semantic_cache and get_semantic_cache; is_semantic_cache_enabled returns true when enable_semantic_cache was called or the SemanticCache gate is on."
+flow = "vllm_router.app:initialize_all calls enable_semantic_cache when the gate is on (router-startup) → semantic_cache_integration calls is_semantic_cache_enabled at the start of every check and store (semantic-cache journey)."
+note = "This package shadows the sibling file experimental/semantic_cache.py; see finding shadowed-semantic-cache-module."
+
+[module_notes."vllm_router.experimental.semantic_cache.db_adapters"]
+purpose = "Groups the vector-store adapters the cache can use."
+does = "Re-exports VectorDBAdapterBase and FAISSAdapter."
+flow = "semantic_cache.semantic_cache imports FAISSAdapter from here."
+
+[module_notes."vllm_router.experimental.semantic_cache.db_adapters.base"]
+purpose = "The interface a vector store must offer to back the semantic cache, so FAISS could be swapped for another store."
+does = "Declares search (embedding, model, threshold → cached entry or None) and store (embedding with request, response, model and usage)."
+flow = "Subclassed only by faiss_adapter.FAISSAdapter; SemanticCache calls the FAISS class directly rather than choosing an adapter."
+
+[module_notes."vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter"]
+purpose = "Keeps the cached question vectors and their answers, in memory and on disk so the cache survives a router restart."
+does = "Loads an existing index and metadata from the cache directory at start, or creates an empty inner-product index (falling back to empty if loading fails); finds the single nearest stored vector and accepts it only above the threshold and for the same model; appends new entries and rewrites both files."
+flow = "Created by SemanticCache.__init__ with the embedding model's dimension and --semantic-cache-dir → search / store called from SemanticCache.search / store in the semantic-cache journey → writes faiss_index.pkl (a FAISS index file) and faiss_metadata.pkl (a pickled list of request messages, answers, model and usage) in that directory."
+note = "Nothing ever evicts or expires an entry. See findings semantic-cache-blocks-loop and semantic-cache-top1-model-filter."
+
+[module_notes."vllm_router.experimental.semantic_cache.semantic_cache"]
+purpose = "Turns chat messages into embeddings and uses them to find, or remember, an earlier answer to a similar conversation."
+does = "Loads a sentence-transformers model and sizes the FAISS store to its embedding dimension; embeds a conversation as 'role: content' text; searches with the request's threshold or the default; stores a request/answer pair and refreshes the semantic_cache_size gauge; keeps one process-wide instance."
+flow = "vllm_router.app:initialize_all → initialize_semantic_cache(--semantic-cache-model, --semantic-cache-dir, --semantic-cache-threshold) during router-startup → semantic_cache_integration:check_semantic_cache calls search and store_in_semantic_cache calls store → FAISSAdapter."
+note = "initiate_search / complete_search / initiate_store / complete_store (a two-phase API with pending dicts) have no callers."
+
+[module_notes."vllm_router.experimental.semantic_cache_integration"]
+purpose = "Joins the semantic cache to the request path: a lookup before routing and a store after the engine answers."
+does = "Adds the three --semantic-cache-* options to the router's parser; on a chat request, honours skip_cache and cache_similarity_threshold from the body and returns an OpenAI-shaped chat.completion marked cached with its similarity score; after a non-streaming chat answer, extracts the assistant messages and usage and stores them; exports hit, miss, ratio, size and latency gauges."
+flow = "vllm_router.parsers.parser:parse_args calls add_semantic_cache_args; vllm_router.routers.main_router:route_chat_completion awaits check_semantic_cache before route_general_request; vllm_router.services.request_service.request:process_request calls store_in_semantic_cache with the full response body. Whole semantic-cache journey."
+note = "All three callers import it inside try/except ImportError: without faiss or sentence-transformers installed the cache and its command-line options simply do not exist, with no error."
+
+[module_notes."vllm_router.external_providers"]
+purpose = "Package for sending some model names to hosted OpenAI-compatible APIs instead of to the vLLM engines in the cluster."
+does = "Empty package file; the adapter interface, config models, OpenAI adapter and registry live in its submodules."
+flow = "Imported through vllm_router.external_providers.registry by app:initialize_all when --external-providers-config is set; proxy layer."
+
+[module_notes."vllm_router.external_providers.base"]
+purpose = "Fixes the contract every external-provider adapter must meet, so the request service can call any provider the same way."
+does = "Defines ExternalProviderResponse, one shape for buffered and streamed answers (status, headers, body or chunk iterator); defines the abstract ExternalProviderAdapter with send_request, health_check, fetch_available_model_ids and close."
+flow = "Subclassed by external_providers.openai_provider:OpenAIProvider; the registry stores adapters by this type; services.request_service.request:process_external_provider_request reads the ExternalProviderResponse to build a StreamingResponse or JSONResponse."
+
+[module_notes."vllm_router.external_providers.models"]
+purpose = "Turns the external_providers list in the YAML file into typed objects, so alias resolution and API-key lookup happen in one place."
+does = "Parses each provider (name, type, api_base, models, timeouts, retries, custom headers) and each model with its aliases; reads the provider's API key from the named environment variable and refuses to start when it is missing; resolves an alias to the provider's canonical model id."
+flow = "registry:create_external_provider_manager → ExternalProviderConfig.from_dict for each entry in the file loaded by app:initialize_all → openai_provider:OpenAIProvider.__init__ calls get_api_key (default env var OPENAI_API_KEY) and send_request calls resolve_model_id."
+
+[module_notes."vllm_router.external_providers.openai_provider"]
+purpose = "The one concrete adapter: forwards a request to any OpenAI-compatible HTTP API with the provider's key and headers."
+does = "Keeps its own aiohttp session with connect and per-read timeouts but no total timeout, so long streams survive; rewrites an alias to the canonical model id and POSTs to api_base + endpoint, retrying on connection errors up to max_retries; returns either the parsed JSON body or a chunk iterator for streaming; lists the provider's /v1/models for validation."
+flow = "Registered under type \"openai\" by registry:_build_adapter_registry → services.request_service.request:route_general_request finds an external model → process_external_provider_request → OpenAIProvider.send_request → provider API over HTTPS. app:lifespan triggers fetch_available_model_ids through registry:ExternalProviderManager.validate_models."
+
+[module_notes."vllm_router.external_providers.registry"]
+purpose = "Answers \"does this model name belong to an external provider, and which adapter serves it?\" for every request, and lists those models in /v1/models."
+does = "Creates one adapter per configured provider from the type→class table and indexes every model id and alias, refusing an id claimed by two providers; looks up adapter, provider name and canonical id for a requested model; at start-up drops configured models the provider does not actually list; closes adapter sessions on shutdown."
+flow = "app:initialize_all → create_external_provider_manager → app.state.external_provider_registry. Per request: services.request_service.request:route_general_request → is_external_model → process_external_provider_request → lookup_adapter. routers.main_router:show_models → get_all_external_model_ids. app:lifespan → validate_models at start, close at stop."
+note = "ExternalProviderManager.health_check exists but nothing in the router calls it; provider health is only checked once, at start-up, through validate_models."
+
+[module_notes."vllm_router.log"]
+purpose = "Gives every module the same logger set-up, so the --log-level and --log-format flags and header redaction apply everywhere."
+does = "Creates per-module loggers that send INFO and below to stdout and WARNING and above to stderr; switches all existing loggers between coloured text and one-line JSON; redacts authorization, API-key and cookie values when a Starlette Headers object is logged."
+flow = "Every vllm_router module calls init_logger at import time; app:main calls set_log_level and set_log_format after parse_args, which updates the loggers already created; app:main also gives JsonFormatter to uvicorn's log config. Shared layer; calls nothing in the project."
+note = "Redaction only applies to Headers objects passed as log arguments; a header already formatted into an f-string is logged as is."
+
+[module_notes."vllm_router.parsers"]
+purpose = "Package holding the command-line and config-file parsing used at start-up."
+does = "Empty package file; parser and yaml_utils do the work."
+flow = "Imported by app (parse_args) and dynamic_config (yaml_utils); start-up layer."
+
+[module_notes."vllm_router.parsers.parser"]
+purpose = "Defines every router option and rejects inconsistent combinations before anything starts, so a bad flag fails at launch instead of on the first request."
+does = "Declares about 55 flags (host and port, discovery type and its static/k8s settings, routing logic and its tuning, batch API, stats intervals, dynamic config, logging, Sentry, OpenTelemetry, prefill/decode labels, external providers); when a dynamic config file is given, uses it as defaults and parses again so the file and the CLI agree; validates combinations such as static discovery needing backends and models, k8s needing a port, session routing needing a session key; falls back to external-only discovery when only an external-providers file is given."
+flow = "Router start-up journey: app:main → parse_args → load_initial_config_from_config_file_if_required (parsers.yaml_utils) → validate_args → returns argparse.Namespace consumed by app:initialize_all. The Helm chart's router Deployment template renders these flags from routerSpec values."
+note = "The option list here is the authority; see findings chart-schema-routing-enum and router-readme-stale-options for where the chart schema and README disagree with it."
+
+[module_notes."vllm_router.parsers.yaml_utils"]
+purpose = "Lets a config file describe static models as a readable mapping while the rest of the router still consumes the comma-separated strings the CLI uses."
+does = "Loads a YAML file; flattens static_models (name → static_backends, static_model_type) into parallel static_backends, static_models and static_model_types strings; flattens static_aliases into \"alias:model\" pairs."
+flow = "Called by parsers.parser:load_initial_config_from_config_file_if_required at start-up and by dynamic_config:DynamicRouterConfig.from_yaml on every watcher tick; the strings go on to utils:parse_static_urls and utils:parse_comma_separated_args."
+
+[module_notes."vllm_router.prefix.hashtrie"]
+purpose = "Remembers which engines have already seen which prompt prefixes, so prefix-aware routing can send a request to an engine likely to hold that prefix in its KV cache."
+does = "Splits a prompt into 128-character chunks and hashes each with xxhash; inserts the chunk path, marking every node with the engine that served it; finds the longest chunk path whose engines intersect the currently available ones, returning the match length and those engines; guards each node with an asyncio lock."
+flow = "Routing layer. routers.routing_logic:PrefixAwareRouter.route_request calls longest_prefix_match to choose among endpoints, then insert to record the choice; reached from the chat-completion journey when --routing-logic=prefixaware."
+note = "Entries are never removed (finding prefix-trie-unbounded), and the trie lives in one router process (multi-replica-router-state)."
+
+[module_notes."vllm_router.protocols"]
+purpose = "Pydantic shapes for the few responses the router builds itself rather than passing through from an engine."
+does = "Defines a base model that accepts unknown fields but logs which ones were ignored; defines ErrorResponse, ModelCard and ModelList in the OpenAI format."
+flow = "HTTP layer. routers.main_router:show_models builds a ModelCard for each model reported by service discovery and the external-provider registry and returns them as a ModelList for GET /v1/models."
+
+[module_notes."vllm_router.routers"]
+purpose = "Package grouping the FastAPI routers that app mounts."
+does = "Empty package file; the HTTP handlers and the routing logic live in its submodules."
+flow = "app imports main_router, files_router, batches_router and metrics_router from here and calls include_router on each."
+
+[module_notes."vllm_router.routers.batches_router"]
+purpose = "Exposes the OpenAI-style /v1/batches endpoints over the batch processor."
+does = "Creates a batch from an uploaded input file after checking the file exists; fetches, lists (with limit and has_more) and cancels batches; maps a missing batch to 404 and other failures to 500."
+flow = "Client POST /v1/batches → route_batches → app.state.batch_storage (services.files_service.storage:Storage.get_file) → app.state.batch_processor.create_batch (services.batch_service.local_processor, SQLite batch_queue in --file-storage-path). Mounted by app; only usable when --enable-batch-api is set."
+note = "With today's code the batch API cannot start (finding batch-api-cannot-start), and accepted batches are never sent to an engine (batch-processor-placeholder)."
+
+[module_notes."vllm_router.routers.files_router"]
+purpose = "Exposes /v1/files so clients can upload batch input files to the router and read them back."
+does = "Accepts a multipart upload with a purpose and stores it; returns file metadata by id; returns file content by id; answers 400 for a missing file field and 404 for an unknown id."
+flow = "Client POST /v1/files → route_files → app.state.batch_storage.save_file (services.files_service.file_storage:FileStorage, local directory under --file-storage-path) → OpenAIFile.metadata() as JSON. Mounted by app; app.state.batch_storage only exists with --enable-batch-api."
+note = "Ids are short (finding short-file-ids-overwrite)."
+
+[module_notes."vllm_router.routers.main_router"]
+purpose = "The router's public API surface: every OpenAI-compatible inference endpoint plus the engine-control and health endpoints, each a thin handler over the request service."
+does = "Forwards completions, chat, embeddings, rerank, score, tokenize, responses, audio, images and Anthropic-style /v1/messages to the request service (multipart endpoints through route_multipart_request, transcriptions through route_general_transcriptions); checks the semantic cache first for chat completions when that feature is on; forwards /sleep, /wake_up and /is_sleeping to one engine chosen by ?id=; lists models (/v1/models) and engines (/engines); reports health from service discovery, the engine stats scraper and the dynamic config."
+flow = "Chat-completion journey: Ingress → release-router-service → route_chat_completion → (experimental.semantic_cache_integration:check_semantic_cache) → services.request_service.request:route_general_request. Semantic-cache journey starts here too. /health reads service_discovery:get_service_discovery, stats.engine_stats:get_engine_stats_scraper and dynamic_config:get_dynamic_config_watcher."
+
+[module_notes."vllm_router.routers.metrics_router"]
+purpose = "Serves the router's /metrics page that Prometheus scrapes, joining the router's own request statistics with what it scraped from each engine."
+does = "Samples the router pod's CPU, memory and disk usage; clears and refills the per-server gauges from request stats (QPS, latency, prefill/decoding counts) and engine stats (prefix cache hits); marks each discovered endpoint healthy or not; returns the Prometheus text format, including the counters and histograms the request service updates."
+flow = "Prometheus GET /metrics → metrics → stats.request_stats:RequestStatsMonitor.get_request_stats, stats.engine_stats:EngineStatsScraper.get_engine_stats, service_discovery:get_endpoint_info → gauges from services.metrics_service → generate_latest. Ends the engine-stats-scrape journey."
+note = "See findings metrics-blocks-event-loop and request-stats-dead-fields."
+
+[module_notes."vllm_router.routers.routing_logic"]
+purpose = "Holds the policies that decide which engine URL serves a request; the --routing-logic flag picks exactly one of them for the whole router."
+does = "Round-robin over the sorted endpoint list, session affinity through a consistent hash ring on a header or body field, QPS-based fallback; prefix-aware routing on the HashTrie, KV-cache-aware routing that tokenizes the prompt and asks the in-process LMCache controller which engine holds the most matching tokens, and loadaware which weighs those cache hits against relative in-flight load; priority routing from a header or body field with a load threshold; disaggregated prefill/decode in two modes, choosing endpoints by model label; one-instance-per-class registry with initialize, reconfigure, get and cleanup functions."
+flow = "Routing layer. app:initialize_all → initialize_routing_logic (kvaware/loadaware also start the LMCache controller manager; the chart points engines' LMCACHE_CONTROLLER_PULL_URL at release-router-service) → app.state.router. Per request (chat-completion and stats-feed-routing journeys): services.request_service.request:route_general_request → route_request(endpoints from service discovery, engine stats, request stats) → URL. dynamic_config calls reconfigure_routing_logic; app:lifespan calls cleanup_routing_logic."
+note = "Several policies have recorded limits: kvaware-blocking-tokenize, kvaware-ignores-chat-messages, prefixaware-keyerror-non-prompt, disagg-prefill-single-client, multi-replica-router-state, engine-stats-unused-by-routing."
+
+[module_notes."vllm_router.service_discovery"]
+purpose = "Keeps the live list of engines (URL, models, labels, sleep state) that every routing decision starts from; without it the router does not know where any engine is."
+does = "Static mode: fixed URLs and models from flags, with an optional background health probe that hides failing backends; Kubernetes pod-IP mode: watches pods by label selector, asks each ready pod's /v1/models (with VLLM_API_KEY) which models it serves, and tracks sleep labels; Kubernetes service-name mode: the same against Services; external-only mode: no engines at all; one global instance with initialize, reconfigure and get, plus prefill/decode client sessions for disaggregated routing."
+flow = "Engine-discovered journey: K8s API watch stream → K8sPodIPServiceDiscovery._watch_engines (thread) → _check_pod_ready → _get_model_names (HTTP to the engine pod) → _on_engine_update → _add_engine. Read side: services.request_service.request:route_general_request, routers.main_router (/v1/models, /engines, /health), routers.metrics_router, stats.engine_stats and stats.log_stats call get_endpoint_info. app:initialize_all creates it; app:lifespan sets the event loop and client sessions; dynamic_config replaces it."
+note = "The module also has a __main__ block for manual testing against a cluster. Static probing is affected by finding static-health-check-no-auth."
+
+[module_notes."vllm_router.services"]
+purpose = "Package grouping the request proxy, callbacks, files, batch and metrics services behind the HTTP routes."
+does = "Empty package file."
+flow = "Imported through its subpackages by app and the routers."
+
+[module_notes."vllm_router.services.batch_service"]
+purpose = "Factory that picks the batch processor implementation named by --batch-processor."
+does = "Returns a LocalBatchProcessor for \"local\" and refuses any other name; re-exports the batch types."
+flow = "app:initialize_all (with --enable-batch-api) → initialize_batch_processor(storage path, file storage) → app.state.batch_processor, used by routers.batches_router."
+note = "The import of local_processor fails today (finding batch-api-cannot-start)."
+
+[module_notes."vllm_router.services.batch_service.batch"]
+purpose = "The data shapes of the batch API, matching OpenAI's batch object so clients can reuse OpenAI SDK code."
+does = "Defines BatchStatus and the allowed batch endpoints; defines BatchRequest and BatchInfo with all the OpenAI timestamp and counter fields, plus to_dict for JSON responses."
+flow = "Imported by services.batch_service.processor for the abstract interface; routers.batches_router serialises BatchInfo.to_dict."
+note = "local_processor imports these types from vllm_router.batch.batch instead of this module, which is why the code map shows no callers here (finding batch-api-cannot-start)."
+
+[module_notes."vllm_router.services.batch_service.local_processor"]
+purpose = "Single-pod batch queue: stores batch jobs in SQLite on local disk and drains them with a background loop."
+does = "Creates the batch_queue table in batch_queue.db on first start; inserts new batches as pending; reads, lists (newest first) and cancels batches; loops forever taking the oldest pending batch, marking it running, writing a result file through file storage and marking it completed or failed."
+flow = "app:lifespan → initialize → setup_db + asyncio task process_batches. routers.batches_router → create_batch / retrieve_batch / list_batches / cancel_batch → SQLite batch_queue. process_batches → services.files_service.file_storage:FileStorage.save_file (purpose batch_output)."
+note = "The loop writes a placeholder text, not engine output (finding batch-processor-placeholder); see also batch-api-cannot-start and short-file-ids-overwrite."
+
+[module_notes."vllm_router.services.batch_service.processor"]
+purpose = "The interface a batch backend must implement, so the batches router does not depend on the SQLite implementation."
+does = "Declares initialize, create_batch, retrieve_batch, list_batches and cancel_batch over a Storage instance."
+flow = "Implemented by services.batch_service.local_processor:LocalBatchProcessor; routers.batches_router types app.state.batch_processor as BatchProcessor."
+
+[module_notes."vllm_router.services.callbacks_service"]
+purpose = "Package for user-supplied hooks around each proxied request."
+does = "Empty package file."
+flow = "app and dynamic_config import callbacks from here."
+
+[module_notes."vllm_router.services.callbacks_service.callbacks"]
+purpose = "Loads an operator's callback object by dotted path so custom validation or logging can run without changing router code."
+does = "Imports the module named by --callbacks (\"module.instance\") and stores the instance on app.state.callbacks."
+flow = "app:initialize_all, and dynamic_config:DynamicConfigWatcher.reconfigure_callbacks on reload → configure_custom_callbacks → app.state.callbacks, which services.request_service.request:route_general_request calls before routing (pre_request) and process_request schedules after the response (post_request)."
+note = "The module named in --callbacks must be importable from the router container's Python path."
+
+[module_notes."vllm_router.services.callbacks_service.custom_callbacks"]
+purpose = "Documents the two hooks a callback object must provide."
+does = "Defines CustomCallbackHandler: pre_request may return a Response that ends the request before it is proxied; post_request runs as a background task with the complete response bytes."
+flow = "Subclassed by operator code outside the router; nothing in the router imports it, it only calls the methods on whatever object callbacks loaded."
+
+[module_notes."vllm_router.services.files_service"]
+purpose = "Public face of the file storage used by the files and batch APIs."
+does = "Re-exports Storage and initialize_storage."
+flow = "routers.files_router, routers.batches_router and services.batch_service import Storage from here; app imports initialize_storage."
+
+[module_notes."vllm_router.services.files_service.file_storage"]
+purpose = "The only Storage implementation: keeps uploaded and generated files as plain files on the router pod's disk."
+does = "Saves content under <base path>/<user id>/<file id>, generating an id when none is given; returns metadata from file size and ctime; reads content, lists ids and deletes files; supports writing a chunk at an offset."
+flow = "storage:initialize_storage(\"local_file\", --file-storage-path) → app.state.batch_storage. routers.files_router → save_file / get_file / get_file_content; services.batch_service.local_processor → save_file for results."
+note = "Every caller uses the default user id; the original file name and purpose are not kept, so get_file reports the id as filename and \"batch\" as purpose. Ids: finding short-file-ids-overwrite."
+
+[module_notes."vllm_router.services.files_service.openai_files"]
+purpose = "The file object returned by the files API, in OpenAI's format."
+does = "Holds id, size, creation time, file name and purpose; converts to and from dicts, and produces the metadata dict returned to clients."
+flow = "Built by services.files_service.file_storage:FileStorage; returned as JSON by routers.files_router."
+
+[module_notes."vllm_router.services.files_service.storage"]
+purpose = "The storage interface plus the factory that picks an implementation from --file-storage-class."
+does = "Declares save_file, save_file_chunk, get_file, get_file_content, list_files and delete_file with a default user id and purpose; initialize_storage returns FileStorage for \"local_file\" and refuses other types."
+flow = "app:initialize_all → initialize_storage → app.state.batch_storage; routers and the batch processor depend on the Storage type only."
+
+[module_notes."vllm_router.services.metrics_service"]
+purpose = "Declares the Prometheus metrics the router exports, in one place, so the request path and /metrics share the same metric objects."
+does = "Per-server gauges (running/waiting requests, prefix-cache hit rate and totals, QPS, latency, ITL, decoding length, swapped, healthy pods); counters for incoming requests per model, input/output tokens and errors; an end-to-end latency histogram by server, model and status."
+flow = "Discovery-and-stats layer. services.request_service.request updates the counters and histogram on each proxied request; routers.metrics_router refills the gauges on each scrape; stats.log_stats sets some gauges from its logging thread. All are served by GET /metrics."
+
+[module_notes."vllm_router.services.metrics_service.prometheus_gauge"]
+purpose = "Empty placeholder module; the gauges it is named after are defined in the package's __init__."
+does = "Nothing: the file has no code."
+flow = "Imported by nothing."
+
+[module_notes."vllm_router.services.request_service"]
+purpose = "Package for the request proxy and the request rewriter."
+does = "Empty package file."
+flow = "routers.main_router imports request; request imports rewriter."
+
+[module_notes."vllm_router.services.request_service.request"]
+purpose = "The proxy itself: everything between \"a handler received an OpenAI request\" and \"bytes from an engine are streaming back to the client\" happens here."
+does = "Validates the body (JSON object with a model), applies callbacks, rewriter and aliases, and sends external models to their provider; filters discovered endpoints to awake engines serving the model, returns 404 for an unknown model or 503 when it exists but no engine is up, asks the routing logic for a URL and retries other engines on connection errors; streams the request over the shared aiohttp session and the response back, recording request stats, token counters, latency, semantic cache and post-request callbacks; handles the disaggregated prefill/decode flows, /sleep and /wake_up to one engine, transcriptions and other multipart uploads."
+flow = "Chat-completion journey: routers.main_router handler → route_general_request → service_discovery:get_endpoint_info + stats.request_stats:get_request_stats → routers.routing_logic route_request → process_request → HTTP to the chosen vLLM engine pod (K8s Service release-<name>-engine-service; engine headers carry X-Request-Id) → StreamingResponse. Stats-feed-routing journey: process_request → RequestStatsMonitor.on_new_request / on_request_response / on_request_complete."
+note = "Recorded behaviour of this path: proxy-no-timeout, failover-ignores-5xx, streaming-response-buffered, request-id-collision-leaks-load, engine-auth-inconsistent, noop-rewriter-always-active."
+
+[module_notes."vllm_router.services.request_service.rewriter"]
+purpose = "Extension point for rewriting a request body before it is routed; today only a pass-through exists."
+does = "Defines the RequestRewriter interface and NoopRequestRewriter, which returns the body unchanged; keeps one module-level instance with initialize, is-initialized and get functions."
+flow = "app:initialize_all calls get_request_rewriter (which creates the no-op instance) → services.request_service.request:route_general_request sees is_request_rewriter_initialized() true and calls rewrite_request on every request."
+note = "initialize_request_rewriter ignores its type argument and the --request-rewriter flag is not passed to it (finding noop-rewriter-always-active)."
+
+[module_notes."vllm_router.stats"]
+purpose = "Package for the two sources of load information: the router's own per-request bookkeeping and the engines' scraped metrics."
+does = "Empty package file."
+flow = "app, the routers and the request service import its submodules."
+
+[module_notes."vllm_router.stats.engine_stats"]
+purpose = "Collects each engine's own view of its load and cache (from vLLM's /metrics) so /metrics, /health and the stats log can report it."
+does = "Background thread that, every --engine-stats-interval seconds, GETs /metrics from every discovered engine and parses running and waiting requests, prefix-cache hits and queries, and KV-cache usage; keeps the latest values per engine URL under a lock and drops engines that disappeared; reports scraper health from the thread being alive."
+flow = "Engine-stats-scrape journey: app:initialize_all → initialize_engine_stats_scraper → _scrape_worker (thread) → _scrape_metrics → service_discovery:get_endpoint_info → _scrape_one_endpoint (HTTP to each engine's /metrics) → EngineStats.from_vllm_scrape. Readers: routers.metrics_router:metrics, routers.main_router:health, stats.log_stats, and route_general_request passes the dict to the routing logic."
+note = "No routing policy uses these values (finding engine-stats-unused-by-routing)."
+
+[module_notes."vllm_router.stats.log_stats"]
+purpose = "Optional periodic plain-text dump of every engine's models and load into the router log, for operators without a Prometheus dashboard."
+does = "Every --log-stats-interval seconds lists each endpoint with its models and adapters, engine stats and request stats; also sets the matching Prometheus gauges."
+flow = "app:main starts log_stats in a daemon thread when --log-stats is set → service_discovery:get_endpoint_info, app.state.engine_stats_scraper, app.state.request_stats_monitor → logger output and services.metrics_service gauges."
+
+[module_notes."vllm_router.stats.request_stats"]
+purpose = "The router's own measurement of each engine's load, taken from the requests it proxies; the load-based routing policies decide with these numbers."
+does = "Records request start, first byte and completion per (engine URL, request id); keeps sliding-window averages of QPS, time-to-first-token, latency and decoding length; counts requests in prefill, in decoding and finished per engine; produces a RequestStats snapshot per engine on demand."
+flow = "Stats-feed-routing journey: services.request_service.request:process_request → on_new_request / on_request_response / on_request_complete. Readers: route_general_request passes get_request_stats to routers.routing_logic (round-robin ignores it; session, loadaware and priority use it), routers.metrics_router:metrics and stats.log_stats. Created by app:initialize_all."
+note = "Has its own copy of the SingletonMeta metaclass rather than vllm_router.utils'. See findings request-stats-dead-fields and request-id-collision-leaks-load."
+
+[module_notes."vllm_router.utils"]
+purpose = "Small shared helpers that start-up, discovery and the proxy all need: singleton metaclasses, model-type probes and flag parsing."
+does = "SingletonMeta and SingletonABCMeta keep one instance per class (used by the routing policies, rewriter, stats scraper, dynamic config watcher, feature gates); ModelType maps a model type to its OpenAI endpoint and a tiny test payload, which is_model_healthy POSTs to probe a static backend; parses and validates comma-separated backend URLs, models and alias pairs; replaces the model in a request body and fixes Content-Length; raises the open-file limit."
+flow = "Shared layer. app:initialize_all and dynamic_config parse flags with it; service_discovery:StaticServiceDiscovery.get_unhealthy_endpoint_hashes calls is_model_healthy; services.request_service.request calls replace_model_in_request_body and update_content_length when an alias matches; app:main calls set_ulimit."
+note = "SingletonABCMeta looks for a `create=False` keyword while SingletonMeta looks for `_create=False`; passing the wrong one to a routing class creates a new instance instead of returning None. Static probing: finding static-health-check-no-auth."
+
+[module_notes."vllm_router.version"]
+purpose = "Supplies the version string shown by GET /version and --version."
+does = "Reads __version__ from the build-generated _version module and falls back to \"dev\" with a warning when it is missing (for example in a source checkout that was never built)."
+flow = "Read by routers.main_router:show_version and by parsers.parser for the --version flag; shared layer."
+
+[[layers]]
+id = "startup"
+name = "Start-up and configuration"
+owns = "The `vllm-router` entry point: parses the command line, builds every singleton (service discovery, stats, routing logic, batch API, callbacks, external providers, experimental features), runs uvicorn, and optionally re-applies a watched config file while running."
+modules = ["vllm_router.app", "vllm_router.parsers", "vllm_router.parsers.parser", "vllm_router.parsers.yaml_utils", "vllm_router.dynamic_config"]
+
+[[layers]]
+id = "http"
+name = "HTTP routes"
+owns = "FastAPI handlers for the OpenAI-compatible API, the engine-control endpoints (/sleep, /wake_up, /engines, /health), the files and batches API and the router's own /metrics. They parse little and hand almost everything to the request service."
+modules = ["vllm_router.routers", "vllm_router.routers.main_router", "vllm_router.routers.files_router", "vllm_router.routers.batches_router", "vllm_router.routers.metrics_router", "vllm_router.protocols"]
+
+[[layers]]
+id = "routing"
+name = "Routing logic"
+owns = "The pluggable policies that pick one engine URL for a request: round-robin, session hash, prefix trie, KV-cache lookup through the in-process LMCache controller, load-weighted KV, priority, and the two disaggregated prefill/decode modes."
+modules = ["vllm_router.routers.routing_logic", "vllm_router.prefix.hashtrie"]
+
+[[layers]]
+id = "proxy"
+name = "Request proxy and extensions"
+owns = "Takes a routed request to its destination: validates the body, applies aliases, rewriter and callbacks, picks the engine through the routing logic, streams the request to the engine (or to an external OpenAI-compatible provider) and streams the answer back, with failover and per-request stats."
+modules = ["vllm_router.services", "vllm_router.services.request_service", "vllm_router.services.request_service.request", "vllm_router.services.request_service.rewriter", "vllm_router.aiohttp_client", "vllm_router.services.callbacks_service", "vllm_router.services.callbacks_service.callbacks", "vllm_router.services.callbacks_service.custom_callbacks", "vllm_router.external_providers", "vllm_router.external_providers.base", "vllm_router.external_providers.models", "vllm_router.external_providers.openai_provider", "vllm_router.external_providers.registry"]
+
+[[layers]]
+id = "files-batch"
+name = "Files and batch API"
+owns = "Local-disk file storage behind /v1/files and an SQLite-backed batch queue behind /v1/batches, with a background loop that drains it."
+modules = ["vllm_router.services.files_service", "vllm_router.services.files_service.file_storage", "vllm_router.services.files_service.openai_files", "vllm_router.services.files_service.storage", "vllm_router.services.batch_service", "vllm_router.services.batch_service.batch", "vllm_router.services.batch_service.local_processor", "vllm_router.services.batch_service.processor"]
+
+[[layers]]
+id = "discovery-stats"
+name = "Service discovery and statistics"
+owns = "Knows which engines exist (static list, Kubernetes pod watch or service watch) and how busy they are: request-level stats kept by the router itself, engine-level stats scraped from each engine's /metrics, and the Prometheus gauges that export them."
+modules = ["vllm_router.service_discovery", "vllm_router.stats", "vllm_router.stats.engine_stats", "vllm_router.stats.request_stats", "vllm_router.stats.log_stats", "vllm_router.services.metrics_service", "vllm_router.services.metrics_service.prometheus_gauge"]
+
+[[layers]]
+id = "experimental"
+name = "Experimental features"
+owns = "Feature-gated extras: the semantic response cache (sentence-transformer embeddings in FAISS), PII analyzers and OpenTelemetry tracing."
+modules = ["vllm_router.experimental", "vllm_router.experimental.*"]
+
+[[layers]]
+id = "shared"
+name = "Shared utilities"
+owns = "Logging setup, the singleton metaclasses, URL/argument parsers, the static health-check probe and the version string."
+modules = ["vllm_router", "vllm_router.utils", "vllm_router.log", "vllm_router.version"]
+
+[[layers]]
+id = "clients"
+name = "Examples, tutorials and scripts"
+owns = "Stand-alone client programs that call a running stack (file upload, tool calling, load generator) and a model-download helper. Nothing in the router imports them."
+modules = ["examples.*", "tutorials.*", "scripts.*"]
+
+[[journeys]]
+id = "chat-completion"
+title = "Route a chat completion to a vLLM engine"
+actor = "API client · OpenAI SDK or curl"
+trigger = "POST /v1/chat/completions"
+summary = "The router reads the request body to find the model, keeps only the engines that serve that model, and asks the configured routing logic to pick one. It then sends the body unchanged to that engine over HTTP and streams the engine's bytes back to the client while it updates its own per-engine request statistics."
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.main_router:route_chat_completion"
+  actor = "client → Ingress release-ingress-router → K8s Service release-router-service → Deployment release-deployment-router"
+  action = "FastAPI handler. If the semantic-cache module imported, it first asks check_semantic_cache for a stored answer (a no-op unless the SemanticCache feature gate is on); otherwise it hands the request to route_general_request with the endpoint path. /v1/completions, /v1/embeddings, /tokenize, /v1/rerank, /v1/score and the other OpenAI routes use the same function without the cache check."
+  receives = "The raw HTTP request and FastAPI BackgroundTasks"
+  returns = "Whatever route_general_request returns: a StreamingResponse, or a JSON error"
+  stores = "nothing"
+  payload = '''
+POST /v1/chat/completions
+Authorization: Bearer sk-demo-0000
+{"model": "meta-llama/Llama-3.1-8B-Instruct", "stream": true,
+ "messages": [{"role": "user", "content": "Summarise order 1042 in one line"}]}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.services.request_service.request:route_general_request"
+  action = "Validates and resolves the target model. It takes the request id from X-Request-Id (or makes a UUID), parses the body and rejects anything that is not a JSON object or has no 'model'. It lets an optional callback short-circuit the request, applies the request rewriter and a static alias, and sends models that belong to an external provider to process_external_provider_request. Otherwise it filters the service-discovery list down to awake engines that list the model."
+  receives = "request, endpoint '/v1/chat/completions', background_tasks"
+  returns = "400 (not JSON / no model), 404 (model never seen), 503 (model seen before but no engine now), or continues with the filtered endpoint list"
+  stores = "nothing yet; counts the request in the num_incoming_requests_total Prometheus counter"
+  note = "The '?id=<engine Id>' query parameter pins the request to one engine and skips both the routing logic and the stats snapshot."
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery.get_endpoint_info"
+  action = "Returns a copy of the engines the background pod watcher currently knows (under a thread lock). The Helm chart starts the router with --service-discovery k8s and --k8s-service-discovery-type pod-ip, so this is the pod-IP implementation by default; the static and service-name variants return the same EndpointInfo shape."
+  receives = "nothing"
+  returns = "List[EndpointInfo]: url, model_names, Id, model_label, sleep, pod_name"
+  stores = "nothing"
+  payload = '''
+[EndpointInfo(url="http://10.4.2.17:8000", model_names=["meta-llama/Llama-3.1-8B-Instruct"], sleep=False, pod_name="vllm-llama-7c9f-abcde"),
+ EndpointInfo(url="http://10.4.3.22:8000", model_names=["meta-llama/Llama-3.1-8B-Instruct"], sleep=False, pod_name="vllm-llama-7c9f-fghij")]
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.get_request_stats"
+  action = "Takes a snapshot of the router's own per-engine numbers (QPS over the sliding window, requests in prefill / decoding, TTFT). route_general_request also fetches the scraped engine stats here, but no routing class reads them (see the 'Stats feed the routing choice' journey)."
+  receives = "the current time"
+  returns = "Dict[url, RequestStats]"
+  stores = "nothing (old samples fall out of the sliding window)"
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.routing_logic:RoundRobinRouter.route_request"
+  action = "The routing decision. app.state.router is whichever class --routing-logic chose at start-up; route_general_request awaits route_request for the session, kvaware/loadaware, prefixaware and priority routers (they also get the parsed body) and calls it synchronously for the others. Round-robin, shown here, sorts the engine URLs, keeps one counter per distinct engine set and returns the next URL in turn."
+  receives = "the filtered endpoints, engine_stats, request_stats, request"
+  returns = "One engine base URL"
+  stores = "the next index for this endpoint set (in memory, capped at 1024 sets)"
+  payload = '''
+"http://10.4.3.22:8000"
+
+
+
+
+'''
+  note = "SessionRouter hashes the session key onto a HashRing; PrefixAwareRouter looks up the longest prompt prefix in a HashTrie; LoadAwareRouter asks the LMCache controller which engine holds the prompt's KV cache and subtracts a load penalty."
+  [[journeys.steps]]
+  symbol = "vllm_router.services.request_service.request:process_request"
+  action = "Sends the request to the chosen engine and streams the answer. It registers the request with RequestStatsMonitor, copies the client headers minus hop-by-hop ones (Authorization is kept, so the engine checks its own VLLM_API_KEY), sets X-Request-Id, and POSTs the body to <engine url>/v1/chat/completions through the shared aiohttp session — straight to the engine pod's IP with the default pod-ip discovery, or through K8s Service release-<name>-engine-service with service-name discovery. It yields the engine's headers and status first, then every chunk as it arrives."
+  receives = "request, body bytes, backend_url, request_id, endpoint"
+  returns = "An async generator: (headers, status) first, then raw response chunks (SSE 'data: …' lines when stream=true)"
+  stores = "request stats (start, first token, completion); Prometheus latency, error and token counters; for non-streaming chat completions, the answer in the semantic cache when that is enabled; queues the post_request callback"
+  payload = '''
+data: {"id":"chatcmpl-7f3a","choices":[{"delta":{"content":"Order 1042"},"index":0}]}
+data: [DONE]
+
+
+
+
+'''
+  note = "The engine side is the third-party vllm/vllm-openai image; its code is not in this repository."
+  [[journeys.steps]]
+  symbol = "vllm_router.services.request_service.request:route_general_request.traced_stream"
+  action = "route_general_request has already pulled the first item (headers and status) out of process_request. If that raised a connection-level exception it marks the URL as failed and asks the routing logic again on the remaining engines, up to max_instance_failover_reroute_attempts times. On success it strips content-length/encoding headers, adds X-Request-Id and returns a StreamingResponse whose body is this wrapper, which forwards the remaining chunks and closes the OpenTelemetry span at the end."
+  receives = "the open process_request generator"
+  returns = "StreamingResponse with the engine's status code and media type"
+  stores = "nothing"
+
+[[journeys]]
+id = "router-startup"
+title = "Router start-up"
+actor = "Kubernetes · container start"
+trigger = "vllm-router console script (Deployment release-deployment-router runs vllm_router.app:main)"
+summary = "main parses the command line, then initialize_all builds every long-lived singleton in order: service discovery (which starts its watcher thread), the engine-stats scraper thread, the request-stats monitor, the optional dynamic-config watcher, callbacks and the routing logic. The objects are attached to app.state, and FastAPI's lifespan opens the shared HTTP client before uvicorn starts serving."
+  [[journeys.steps]]
+  symbol = "vllm_router.app:main"
+  actor = "container entrypoint"
+  action = "Parses arguments, sets log level and format, calls initialize_all, optionally starts the log_stats thread, raises the open-file limit (set_ulimit) and runs uvicorn on --host/--port with --root-path."
+  receives = "command-line arguments from the Helm template (--service-discovery, --k8s-label-selector, --routing-logic, --engine-stats-interval …)"
+  returns = "never returns while serving"
+  stores = "nothing"
+  payload = '''
+vllm-router --host 0.0.0.0 --port 8000 --service-discovery k8s --k8s-service-discovery-type pod-ip
+            --k8s-port 8000 --k8s-label-selector environment=test,release=test --routing-logic roundrobin
+            --engine-stats-interval 15 --request-stats-window 60
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.parsers.parser:parse_args"
+  action = "Defines every flag, optionally re-parses with defaults loaded from --dynamic-config-yaml/--dynamic-config-json, then validate_args checks the combinations: routing logic required, static needs backends and models, k8s needs a port, session needs a session key, intervals must be positive."
+  receives = "sys.argv"
+  returns = "argparse.Namespace"
+  stores = "nothing; exits or raises ValueError on a bad combination"
+  [[journeys.steps]]
+  symbol = "vllm_router.app:initialize_all"
+  action = "Builds the components in dependency order: optional Sentry and OpenTelemetry, then service discovery, the engine-stats scraper, the request-stats monitor, the batch API when --enable-batch-api is set, the dynamic-config watcher, custom callbacks, the routing logic, feature gates and semantic cache, and the external-provider registry. Finally it copies the singletons onto app.state so request handlers read them from there."
+  receives = "app, args"
+  returns = "nothing"
+  stores = "app.state.engine_stats_scraper, request_stats_monitor, router, request_rewriter, external_provider_registry"
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:initialize_service_discovery"
+  action = "Refuses a second initialisation and creates the module-level discovery object through _create_service_discovery: StaticServiceDiscovery, K8sPodIPServiceDiscovery (default for 'k8s'), K8sServiceNameServiceDiscovery, or ExternalOnlyServiceDiscovery."
+  receives = "ServiceDiscoveryType plus namespace, port, label_selector, timeouts"
+  returns = "the ServiceDiscovery instance"
+  stores = "the _global_service_discovery module variable"
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery.__init__"
+  action = "Loads in-cluster Kubernetes credentials (falls back to kubeconfig), creates a CoreV1Api client and starts the daemon thread that runs _watch_engines. From this moment engines can appear in available_engines."
+  receives = "namespace, port, label_selector"
+  returns = "nothing"
+  stores = "available_engines (empty at first), known_models"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.engine_stats:initialize_engine_stats_scraper"
+  action = "Creates the EngineStatsScraper singleton, which starts a daemon thread that scrapes every engine's /metrics every --engine-stats-interval seconds."
+  receives = "scrape_interval"
+  returns = "EngineStatsScraper"
+  stores = "the singleton instance"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:initialize_request_stats_monitor"
+  action = "Creates the RequestStatsMonitor singleton with the --request-stats-window sliding window. It has no thread; process_request feeds it events."
+  receives = "sliding_window_size"
+  returns = "RequestStatsMonitor"
+  stores = "the singleton instance"
+  [[journeys.steps]]
+  symbol = "vllm_router.dynamic_config:initialize_dynamic_config_watcher"
+  action = "Only when a dynamic config file is given: starts a thread that re-reads the YAML/JSON file every 10 seconds and, when it differs from the current config, rebuilds service discovery, routing logic and callbacks."
+  receives = "config path, file type, interval 10, the config built from args, app"
+  returns = "DynamicConfigWatcher"
+  stores = "the watcher singleton; later replaces app.state.router"
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.routing_logic:initialize_routing_logic"
+  action = "Instantiates the routing class named by --routing-logic (round-robin, session, kvaware, loadaware, prefixaware, disaggregated prefill, orchestrated disaggregated prefill or priority) as a singleton. KV-aware and load-aware also start the LMCache controller manager. It sets max_instance_failover_reroute_attempts on the router."
+  receives = "RoutingLogic plus session_key, lmcache ports, prefix_min_match_length, priority settings, failover attempts"
+  returns = "the RoutingInterface instance"
+  stores = "the router in SingletonABCMeta._instances; initialize_all then reads it back with get_routing_logic into app.state.router"
+  [[journeys.steps]]
+  symbol = "vllm_router.app:lifespan"
+  action = "Runs when uvicorn starts the app: opens the shared aiohttp session (no connection limit), initialises the batch processor if present, hands the running event loop to service discovery so its thread can schedule coroutines, opens prefill/decode client sessions for disaggregated setups, and validates external-provider models. On shutdown it stops the threads and closes the routers in reverse."
+  receives = "app"
+  returns = "control to uvicorn, which starts accepting requests"
+  stores = "app.state.event_loop; the aiohttp ClientSession"
+
+[[journeys]]
+id = "engine-discovered"
+title = "Service discovery notices a new engine pod"
+actor = "Kubernetes API · pod watch event"
+trigger = "A vLLM engine pod matching --k8s-label-selector becomes Ready (Deployment release-<name>-deployment-vllm scales up)"
+summary = "A daemon thread keeps a Kubernetes watch open on pods with the engine labels. When a pod is Ready and not terminating it asks the pod's /v1/models which models it serves, records an EndpointInfo keyed by pod name, and from then on route_general_request sees that engine in get_endpoint_info."
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._watch_engines"
+  actor = "watcher thread (started in __init__)"
+  action = "Streams list_namespaced_pod watch events for the namespace and label selector. For each event it works out readiness (all containers ready and no deletion timestamp); for a ready pod it fetches the model names and the 'model' label. DELETED events remove the engine directly. Any exception is logged and the watch restarts after 0.5 s."
+  receives = "watch events: type ADDED / MODIFIED / DELETED and the V1Pod"
+  returns = "nothing (loops while running)"
+  stores = "nothing itself"
+  payload = '''
+{"type": "MODIFIED", "object": {"metadata": {"name": "vllm-llama-7c9f-abcde", "labels": {"model": "llama3"}},
+ "status": {"podIP": "10.4.2.17", "containerStatuses": [{"name": "vllm", "ready": true}]}}}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._check_pod_ready"
+  action = "True only when every container status reports ready."
+  receives = "pod.status.container_statuses"
+  returns = "bool"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._get_model_names"
+  action = "Synchronous HTTP GET http://<podIP>:<k8s-port>/v1/models with the VLLM_API_KEY from the environment (the chart injects it from Secret release-secrets) and a health-check timeout. Collects every model id, including LoRA adapters."
+  receives = "pod IP"
+  returns = "list of model ids, or [] on any error"
+  stores = "nothing"
+  payload = '''
+{"data": [{"id": "meta-llama/Llama-3.1-8B-Instruct", "object": "model"},
+          {"id": "sql-lora", "parent": "meta-llama/Llama-3.1-8B-Instruct"}]}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._on_engine_update"
+  action = "Decides what the event means. ADDED or MODIFIED with an IP, ready and at least one model → add (or re-add) the engine. MODIFIED that is not ready, has no models, or lost its IP (an evicted pod) → delete it if known."
+  receives = "pod name, IP, event type, readiness, model names, model label"
+  returns = "nothing"
+  stores = "via _add_engine / _delete_engine"
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._add_engine"
+  action = "Fetches the detailed model info (a second /v1/models call), checks through the Kubernetes API whether the vllm container runs with --enable-sleep-mode and if so asks /is_sleeping. It then writes the EndpointInfo under the lock, re-opens prefill/decode client sessions on the event loop when labels require it, and adds the models to known_models."
+  receives = "pod name, IP, model names, model label"
+  returns = "nothing"
+  stores = "available_engines[pod_name] = EndpointInfo(url='http://<podIP>:<port>', Id=uuid5(pod name), …); known_models"
+  note = "known_models is never shrunk, which is how route_general_request answers 503 'temporarily unavailable' rather than 404 for a model that is scaled to zero."
+  [[journeys.steps]]
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery.get_endpoint_info"
+  actor = "route_general_request, EngineStatsScraper._scrape_metrics, /v1/models, /metrics"
+  action = "Readers on the request path and the scraper thread take a copy of available_engines under the same lock, so the new engine is routable on the next request."
+  receives = "nothing"
+  returns = "List[EndpointInfo]"
+  stores = "nothing"
+
+[[journeys]]
+id = "stats-feed-routing"
+title = "Request statistics feed the routing choice"
+actor = "router · every proxied request"
+trigger = "Each request that process_request sends to an engine"
+summary = "The router learns load from its own traffic, not from the engines: process_request reports start, first chunk and completion to RequestStatsMonitor, and the next request's snapshot of those counters is what the QPS, load-aware and priority routers compare. The scraped engine /metrics are passed along but deliberately not used for placement."
+  [[journeys.steps]]
+  symbol = "vllm_router.services.request_service.request:process_request"
+  actor = "route_general_request"
+  action = "Calls on_new_request before sending, on_request_response when the first chunk arrives, and on_request_complete in a finally block so a backend error or client disconnect also frees the in-flight slot."
+  receives = "backend_url and request_id (the client's X-Request-Id or a fresh UUID)"
+  returns = "the streamed response (see the main journey)"
+  stores = "events in RequestStatsMonitor"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_new_request"
+  action = "Records the start time under (engine url, request id), increments in_prefill_requests for that engine and adds a sample to its QPS window."
+  receives = "engine_url, request_id, timestamp"
+  returns = "nothing"
+  stores = "request_start_time, in_prefill_requests, qps_monitors (in memory)"
+  payload = '''
+request_start_time[("http://10.4.2.17:8000", "req-5b1e")] = 1759500000.12
+in_prefill_requests["http://10.4.2.17:8000"] = 3
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_response"
+  action = "On the first chunk: moves the request from prefill to decoding and records time-to-first-token in the TTFT window."
+  receives = "engine_url, request_id, timestamp"
+  returns = "nothing"
+  stores = "first_token_time, in_prefill/in_decoding counters, ttft_monitors"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_complete"
+  action = "Decrements the decoding counter (or the prefill counter if no token ever arrived), counts the request as finished and records its total latency. A second call for the same key returns early, so it is safe from the finally block."
+  receives = "engine_url, request_id, timestamp"
+  returns = "nothing"
+  stores = "finished_requests, latency_monitors; removes the start and first-token entries"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.get_request_stats"
+  actor = "route_general_request (next request)"
+  action = "Builds one RequestStats per engine URL it has seen: QPS = arrivals in the window / window length, average TTFT and latency, and the live in_prefill / in_decoding counts."
+  receives = "current time"
+  returns = "Dict[url, RequestStats]"
+  stores = "drops samples older than the window"
+  payload = '''
+{"http://10.4.2.17:8000": {"qps": 0.85, "ttft": 0.21, "in_prefill_requests": 1, "in_decoding_requests": 4},
+ "http://10.4.3.22:8000": {"qps": 0.40, "ttft": 0.18, "in_prefill_requests": 0, "in_decoding_requests": 1}}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.routing_logic:LoadAwareRouter.route_request"
+  action = "One of the routers that reads these numbers. It tokenizes the prompt, asks the LMCache controller which engine instances hold matching KV-cache chunks, and if nothing is cached anywhere falls back to session hashing or lowest QPS. Otherwise it scores the engines with select_url. Its docstring says engine_stats is unused because it is scrape-lagged."
+  receives = "endpoints, engine_stats (ignored), request_stats, request, request_json"
+  returns = "one engine URL"
+  stores = "the instance-id → URL map refreshed from the controller"
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.routing_logic:LoadAwareRouter.select_url"
+  action = "For each engine: cache benefit (matched tokens / prompt tokens) minus beta × relative load, where relative load is (in-flight − fleet mean) / max(1, mean) from relative_loads. Ties break by URL. beta comes from --loadaware-beta or the LOADAWARE_BETA env var (default 1.0)."
+  receives = "endpoints, request_stats, layout_info from the controller, prompt token count"
+  returns = "the best-scoring URL"
+  stores = "nothing"
+  payload = '''
+10.4.2.17: benefit 0.90 − 1.0 × (+0.67) = 0.23
+10.4.3.22: benefit 0.00 − 1.0 × (−0.67) = 0.67   ← chosen
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.routing_logic:RoutingInterface._qps_routing"
+  action = "The shared fallback used by session (no session id), prefix-aware (match below the minimum) and load-aware (no cache info): returns the first engine that has no stats yet, else the one with the lowest QPS."
+  receives = "endpoints, request_stats"
+  returns = "engine URL"
+  stores = "nothing"
+
+[[journeys]]
+id = "engine-stats-scrape"
+title = "Scrape engine metrics for the dashboard"
+actor = "router · scraper thread"
+trigger = "Every --engine-stats-interval seconds (Helm: routerSpec.engineScrapeInterval)"
+summary = "A background thread reads each engine's Prometheus /metrics, keeps a handful of values per engine, and the router's own /metrics endpoint re-exports them for Prometheus and Grafana. The values also reach the routers as engine_stats, but no routing class reads them."
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_worker"
+  actor = "daemon thread started in EngineStatsScraper.__init__"
+  action = "Loops: scrape all engines, then sleep the interval in one-second steps so close() can stop it quickly."
+  receives = "nothing"
+  returns = "nothing"
+  stores = "nothing itself"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_metrics"
+  action = "Gets the current engine list from service discovery and scrapes each one in turn. It then replaces the stored map under the lock, dropping engines that disappeared or failed to answer."
+  receives = "get_service_discovery().get_endpoint_info()"
+  returns = "nothing"
+  stores = "self.engine_stats: Dict[url, EngineStats]"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_one_endpoint"
+  action = "Synchronous GET <engine url>/metrics with timeout = the scrape interval, then parses the text."
+  receives = "engine base URL"
+  returns = "EngineStats, or None on any error (logged)"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "vllm_router.stats.engine_stats:EngineStats.from_vllm_scrape"
+  action = "Walks the Prometheus text exposition and keeps vllm:num_requests_running, num_requests_waiting, gpu_prefix_cache_hit_rate / hits / queries and gpu_cache_usage_perc (assumes one model per engine)."
+  receives = "Prometheus text"
+  returns = "EngineStats"
+  stores = "nothing"
+  payload = '''
+vllm:num_requests_running{model_name="meta-llama/Llama-3.1-8B-Instruct"} 4.0
+vllm:num_requests_waiting{model_name="meta-llama/Llama-3.1-8B-Instruct"} 1.0
+vllm:gpu_cache_usage_perc{model_name="meta-llama/Llama-3.1-8B-Instruct"} 0.37
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.metrics_router:metrics"
+  actor = "Prometheus scraping GET /metrics on release-router-service"
+  action = "Clears per-server gauges, samples router CPU/memory/disk with psutil, then sets gauges from get_request_stats and from get_engine_stats (prefix-cache hit rate, hits, queries) and a healthy flag per discovered endpoint, and returns the Prometheus text."
+  receives = "nothing"
+  returns = "text/plain Prometheus exposition"
+  stores = "Prometheus gauge values in process memory"
+
+[[journeys]]
+id = "semantic-cache"
+title = "Answer a chat completion from the semantic cache"
+actor = "API client"
+trigger = "POST /v1/chat/completions with --feature-gates SemanticCache=true and --semantic-cache-model set"
+summary = "With the experimental SemanticCache gate on, the router embeds the chat messages with a sentence-transformers model and looks up the nearest earlier request in a FAISS index; above the similarity threshold it answers from the cache without contacting an engine. On a miss the request is routed normally, and a non-streaming answer is embedded and appended to the index afterwards."
+  [[journeys.steps]]
+  symbol = "vllm_router.routers.main_router:route_chat_completion"
+  actor = "client"
+  action = "Calls check_semantic_cache first; a non-None answer is returned as is, otherwise the request continues to route_general_request."
+  receives = "the chat completion request"
+  returns = "the cached JSONResponse, or the engine's streamed response"
+  stores = "nothing"
+  payload = '''
+{"model": "meta-llama/Llama-3.1-8B-Instruct",
+ "messages": [{"role": "user", "content": "What is the capital of France?"}]}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache_integration:check_semantic_cache"
+  action = "Returns None at once unless the feature gate is on. Otherwise it reads the JSON body, honours skip_cache, takes an optional per-request cache_similarity_threshold, and searches. On a hit it builds an OpenAI-shaped chat.completion with 'cached': true and the similarity score."
+  receives = "request"
+  returns = "JSONResponse on a hit, None on a miss"
+  stores = "hit/miss/ratio/latency Prometheus gauges"
+  payload = '''
+{"id": "chatcmpl-1d2e…", "object": "chat.completion", "model": "meta-llama/Llama-3.1-8B-Instruct",
+ "choices": [{"index": 0, "message": {"role": "assistant", "content": "Paris."}, "finish_reason": "stop"}],
+ "cached": true, "similarity_score": 0.97}
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache.semantic_cache:SemanticCache.search"
+  action = "Uses the default threshold (--semantic-cache-threshold) unless the request gave one, embeds the messages and asks the database adapter."
+  receives = "messages, model, similarity_threshold"
+  returns = "response_messages, usage, similarity_score — or None"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache.semantic_cache:SemanticCache.get_embedding"
+  action = "Joins the messages as 'role: content' text and encodes it with the SentenceTransformer model, in the request's own coroutine."
+  receives = "messages"
+  returns = "float32 vector"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter:FAISSAdapter.search"
+  action = "Inner-product search for the single nearest vector; it is a hit only if the score clears the threshold and the stored entry was for the same model."
+  receives = "embedding, model, threshold"
+  returns = "the stored entry's response_messages and usage, or None"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "vllm_router.services.request_service.request:route_general_request"
+  action = "On a miss the request takes the normal path: model check, engine filter, routing logic, process_request to the chosen engine."
+  receives = "request, '/v1/chat/completions'"
+  returns = "StreamingResponse"
+  stores = "see the main journey"
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache_integration:store_in_semantic_cache"
+  actor = "process_request, after the last chunk"
+  action = "Only for POST /v1/chat/completions, without skip_cache, and only when stream is false. It parses the full engine answer, pulls the assistant messages and usage, and stores them."
+  receives = "endpoint, method, request body, full response body"
+  returns = "nothing (errors are logged)"
+  stores = "via SemanticCache.store; updates the semantic_cache_size gauge"
+  [[journeys.steps]]
+  symbol = "vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter:FAISSAdapter.store"
+  action = "Appends the vector to the FAISS IndexFlatIP and the request/response/model/usage to a metadata list, then writes both to disk."
+  receives = "embedding, request_messages, response_messages, model, usage"
+  returns = "nothing"
+  stores = "faiss index file and faiss_metadata.pkl in --semantic-cache-dir (./semantic_cache by default)"
+
+[[roles]]
+id = "http-aiohttp"
+kind = "external"
+name = "HTTP proxy to vLLM engines"
+symbols = ["vllm_router.services.request_service.request:process_request", "vllm_router.services.request_service.request:route_orchestrated_disaggregated_request", "vllm_router.services.request_service.request:route_disaggregated_prefill_request", "vllm_router.services.request_service.request:route_sleep_wakeup_request", "vllm_router.aiohttp_client:AiohttpClientWrapper.start"]
+purpose = "Forwards each client request to the chosen vLLM engine (third-party image vllm/vllm-openai or lmcache/vllm-openai, K8s Service release-<name>-engine-service or pod IP) and streams the engine's answer back unchanged."
+input = "The original request body (after alias replacement or priority injection) and the client's headers minus hop-by-hop headers; X-Request-Id is replaced by the router's id."
+message = ["method + path: the same as the client used (e.g. POST /v1/chat/completions) on the engine base URL", "headers: client headers (including the client's Authorization) except hop-by-hop, plus X-Request-Id", "body: raw bytes of the client's JSON request"]
+config = "One shared aiohttp ClientSession with an unlimited TCPConnector (AiohttpClientWrapper.start). Engine URLs come from service discovery. Disaggregated modes use --prefill-model-labels / --decode-model-labels; /sleep and /wake_up add Authorization from env VLLM_API_KEY; the two-request disaggregated mode uses env OPENAI_API_KEY."
+output = "Engine status code and headers are yielded first, then raw chunks as they arrive (SSE for stream=true, one JSON body otherwise). A 4xx/5xx from the engine is passed through to the client as-is."
+validation = "No total timeout on the general path (ClientTimeout total=None). If connecting or receiving headers raises, route_general_request retries on another endpoint up to --max-instance-failover-reroute-attempts times; nothing is retried once headers have been sent. Orchestrated disaggregation uses 300 s (prefill) and 600 s (decode) timeouts."
+logging = "INFO line per routed request with request id, session id, engine URL and router overhead; request_errors_total and request_latency_seconds Prometheus metrics labelled by engine URL."
+cost = "not measured"
+result_use = "Chunks are streamed to the client through a StreamingResponse; for non-streaming responses the usage block feeds input_tokens_total / output_tokens_total; the full response is handed to the optional semantic cache and post_request callback."
+
+[[roles]]
+id = "http-requests"
+kind = "external"
+name = "Engine probes during discovery"
+symbols = ["vllm_router.service_discovery:K8sPodIPServiceDiscovery._get_model_names", "vllm_router.service_discovery:K8sPodIPServiceDiscovery._get_model_info", "vllm_router.service_discovery:K8sPodIPServiceDiscovery._get_engine_sleep_status", "vllm_router.utils:is_model_healthy"]
+purpose = "Asks each newly ready engine which models and LoRA adapters it serves and whether it is sleeping, so the router knows what an endpoint can answer; for static backends, optionally sends a tiny real request to check the model works."
+input = "Pod IP (or Service name) and --k8s-port; for static health checks, the backend URL, model and --static-model-types."
+message = ["GET http://<pod-ip>:<port>/v1/models", "GET http://<pod-ip>:<port>/is_sleeping (only if the pod's vllm container runs with --enable-sleep-mode)", "static: POST <url>/v1/chat/completions (or the endpoint for the model type) with a one-token test payload"]
+config = "Header Authorization: Bearer from env VLLM_API_KEY on the K8s probes (not on the static health check). Timeouts: --backend-health-check-timeout-seconds (K8s), --static-backend-health-check-timeout-seconds and --static-backend-health-check-interval (static, enabled by --static-backend-health-checks)."
+output = "/v1/models `data[].id` list (parent set for adapters) and `is_sleeping` boolean; static check passes on 2xx with a JSON body."
+validation = "Any failure is logged and turned into an empty model list (the pod is then not registered) or sleep=False; synchronous `requests` calls on the watcher thread, never on the event loop. Static checks run in their own thread and event loop."
+logging = "INFO 'Found models on pod …', ERROR 'Failed to get model names …', WARNING '<model> at <url> not healthy!'"
+cost = "Two or three HTTP calls per pod ADDED/MODIFIED event; one test inference per static backend per interval."
+result_use = "Builds the EndpointInfo (model_names, model_info, sleep) that routing filters on; unhealthy static backends are left out of get_endpoint_info."
+
+[[roles]]
+id = "k8s-deployment-release-deployment-router-templates-deployment-r"
+kind = "infra"
+name = "K8s Deployment release-deployment-router"
+symbols = ["vllm_router.app:main"]
+purpose = "Runs the router process (`vllm-router` → main) that every client request passes through before it reaches a vLLM engine pod."
+message = ["invoked by: K8s Ingress release-ingress-router (when routerSpec.ingress.enabled) or HTTPRoute release-router-<name> → K8s Service release-router-service, port 80 → container router-port", "invoked by: vLLM engine pods' LMCache workers on Service port 9000 → container lmcache-port (the LMCache controller inside the router, kvaware/loadaware only)", "invoked by: kubelet probes GET /health (liveness, startup, readiness) and the router ServiceMonitor scraping GET /metrics"]
+config = "defined in helm/templates/deployment-router.yaml · environment: VLLM_API_KEY → K8s Secret release-secrets key vllmApiKey (or the Secret named in routerSpec.vllmApiKey / servingEngineSpec.vllmApiKey), HF_TOKEN from routerSpec.hf_token, PYTHONHASHSEED, LMCACHE_LOG_LEVEL, anything in routerSpec.env (e.g. LOADAWARE_BETA, OPENAI_API_KEY) · arguments from routerSpec.serviceDiscovery, routingLogic, sessionKey, prefixMinMatchLength, engineScrapeInterval, requestStatsWindow, lmcacheController*Port, otel.*, extraArgs · replicas from routerSpec.replicaCount or hpa-router.yaml when routerSpec.autoscaling.enabled"
+output = "OpenAI-compatible HTTP responses streamed back from the chosen engine; JSON for /v1/models, /engines, /health; Prometheus text for /metrics."
+validation = "Kubernetes restarts the container when GET /health returns 503, which happens when the service-discovery watcher thread or the engine-stats scraper thread has died (main_router:health). Engines being down does not fail /health; requests for a model with no live engine get 404 (never seen) or 503 (seen before)."
+logging = "stdout (text or JSON via --log-format); optional Sentry (--sentry-dsn) and OpenTelemetry (--otel-endpoint); request counters and latencies on /metrics."
+result_use = "Runs as ServiceAccount release-router-service-account bound to Role release-reader: get/watch/list/patch on pods (plus services and endpoints in service-name mode) in its namespace — used to watch engine pods and to add/remove the `sleeping` label. Calls engine pods directly by pod IP (or engine Service name) over HTTP."
+
+[[roles]]
+id = "k8s-api"
+kind = "external"
+name = "Kubernetes API (service discovery)"
+symbols = ["vllm_router.service_discovery:K8sPodIPServiceDiscovery._watch_engines", "vllm_router.service_discovery:K8sServiceNameServiceDiscovery._watch_engines", "vllm_router.service_discovery:K8sPodIPServiceDiscovery.add_sleep_label", "vllm_router.service_discovery:K8sPodIPServiceDiscovery.remove_sleep_label"]
+purpose = "Keeps the engine list current by watching engine pods (pod-ip mode) or Services (service-name mode) in the router's namespace, and marks pods put to sleep with a `sleeping=true` label."
+input = "Namespace and label selector from --k8s-namespace and --k8s-label-selector (Helm passes the release namespace and servingEngineSpec.labels)."
+message = ["watch list_namespaced_pod(namespace, label_selector, timeout_seconds) → ADDED / MODIFIED / DELETED events", "read_namespaced_pod to check for --enable-sleep-mode and current labels", "patch_namespaced_pod to add or remove the sleeping label"]
+config = "In-cluster ServiceAccount credentials (load_incluster_config), falling back to ~/.kube/config; --k8s-service-discovery-type pod-ip|service-name; --k8s-watcher-timeout-seconds. RBAC: Role release-reader (helm/templates/role.yaml)."
+output = "Pod objects: name, IP, readiness of every container, deletion timestamp, `model` label."
+validation = "Watch errors are logged and the watch restarts after 0.5 s; a pod counts only when all containers are ready, it is not terminating and /v1/models returns at least one model; a MODIFIED pod that lost its IP (evicted) is removed. /health reports 503 if the watcher thread dies."
+logging = "ERROR 'K8s watcher error', INFO 'Discovered new serving engine …' / 'Serving engine … is deleted'."
+cost = "One long-lived watch stream per router replica."
+result_use = "Maintains available_engines (EndpointInfo per pod) and known_models; every request reads a snapshot through get_endpoint_info."
+
+[[roles]]
+id = "engine-metrics-scrape"
+kind = "background"
+name = "Engine /metrics scraper"
+symbols = ["vllm_router.stats.engine_stats:EngineStatsScraper._scrape_worker", "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_one_endpoint", "vllm_router.stats.engine_stats:EngineStats.from_vllm_scrape"]
+purpose = "Periodically reads each engine's Prometheus /metrics so the router can re-export running/queued requests and prefix-cache hit rates per engine."
+input = "The current endpoint list from service discovery."
+message = ["GET <engine-url>/metrics (no Authorization header), one engine after another"]
+config = "--engine-stats-interval (Helm routerSpec.engineScrapeInterval); the same value is the per-request timeout."
+output = "Prometheus text; parsed for vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_prefix_cache_hit_rate / hits_total / queries_total, vllm:gpu_cache_usage_perc."
+validation = "A failed scrape is logged and that engine is dropped from the stats map for this round; engines no longer discovered are removed. /health reports 503 if the thread dies."
+logging = "INFO 'Scraping metrics from N serving engine(s)', ERROR 'Failed to scrape metrics from …'."
+cost = "One HTTP request per engine per interval, made serially on one daemon thread."
+result_use = "Read by metrics_router:metrics (gpu_prefix_cache_* gauges) and log_stats; passed to every routing logic, but no routing logic in routing_logic.py reads it."
+
+[[roles]]
+id = "lmcache-controller"
+kind = "external"
+name = "LMCache controller (in-process)"
+symbols = ["vllm_router.routers.routing_logic:KvawareRouter.start_kv_manager", "vllm_router.routers.routing_logic:KvawareRouter.query_manager", "vllm_router.routers.routing_logic:LoadAwareRouter.refresh_instance_map"]
+purpose = "For kvaware and loadaware routing, the router itself hosts LMCache's controller (third-party library lmcache, not in this repo) so engines' LMCache workers report which KV-cache chunks they hold, and the router can ask who holds the longest prefix of a prompt."
+input = "Token ids of the prompt (local Hugging Face tokenizer, or the engine's /tokenize as fallback) and engine IPs."
+message = ["inbound: engines' LMCache workers connect to <router-service>:<controllerPort> (env LMCACHE_CONTROLLER_PULL_URL / LMCACHE_CONTROLLER_REPLY_URL set in deployment-vllm-multi.yaml)", "LookupMsg(tokens, event_id) → layout_info {instance_id: (location, matched_tokens)}", "QueryInstMsg(ip, event_id) → instance_id for an engine IP"]
+config = "--lmcache-controller-port (Helm routerSpec.lmcacheControllerPort; Service and container expose 9000), --lmcache-controller-reply-port, --lmcache-controller-heartbeat-port, --lmcache-health-check-interval, --lmcache-worker-timeout, --kv-aware-threshold, --loadaware-beta or env LOADAWARE_BETA."
+output = "The instance holding the most matched tokens, translated to an engine URL through instance_id_to_ip."
+validation = "Runs on its own event loop in a daemon thread. With no holder, too few matched tokens (prompt length minus kv_aware_threshold) or an unknown instance, routing falls back to the session hash or lowest QPS."
+logging = "INFO 'Instance id to ip mapping …', 'Routing request to … found by kvaware router'."
+cost = "One controller round-trip per request, plus one per endpoint when the instance map is stale."
+result_use = "Chooses the engine URL; loadaware additionally subtracts beta × relative in-flight load."
+
+[[roles]]
+id = "external-providers"
+kind = "external"
+name = "External OpenAI-compatible providers"
+symbols = ["vllm_router.services.request_service.request:process_external_provider_request", "vllm_router.external_providers.openai_provider:OpenAIProvider.send_request", "vllm_router.external_providers.registry:ExternalProviderManager.validate_models"]
+purpose = "Lets a model name in the request be served by a hosted API instead of a local engine, so one endpoint can mix local vLLM models with external ones."
+input = "The client's parsed JSON body; the model alias is replaced by the provider's canonical id."
+message = ["POST <api_base><endpoint> with Content-Type: application/json, Authorization: Bearer <provider key>, custom_headers from config", "start-up: GET <api_base>/v1/models to validate configured models"]
+config = "--external-providers-config YAML: external_providers[].name, type, api_base, models[].id/aliases, api_key_env_var (default env OPENAI_API_KEY), timeout, max_retries, custom_headers."
+output = "Provider status, headers and either a JSON body or a byte stream, returned to the client unchanged."
+validation = "connect and sock_read timeouts (no total timeout, so long streams survive); up to max_retries retries on aiohttp.ClientError; final failure becomes 502 to the client."
+logging = "INFO 'Routing request … to external provider …', request_errors_total labelled by provider."
+cost = "Billed by the provider per token; not measured by the router."
+result_use = "Streamed or returned as JSON to the client; /v1/models lists the external ids alongside local ones."
+
+[[roles]]
+id = "dynamic-config-watcher"
+kind = "background"
+name = "Dynamic config watcher"
+symbols = ["vllm_router.dynamic_config:DynamicConfigWatcher._watch_worker", "vllm_router.dynamic_config:DynamicConfigWatcher.reconfigure_all"]
+purpose = "Lets operators change service discovery, routing logic and callbacks without restarting the router, by editing a mounted YAML or JSON file."
+input = "The file at --dynamic-config-yaml or --dynamic-config-json, re-read every 10 seconds."
+message = ["DynamicRouterConfig fields: service_discovery, routing_logic, static_*, k8s_*, session_key, priority_*, callbacks"]
+config = "--dynamic-config-yaml / --dynamic-config-json (mutually exclusive)."
+output = "A new global service discovery, a new routing logic on app.state.router and new callbacks; the current config is shown on GET /health."
+validation = "Any parse or reconfigure error is logged as a warning and the old config stays current, so the same change is retried on the next tick."
+logging = "INFO 'DynamicConfigWatcher: Config changed, reconfiguring...' / WARNING 'Error loading config file'."
+cost = "One file read per 10 s."
+result_use = "Requests after the swap use the new router and engine list."
+
+[[roles]]
+id = "batch-processor"
+kind = "background"
+name = "Local batch processor"
+symbols = ["vllm_router.services.batch_service.local_processor:LocalBatchProcessor.process_batches", "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.create_batch"]
+purpose = "Drains the batch queue created by POST /v1/batches when --enable-batch-api is set."
+input = "Rows with status pending in SQLite table batch_queue (<file-storage-path>/batch_queue.db)."
+message = ["SELECT the oldest pending batch, mark it running, write a result file through FileStorage, mark it completed or failed"]
+config = "--enable-batch-api, --batch-processor local, --file-storage-class local_file, --file-storage-path (default /tmp/vllm_files)."
+output = "An output file id stored on the batch row."
+validation = "Exceptions mark the batch failed; the loop polls every second when idle."
+logging = "INFO 'Processing batch …', ERROR 'Failed processing batch …'."
+cost = "not measured"
+result_use = "The current loop does not send the batch's requests to any engine; it writes a placeholder text file (see findings)."
+
+[[roles]]
+id = "custom-callbacks"
+kind = "external"
+name = "Custom request callbacks"
+symbols = ["vllm_router.services.callbacks_service.callbacks:configure_custom_callbacks", "vllm_router.services.callbacks_service.custom_callbacks:CustomCallbackHandler.pre_request", "vllm_router.services.callbacks_service.custom_callbacks:CustomCallbackHandler.post_request"]
+purpose = "An operator-supplied Python object that can answer or reject a request before routing (pre_request) and see the full response afterwards (post_request)."
+input = "pre_request gets the Request, raw body and parsed JSON; post_request gets the Request and the collected response bytes."
+message = ["pre_request(request, body, json) → Response or None", "post_request(request, response_bytes) as a FastAPI background task"]
+config = "--callbacks <module.instance> (importlib), also settable through the dynamic config `callbacks` field."
+output = "A non-None Response from pre_request is returned to the client directly, with X-Request-Id added."
+validation = "No isolation: an exception in pre_request fails the request."
+logging = "Whatever the callback logs."
+cost = "not measured"
+result_use = "Short-circuits routing or observes completed requests."
+
+[[input_flows]]
+id = "in-route-batches"
+source = "JSON body of POST /v1/batches (input_file_id, endpoint, completion_window, metadata)"
+sink = "A row in the SQLite table batch_queue (batch_queue.db under --file-storage-path)"
+  [[input_flows.steps]]
+  symbol = "vllm_router.routers.batches_router:route_batches"
+  guard = "Requires input_file_id and endpoint (400), and checks the input file exists (404). endpoint, completion_window and metadata are not validated; any other error becomes a 500 with the exception text."
+  [[input_flows.steps]]
+  symbol = "vllm_router.services.files_service.file_storage:FileStorage.get_file"
+  guard = "Joins the id onto the storage directory and checks it exists; the route's path parameter cannot contain '/', so the id stays inside that directory."
+  [[input_flows.steps]]
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.create_batch"
+  guard = "Inserts with a parameterised SQL statement (no string building); metadata is stored as JSON text."
+
+[[input_flows]]
+id = "in-route-files"
+source = "Multipart upload to POST /v1/files (form fields 'file' and 'purpose')"
+sink = "A file under --file-storage-path (default /tmp/vllm_files/uid_default/<file id>) in the router pod"
+  [[input_flows.steps]]
+  symbol = "vllm_router.routers.files_router:route_files"
+  guard = "Rejects a form without 'file' (400). 'purpose' is free text, not validated. The whole file is read into memory with no size limit. Needs app.state.batch_storage, which only exists when the batch API was initialised; otherwise the attribute error is caught and the client gets 500 'Failed to save file'."
+  [[input_flows.steps]]
+  symbol = "vllm_router.services.files_service.file_storage:FileStorage.save_file"
+  guard = "The client's filename is never used as a path: the stored name is a server-generated 'file-' + 6 hex characters, written with aiofiles. The filename is only echoed back in the metadata."
+
+[[input_flows]]
+id = "in-completion-body"
+source = "OpenAI-style request body and headers from any client that reaches release-router-service (chat/completions, completions, embeddings, rerank, score, tokenize …)"
+sink = "The chosen vLLM engine pod (body forwarded byte for byte); router memory (request stats keyed by X-Request-Id, prefix trie, semantic cache)"
+  [[input_flows.steps]]
+  symbol = "vllm_router.experimental.semantic_cache_integration:check_semantic_cache"
+  guard = "Chat completions only, and only when the SemanticCache gate is on: request.json() is parsed before any validation, so a malformed body there raises instead of getting the 400 below. Client fields skip_cache and cache_similarity_threshold are taken as given."
+  [[input_flows.steps]]
+  symbol = "vllm_router.services.request_service.request:route_general_request"
+  guard = "Body must parse as JSON and be an object (else 400); 'model' must be present (else 400); the model must be served by an awake engine (404 / 503). X-Request-Id is accepted from the client unchanged and becomes the stats key. No body-size limit and no check of the other fields — the engine validates the rest."
+  [[input_flows.steps]]
+  symbol = "vllm_router.routers.routing_logic:PrefixAwareRouter.route_request"
+  guard = "Reads 'messages' (text parts only) or else request_json['prompt'] directly; a body with neither (e.g. embeddings 'input') raises KeyError and the client gets a 500. The prompt text is inserted into the in-memory HashTrie."
+  [[input_flows.steps]]
+  symbol = "vllm_router.services.request_service.request:process_request"
+  guard = "Parses the body again for 'stream' and 'model' (400 if not JSON). Hop-by-hop headers are dropped and X-Request-Id is replaced; Authorization and all other client headers pass through to the engine, which applies its own VLLM_API_KEY check. The body is sent unchanged."
+
+[[layer_rules]]
+text = "Routing logic only chooses a URL: it never imports the HTTP routes, the request proxy or the app."
+from_layers = ["routing"]
+forbid = ["vllm_router.app", "vllm_router.routers.main_router", "vllm_router.routers.files_router", "vllm_router.routers.batches_router", "vllm_router.services.request_service."]
+
+[[layer_rules]]
+text = "Service discovery and statistics never import routing logic, the proxy or the app."
+from_layers = ["discovery-stats"]
+forbid = ["vllm_router.app", "vllm_router.routers.", "vllm_router.services.request_service."]
+
+[[layer_rules]]
+text = "Routing, discovery and statistics never depend on experimental features."
+from_layers = ["routing", "discovery-stats"]
+forbid = ["vllm_router.experimental."]
+
+[[layer_rules]]
+text = "No router module imports the example, tutorial or script programs."
+from_layers = ["startup", "http", "routing", "proxy", "files-batch", "discovery-stats", "experimental", "shared"]
+forbid = ["examples.", "tutorials.", "scripts."]
+
+[[layer_rules]]
+text = "Files and batch storage do not reach into the request proxy."
+from_layers = ["files-batch"]
+forbid = ["vllm_router.services.request_service.", "vllm_router.routers.routing_logic"]
+
+[[decisions]]
+decision = "Which engine serves a request"
+by = "people (config file)"
+how = "--routing-logic (Helm routerSpec.routingLogic) picks one RoutingInterface subclass at start-up: roundrobin, session, prefixaware, kvaware, loadaware, priority, disaggregated_prefill or disaggregated_prefill_orchestrated. The chosen class then decides per request in code."
+symbol = "vllm_router.routers.routing_logic:initialize_routing_logic"
+
+[[decisions]]
+decision = "Where the engine list comes from"
+by = "people (config file)"
+how = "--service-discovery static (fixed --static-backends/--static-models), k8s (watch pods by label, or Services with --k8s-service-discovery-type service-name) or external-only (no local engines)."
+symbol = "vllm_router.service_discovery:_create_service_discovery"
+
+[[decisions]]
+decision = "Whether a discovered pod may receive traffic"
+by = "code"
+how = "All containers ready, no deletion timestamp, a pod IP, and /v1/models returns at least one model; requests further skip endpoints whose sleep flag is set."
+symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._on_engine_update"
+
+[[decisions]]
+decision = "Unknown model: 404 or 503"
+by = "code"
+how = "If no live endpoint serves the model, 404 when discovery has never seen the model, 503 'temporarily unavailable' when it has (scaled to zero or sleeping)."
+symbol = "vllm_router.services.request_service.request:route_general_request"
+
+[[decisions]]
+decision = "Which load signal routing uses"
+by = "code"
+how = "Session, kvaware, priority and loadaware use the router's own event-driven request stats (QPS in a sliding window, in-flight prefill + decode counts), not the scrape-lagged engine /metrics."
+symbol = "vllm_router.routers.routing_logic:LoadAwareRouter.load_penalty"
+
+[[decisions]]
+decision = "Session affinity"
+by = "code"
+how = "Session id read from the --session-key header, else the same key in the JSON body; a consistent hash ring (uhashring) over engine URLs maps it to an engine, so adding an engine moves few sessions. No session id → lowest QPS."
+symbol = "vllm_router.routers.routing_logic:SessionRouter.route_request"
+
+[[decisions]]
+decision = "When KV-cache location wins over load balancing"
+by = "code"
+how = "kvaware routes to the cache holder only if it matched at least prompt_tokens − --kv-aware-threshold tokens; loadaware scores matched/prompt − beta × relative load and takes the best."
+symbol = "vllm_router.routers.routing_logic:LoadAwareRouter.select_url"
+
+[[decisions]]
+decision = "Request priority"
+by = "code"
+how = "Priority from the x-request-priority header, else the body field, else --priority-default; below --priority-threshold goes to the least-loaded engine, others round-robin; the resolved value is written back into the body for vLLM's own scheduler."
+symbol = "vllm_router.routers.routing_logic:PriorityRouter.route_request"
+
+[[decisions]]
+decision = "Whether a failed engine call is retried elsewhere"
+by = "people (config file)"
+how = "--max-instance-failover-reroute-attempts; only errors raised before the engine's headers arrive are retried, on a re-routed endpoint not yet tried."
+symbol = "vllm_router.services.request_service.request:route_general_request"
+
+[[decisions]]
+decision = "Whether a model goes to an external provider"
+by = "people (config file)"
+how = "Model ids and aliases listed in --external-providers-config are looked up before local endpoints; a hit bypasses routing logic entirely."
+symbol = "vllm_router.external_providers.registry:ExternalProviderManager.is_external_model"
+
+[[decisions]]
+decision = "Changing router behaviour without a restart"
+by = "people (config file)"
+how = "A watched YAML/JSON file is diffed every 10 s; any change rebuilds service discovery, routing logic and callbacks."
+symbol = "vllm_router.dynamic_config:DynamicConfigWatcher._watch_worker"
+
+[[decisions]]
+decision = "Answering from the semantic cache"
+by = "people (config file)"
+how = "--feature-gates SemanticCache=true plus --semantic-cache-model; chat completions whose embedding is within --semantic-cache-threshold of a cached one are answered without an engine."
+symbol = "vllm_router.experimental.semantic_cache_integration:check_semantic_cache"
+
+[[decisions]]
+decision = "One engine Deployment per model"
+by = "people (config file)"
+how = "The Helm chart renders a Deployment release-<name>-deployment-vllm and Service release-<name>-engine-service for each entry of servingEngineSpec.modelSpec; the router finds them by servingEngineSpec.labels and reads the served models from each pod."
+symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._add_engine"
+
+[[entities]]
+id = "endpoint-info"
+name = "Engine endpoint (EndpointInfo)"
+summary = "One record per engine the router can send to: URL, served model names and adapters, stable Id, model label, sleep flag. Lives only in router memory."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._add_engine"
+  by = "K8s watcher thread"
+  text = "Created when a pod becomes ready and its /v1/models answers; Id is uuid5 of the pod name, URL is http://<pod-ip>:<port>."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.service_discovery:StaticServiceDiscovery.get_endpoint_info"
+  by = "static discovery"
+  text = "Rebuilt on every call from --static-backends / --static-models, skipping backends the health check marked unhealthy."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._on_engine_update"
+  by = "K8s watcher thread"
+  text = "A MODIFIED event on a ready pod re-creates the record (re-reading models and sleep state, e.g. after /sleep adds the sleeping label)."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.services.request_service.request:route_general_request"
+  by = "every API request"
+  text = "Filtered to endpoints that serve the requested model and are not sleeping, then handed to the routing logic."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_metrics"
+  by = "stats thread"
+  text = "Each endpoint URL is scraped for /metrics."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "vllm_router.service_discovery:K8sPodIPServiceDiscovery._delete_engine"
+  by = "K8s watcher thread"
+  text = "Removed on DELETED, on loss of readiness or models, or when an evicted pod loses its IP."
+
+[[entities]]
+id = "request-stats"
+name = "Per-engine request statistics (RequestStats)"
+summary = "Router-local counters per engine URL: QPS over --request-stats-window, TTFT, in-flight prefill/decode counts, finished count, latency. The live load signal for routing."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_new_request"
+  by = "process_request"
+  text = "Start time stored under (engine URL, request id); in-prefill count +1; QPS window updated."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_response"
+  by = "process_request (first chunk)"
+  text = "Moves the request from prefill to decoding and records TTFT."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_complete"
+  by = "process_request (finally block)"
+  text = "Decrements the in-flight count, records latency, forgets the start time; idempotent, also on errors and client disconnects."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.stats.request_stats:RequestStatsMonitor.get_request_stats"
+  by = "routing logic, /metrics, log_stats"
+  text = "Snapshot of RequestStats per engine URL; avg_itl is always -1 and avg_decoding_length stays -1 (never fed)."
+
+[[entities]]
+id = "engine-stats"
+name = "Per-engine scraped statistics (EngineStats)"
+summary = "Values parsed from an engine's /metrics: running and waiting requests, prefix-cache hits/queries/hit rate, KV-cache usage."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.stats.engine_stats:EngineStats.from_vllm_scrape"
+  by = "stats thread"
+  text = "Parsed from the Prometheus text of one engine."
+  [[entities.events]]
+  stage = "store"
+  symbol = "vllm_router.stats.engine_stats:EngineStatsScraper._scrape_metrics"
+  by = "stats thread"
+  text = "Replaces the map under a lock; engines that failed or vanished are removed."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.routers.metrics_router:metrics"
+  by = "Prometheus scrape of the router"
+  text = "Re-exported as gpu_prefix_cache_* gauges labelled by engine URL."
+
+[[entities]]
+id = "prefix-trie"
+name = "Prefix trie entry (HashTrie node)"
+summary = "For prefixaware routing: a trie keyed by xxhash of 128-character prompt chunks, each node holding the engine URLs that saw that prefix."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.prefix.hashtrie:HashTrie.insert"
+  by = "PrefixAwareRouter.route_request"
+  text = "After every routing decision the prompt's chunks are inserted with the chosen engine URL."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.prefix.hashtrie:HashTrie.longest_prefix_match"
+  by = "PrefixAwareRouter.route_request"
+  text = "Walks chunks while some currently available engine still shares the prefix; returns match length and candidate URLs."
+
+[[entities]]
+id = "uploaded-file"
+name = "Uploaded file (OpenAIFile)"
+summary = "A file posted to /v1/files, stored at <file-storage-path>/<user_id>/<file_id> on the router pod's local disk; user_id is always the default."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.routers.files_router:route_files"
+  by = "client · POST /v1/files"
+  text = "Multipart body read into memory and written by FileStorage.save_file under a new id file-<6 hex chars>."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.routers.files_router:route_get_file_content"
+  by = "client · GET /v1/files/{id}/content"
+  text = "Whole file returned in one response."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.process_batches"
+  by = "batch processor"
+  text = "Batch output files are created the same way with purpose batch_output."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "vllm_router.services.files_service.file_storage:FileStorage.delete_file"
+  by = "nobody yet"
+  text = "Implemented in storage but no route calls it; files live until the pod's disk is wiped."
+
+[[entities]]
+id = "batch-job"
+name = "Batch job (BatchInfo, SQLite batch_queue)"
+summary = "One row per POST /v1/batches in SQLite table batch_queue: input file id, endpoint, status, output file id, timestamps."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.create_batch"
+  by = "client · POST /v1/batches"
+  text = "Inserted with status pending and id batch_<6 hex chars> after the input file is found."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.process_batches"
+  by = "batch processor"
+  text = "pending → running → completed (or failed), with output_file_id and completed_at."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.cancel_batch"
+  by = "client · DELETE /v1/batches/{id}"
+  text = "Sets status cancelled unless completed or failed (but first calls retrieve_batch, see findings)."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.retrieve_batch"
+  by = "client · GET /v1/batches[/{id}]"
+  text = "Reads the row back into a BatchInfo."
+
+[[entities]]
+id = "dynamic-config"
+name = "Router config (DynamicRouterConfig)"
+summary = "The router settings that may change at run time: discovery type and backends, routing logic, session key, priority settings, callbacks."
+  [[entities.events]]
+  stage = "born"
+  symbol = "vllm_router.dynamic_config:DynamicRouterConfig.from_args"
+  by = "start-up"
+  text = "Built from the command line when a dynamic config file is given."
+  [[entities.events]]
+  stage = "update"
+  symbol = "vllm_router.dynamic_config:DynamicConfigWatcher._watch_worker"
+  by = "watcher thread"
+  text = "Replaced by the file's contents when they differ and reconfiguration succeeded."
+  [[entities.events]]
+  stage = "read"
+  symbol = "vllm_router.routers.main_router:health"
+  by = "GET /health"
+  text = "Returned as `dynamic_config` in the health response."
+
+[[findings]]
+id = "batch-processor-placeholder"
+severity = "medium"
+category = "risk"
+title = "The batch API accepts jobs but never runs them against an engine"
+detail = "True now: process_batches marks the batch running, sleeps 1 s and saves a text file 'Processed batch <id> at <time>' as the output, then marks it completed (a code comment says to replace it with actual processing logic). Trigger: any POST /v1/batches. Reach: clients using the OpenAI-style batch flow get status completed and an output file that contains no model results."
+symbols = ["vllm_router.services.batch_service.local_processor:LocalBatchProcessor.process_batches"]
+evidence = "Read LocalBatchProcessor.process_batches; it calls only storage.save_file and SQLite, no HTTP client."
+check = {kind = "text_in", pattern = "Simulate processing delay"}
+
+[[findings]]
+id = "short-file-ids-overwrite"
+severity = "medium"
+category = "risk"
+title = "File and batch ids use 6 hex characters, so uploads can silently overwrite each other"
+detail = "True now: FileStorage.save_file names a new file `file-` + uuid4().hex[:6] (16.7 million values) and opens the path with mode 'wb'; batch ids are `batch_` + 6 hex characters. Trigger: two uploads drawing the same id — by the birthday bound about a 3% chance once ~1,000 files exist and ~50% near 4,800. Reach: the earlier file's content is replaced without error (one user's batch input or output becomes another's); a colliding batch id fails the INSERT on the primary key and the POST returns 500."
+symbols = ["vllm_router.services.files_service.file_storage:FileStorage.save_file", "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.create_batch"]
+evidence = "Read FileStorage.save_file and LocalBatchProcessor.create_batch (both use uuid4().hex[:6]); no existence check before writing."
+check = {kind = "text_in", pattern = "hex\\[:6\\]"}
+
+[[findings]]
+id = "dynamic-config-routing-drops-args"
+severity = "medium"
+category = "risk"
+title = "A dynamic config reload rebuilds the routing logic with most of its settings missing"
+detail = "True now: DynamicConfigWatcher.reconfigure_routing_logic passes only session_key and the priority_* fields to reconfigure_routing_logic. Trigger: any change to the watched file (reconfigure_all always rebuilds routing). Reach: max_instance_failover_reroute_attempts silently drops to 0 (failover off); switching to kvaware/loadaware passes lmcache_controller_port=None to the LMCache controller; disaggregated modes get no prefill/decode labels; prefixaware loses --prefix-min-match-length; the prefix trie, round-robin counters and LMCache instance map are discarded."
+symbols = ["vllm_router.dynamic_config:DynamicConfigWatcher.reconfigure_routing_logic"]
+evidence = "Read dynamic_config.py reconfigure_routing_logic and routing_logic.py initialize_routing_logic (kwargs.get defaults) and cleanup_routing_logic; compared with app.py initialize_all, which passes 17 keyword arguments."
+
+[[findings]]
+id = "dynamic-config-sd-drops-type"
+severity = "medium"
+category = "risk"
+title = "A dynamic config reload switches service-name discovery back to pod-ip and restarts discovery on every change"
+detail = "True now: DynamicConfigWatcher.reconfigure_service_discovery for k8s passes namespace, port, label selector and labels, but not k8s_service_discovery_type, watcher_timeout_seconds or health_check_timeout_seconds; _create_service_discovery defaults the type to pod-ip. reconfigure_all calls it even when only callbacks or session_key changed. Trigger: any edit of the watched file. Reach: a router started with --k8s-service-discovery-type service-name starts watching pods instead; on every reload the new discovery starts empty and fills from its watch, so requests in that window can get 404/503."
+symbols = ["vllm_router.dynamic_config:DynamicConfigWatcher.reconfigure_service_discovery"]
+evidence = "Read dynamic_config.py reconfigure_service_discovery / reconfigure_all and service_discovery.py _create_service_discovery / reconfigure_service_discovery."
+
+[[findings]]
+id = "kvaware-blocking-tokenize"
+severity = "medium"
+category = "risk"
+title = "kvaware routing can block the whole event loop for up to 10 seconds"
+detail = "True now: KvawareRouter.route_request (async) falls back to a synchronous requests.post to the engine's /tokenize with timeout=10 when the local tokenizer cannot load, on the event loop thread. LoadAwareRouter.tokenize_prompt fixed the same call by running it in an executor. Trigger: routing-logic kvaware and AutoTokenizer.from_pretrained failing (no transformers, no HF access, gated model). Reach: every in-flight request and stream on that router replica stalls while each tokenize call runs."
+symbols = ["vllm_router.routers.routing_logic:KvawareRouter.route_request"]
+evidence = "Read KvawareRouter.route_request and LoadAwareRouter.tokenize_prompt side by side."
+check = {kind = "text_in", pattern = "body = requests\\.post\\("}
+
+[[findings]]
+id = "kvaware-ignores-chat-messages"
+severity = "medium"
+category = "risk"
+title = "KV-cache-aware routing tokenizes only `prompt`, so chat completions never use the cache lookup"
+detail = "True now: KvawareRouter.route_request and LoadAwareRouter.tokenize_prompt encode request_json.get('prompt', ''); a /v1/chat/completions body has `messages` instead (a code comment marks chat completions as still to do). Trigger: routing-logic kvaware or loadaware with chat traffic. Reach: the token list is empty, the lookup finds nothing, and every chat request falls back to session hash or lowest QPS — the KV-aware behaviour applies only to /v1/completions."
+symbols = ["vllm_router.routers.routing_logic:KvawareRouter.route_request", "vllm_router.routers.routing_logic:LoadAwareRouter.tokenize_prompt"]
+evidence = "Read both functions; compare PrefixAwareRouter.route_request, which does concatenate messages[].content."
+check = {kind = "text_in", pattern = "request_json\\.get\\(\"prompt\", \"\"\\)"}
+
+[[findings]]
+id = "prefix-trie-unbounded"
+severity = "low"
+category = "risk"
+title = "The prefix-aware HashTrie only grows"
+detail = "Now: HashTrie.insert adds one TrieNode (with its own asyncio.Lock) per 128-character chunk of every distinct prompt, and nothing ever removes nodes or URLs of engines that are gone; the class says it assumes no eviction. Trigger: a long-running router with --routing-logic prefixaware and varied prompts. Reach: router memory grows with total distinct prompt text served; stale engine URLs stay in node sets but are filtered by the available-endpoints intersection, so routing stays correct."
+symbols = ["vllm_router.routers.routing_logic:PrefixAwareRouter", "vllm_router.prefix.hashtrie:HashTrie.insert"]
+evidence = "Read PrefixAwareRouter (docstring: 'we assume that there is no eviction of prefix cache') and HashTrie.insert / longest_prefix_match; grep found no delete or eviction method in vllm_router/prefix/hashtrie.py."
+check = {kind = "text_in", pattern = "assume that there is no eviction"}
+
+[[findings]]
+id = "disagg-prefill-single-client"
+severity = "medium"
+category = "risk"
+title = "disaggregated_prefill uses one prefill and one decode engine, whatever the routing logic would choose"
+detail = "True now: route_disaggregated_prefill_request sends to app.state.prefill_client and app.state.decode_client; initialize_client_sessions overwrites each with a session bound to the last endpoint seen for that label. DisaggregatedPrefillRouter.route_request has no callers. Trigger: routing-logic disaggregated_prefill with more than one prefill or decode pod. Reach: the extra pods receive no traffic; when that one pod is replaced the client is only re-bound when the watcher sees the new pod."
+symbols = ["vllm_router.routers.routing_logic:DisaggregatedPrefillRouter.route_request", "vllm_router.services.request_service.request:route_disaggregated_prefill_request", "vllm_router.service_discovery:K8sPodIPServiceDiscovery.initialize_client_sessions"]
+evidence = "`codeflow.py query DisaggregatedPrefillRouter.route_request` → callers (0); read route_disaggregated_prefill_request and initialize_client_sessions."
+check = "no_callers"
+
+[[findings]]
+id = "engine-auth-inconsistent"
+severity = "medium"
+category = "risk"
+title = "Disaggregated paths do not send the engine API key the chart configures"
+detail = "True now: the chart gives engines and router VLLM_API_KEY from release-secrets. The general proxy forwards the client's own Authorization header; discovery probes use VLLM_API_KEY; send_request_to_prefiller/send_request_to_decode send `Bearer` + env OPENAI_API_KEY (literally 'Bearer None' when unset); route_orchestrated_disaggregated_request sends no Authorization at all. Trigger: disaggregated_prefill or disaggregated_prefill_orchestrated with servingEngineSpec.vllmApiKey set. Reach: every prefill call gets 401 from the engine and the client gets a prefiller error."
+symbols = ["vllm_router.services.request_service.request:send_request_to_prefiller", "vllm_router.services.request_service.request:route_orchestrated_disaggregated_request"]
+evidence = "grep for API_KEY/Authorization in src/vllm_router; read the four functions and helm/templates/deployment-router.yaml / deployment-vllm-multi.yaml env blocks."
+check = {kind = "text_in", pattern = "OPENAI_API_KEY"}
+
+[[findings]]
+id = "static-health-check-no-auth"
+severity = "medium"
+category = "risk"
+title = "Static backend health checks fail against engines that require an API key, removing every backend"
+detail = "True now: utils.is_model_healthy posts a test request with only Content-Type, while the K8s discovery probes add Authorization from VLLM_API_KEY. Trigger: --service-discovery static with --static-backend-health-checks against vLLM started with --api-key. Reach: every check gets 401, all backends are listed as unhealthy and dropped from get_endpoint_info, so every request answers 503 ('temporarily unavailable')."
+symbols = ["vllm_router.utils:is_model_healthy"]
+evidence = "Read utils.is_model_healthy and StaticServiceDiscovery.get_unhealthy_endpoint_hashes / get_endpoint_info; compared with K8sPodIPServiceDiscovery._get_model_names."
+
+[[findings]]
+id = "proxy-no-timeout"
+severity = "low"
+category = "risk"
+title = "The general proxy has no timeout, and failover only covers errors before headers"
+detail = "True now: process_request calls the engine with aiohttp ClientTimeout(total=None) and no sock_read limit. Trigger: an engine that accepts the connection and then hangs (GPU hang, stuck worker). Reach: the client waits until it gives up; the router keeps the request counted as in flight until the connection closes, so load-aware routers see that engine as busy, and failover does not apply because headers were already received or never error."
+symbols = ["vllm_router.services.request_service.request:process_request"]
+evidence = "Read process_request and the retry loop in route_general_request (except clause around anext(stream_generator))."
+check = {kind = "text_in", pattern = "ClientTimeout\\(total=None\\)"}
+
+[[findings]]
+id = "streaming-response-buffered"
+severity = "low"
+category = "risk"
+title = "Streaming responses are also kept in full in router memory"
+detail = "True now: process_request appends every chunk to full_response; the comment says this is for non-streaming requests, but full_response is never None, so streams are buffered too (used for the semantic cache and post_request callback). Trigger: many concurrent long streams. Reach: router memory per request grows to the full response size for the life of the stream."
+symbols = ["vllm_router.services.request_service.request:process_request"]
+evidence = "Read process_request: full_response = bytearray() then `if full_response is not None: full_response.extend(chunk)`."
+check = {kind = "text_in", pattern = "if full_response is not None"}
+
+[[findings]]
+id = "pii-feature-not-wired"
+severity = "medium"
+category = "doc vs code"
+title = "The experimental README promises PII detection and blocking, but nothing calls it"
+detail = "True now: experimental/README.md says 'detects and blocks PII in LLM requests' and to start with --feature-gates=PII=true --pii-analyzer=…; pii.middleware.check_pii has no callers, the parser has no --pii-analyzer option, and the gate name in feature_gates.py is PIIDetection. Trigger: an operator following the README. Reach: the router refuses the unknown --pii-analyzer flag, and with the gate alone no request is ever checked — prompts with PII go to engines unfiltered while the operator believes they are blocked."
+symbols = ["vllm_router.experimental.pii.middleware:check_pii"]
+evidence = "`codeflow.py query check_pii` → callers (0); grep -i pii in parsers/parser.py → no match; read experimental/README.md and feature_gates.py."
+check = "no_callers"
+
+[[findings]]
+id = "shadowed-semantic-cache-module"
+severity = "low"
+category = "dead code"
+title = "experimental/semantic_cache.py is unreachable and would not import"
+detail = "True now: src/vllm_router/experimental/ has both a semantic_cache/ package and a semantic_cache.py file; Python resolves `vllm_router.experimental.semantic_cache` to the package, so the .py file is never loaded, and it imports vllm_router.experimental.semantic_cache_db, which does not exist. Trigger: someone editing the .py file expecting a change. Reach: confusion only; no runtime effect."
+symbols = ["vllm_router.experimental.semantic_cache"]
+evidence = "ls src/vllm_router/experimental; diffed the two files; grep semantic_cache_db → only the import line in semantic_cache.py."
+
+[[findings]]
+id = "chart-schema-routing-enum"
+severity = "low"
+category = "doc vs code"
+title = "The Helm chart rejects two routing logics the router supports"
+detail = "True now: --routing-logic accepts roundrobin, session, kvaware, loadaware, prefixaware, disaggregated_prefill, disaggregated_prefill_orchestrated and priority; helm/values.schema.json (and the @schema comment in values.yaml) enumerate only six, without loadaware and priority. Trigger: routerSpec.routingLogic: loadaware or priority. Reach: helm install/upgrade fails schema validation; users must pass the flag through routerSpec.extraArgs."
+symbols = ["vllm_router.parsers.parser:parse_args"]
+evidence = "Read parse_args --routing-logic choices and helm/values.schema.json routerSpec.routingLogic.enum."
+
+[[findings]]
+id = "router-readme-stale-options"
+severity = "low"
+category = "doc vs code"
+title = "The router README lists fewer routing and discovery options than the code has"
+detail = "True now: src/vllm_router/README.md says --routing-logic options are 'roundrobin or session', --service-discovery 'static or k8s', prefix-aware routing is '(WIP)', and the dynamic config routing_logic is 'roundrobin or session'. The parser offers eight routing logics and external-only discovery. Trigger: a newcomer configuring from the README. Reach: features stay unknown; no runtime effect."
+symbols = ["vllm_router.parsers.parser:parse_args"]
+evidence = "Read README.md option list and parse_args choices for --routing-logic and --service-discovery."
+
+[[findings]]
+id = "multi-replica-router-state"
+severity = "medium"
+category = "risk"
+title = "Running more than one router replica splits routing state, and kvaware loses cache information"
+detail = "True now: the prefix trie, round-robin counters, request stats and the LMCache controller all live inside one router process. The chart can run several (routerSpec.replicaCount, or hpa-router.yaml when routerSpec.autoscaling.enabled, maxReplicas default 3), while engines reach the LMCache controller through LMCACHE_CONTROLLER_PULL_URL = release-router-service:<port>, which the Service load-balances to one replica. Trigger: more than one router replica with kvaware/loadaware/prefixaware. Reach: replicas that did not receive a worker's registration have no cache layout and fall back to session/QPS routing; prefix affinity and load counts are per replica only."
+symbols = ["vllm_router.routers.routing_logic:KvawareRouter.start_kv_manager", "vllm_router.routers.routing_logic:PrefixAwareRouter.route_request"]
+evidence = "Read KvawareRouter.__init__/start_kv_manager (controller bound to 0.0.0.0 in-process), helm/templates/service-router.yaml (port 9000), deployment-vllm-multi.yaml (LMCACHE_CONTROLLER_PULL_URL), hpa-router.yaml and values.yaml routerSpec.autoscaling."
+
+[[findings]]
+id = "engine-stats-unused-by-routing"
+severity = "info"
+category = "risk"
+title = "Scraped engine metrics are not used by any routing logic"
+detail = "True now: route_general_request passes engine_stats to every router, but no class in routing_logic.py reads it (LoadAwareRouter documents it as unused because it is scrape-lagged). The scraper fetches engines one after another with timeout = --engine-stats-interval. Trigger: reading the code or docs as if routing were driven by engine queue length. Reach: understanding only; with many slow engines a scrape round can take several intervals, which only delays the exported gauges."
+symbols = ["vllm_router.stats.engine_stats:EngineStatsScraper._scrape_metrics"]
+evidence = "grep 'engine_stats[' / get_engine_stats() in src/vllm_router: only metrics_router, log_stats and request.py read it; read every route_request in routing_logic.py."
+
+[[findings]]
+id = "noop-rewriter-always-active"
+severity = "low"
+category = "risk"
+title = "Every request logs 'was rewritten' although no rewriter is configured"
+detail = "True now: initialize_all calls get_request_rewriter(), which creates a NoopRequestRewriter, so is_request_rewriter_initialized() is always True; route_general_request then 'rewrites' each body, logs 'Request for model … was rewritten' at INFO and re-parses the JSON. initialize_request_rewriter has no callers and --request-rewriter only accepts noop. Trigger: every API request. Reach: misleading INFO line per request and one extra JSON parse."
+symbols = ["vllm_router.app:initialize_all"]
+evidence = "Read rewriter.py (get_request_rewriter, is_request_rewriter_initialized) and route_general_request; `codeflow.py query initialize_request_rewriter` → callers (0)."
+check = {kind = "calls", target = "vllm_router.services.request_service.rewriter:get_request_rewriter"}
+
+[[findings]]
+id = "metrics-blocks-event-loop"
+severity = "low"
+category = "risk"
+title = "Each /metrics scrape pauses the router for 100 ms"
+detail = "True now: the async metrics handler calls psutil.cpu_percent(interval=0.1), which sleeps synchronously on the event loop. Trigger: every Prometheus scrape of the router (ServiceMonitor). Reach: all requests on that replica stall 0.1 s per scrape; small at a 15–30 s scrape interval."
+symbols = ["vllm_router.routers.metrics_router:metrics"]
+evidence = "Read metrics_router.metrics."
+check = {kind = "text_in", pattern = "cpu_percent\\(interval=0\\.1\\)"}
+
+[[findings]]
+id = "request-stats-dead-fields"
+severity = "low"
+category = "risk"
+title = "Exported ITL, decoding length and swapped counts are constants"
+detail = "True now: get_request_stats sets avg_itl to -1 always, decoding_length_monitors is never written, and on_request_swapped has no callers. Trigger: dashboards built on avg_itl, avg_decoding_length or num_requests_swapped from the router's /metrics. Reach: those panels show -1 or 0 forever."
+symbols = ["vllm_router.stats.request_stats:RequestStatsMonitor.get_request_stats", "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_swapped"]
+evidence = "Read request_stats.py; `codeflow.py query RequestStatsMonitor.on_request_swapped` → callers (0)."
+check = {kind = "text_in", pattern = "avg_itl_val = -1"}
+
+[[findings]]
+id = "sentry-default-pii"
+severity = "low"
+category = "risk"
+title = "Enabling Sentry also turns on sending default PII"
+detail = "True now: initialize_all calls sentry_sdk.init(..., send_default_pii=True) whenever --sentry-dsn is set; there is no flag to turn it off. Trigger: an operator setting --sentry-dsn for error reports. Reach: Sentry events from this router carry the data the SDK classifies as PII (such as client IP and request headers), sent to a third party."
+symbols = ["vllm_router.app:initialize_all"]
+evidence = "Read app.py initialize_all and parser options for sentry."
+check = {kind = "text_in", pattern = "send_default_pii=True"}
+
+[[findings]]
+id = "failover-ignores-5xx"
+severity = "medium"
+category = "doc vs code"
+title = "Instance failover only reacts to connection errors, not to an engine's 4xx/5xx"
+detail = "Now: process_request's docstring says it raises HTTPError when the backend returns a 4xx or 5xx status, but it never calls raise_for_status — it yields the engine's status and streams the body. route_general_request's failover loop (max_instance_failover_reroute_attempts) therefore retries only when aiohttp raises before the headers, for example connection refused. Trigger: an engine that is up but answers 500/503 (overloaded, draining, out of memory). Reach: every routed request on that engine; the error goes straight to the client even with failover configured, and the request is not tried on another engine."
+symbols = ["vllm_router.services.request_service.request:process_request", "vllm_router.services.request_service.request:route_general_request"]
+evidence = "Read process_request (no raise_for_status; yields backend_response.headers, backend_response.status before streaming) and the attempt loop in route_general_request (except Exception around anext(stream_generator) only). src/tests/test_instance_failover.py simulates failure only by making process_request raise."
+check = {kind = "text_in", pattern = "HTTPError: If the backend returns a 4xx or 5xx status code"}
+
+[[findings]]
+id = "request-id-collision-leaks-load"
+severity = "medium"
+category = "risk"
+title = "Two in-flight requests with the same X-Request-Id leave an engine's in-flight counter permanently high"
+detail = "Now: RequestStatsMonitor keys each request by (engine url, request id), and the id is the client's X-Request-Id when present. on_new_request increments in_prefill_requests every time but overwrites the start-time entry; the first on_request_complete pops that entry, so the second completion returns early and never decrements. Trigger: a client that reuses or hard-codes X-Request-Id while an earlier request with that id is still running on the same engine. Reach: one stuck unit per collision on that engine, never recovered until restart; load-aware and priority routing (which use in_prefill + in_decoding) steer traffic away from it, and the router's /metrics shows phantom running requests."
+symbols = ["vllm_router.stats.request_stats:RequestStatsMonitor.on_new_request", "vllm_router.stats.request_stats:RequestStatsMonitor.on_request_complete", "vllm_router.services.request_service.request:route_general_request"]
+evidence = "Read route_general_request (request_id = request.headers.get('X-Request-Id') or uuid4), on_new_request (unconditional += 1 and dict overwrite) and on_request_complete (returns when the key is missing). Traced two overlapping calls by hand."
+check = {kind = "text_in", pattern = "self\\.request_start_time\\[\\(engine_url, request_id\\)\\] = timestamp"}
+
+[[findings]]
+id = "prefixaware-keyerror-non-prompt"
+severity = "medium"
+category = "risk"
+title = "Prefix-aware routing returns 500 for embeddings, rerank, score and responses requests"
+detail = "Now: PrefixAwareRouter.route_request reads 'messages', and otherwise request_json['prompt'] with no fallback. Embeddings and responses bodies use 'input', rerank and score use 'query'/'text_1', so those requests raise KeyError, which nothing catches. A list-valued completions prompt also fails when the trie slices and hashes it. Trigger: --routing-logic prefixaware and any request to those routes. Reach: every such request on that deployment returns 500 instead of being routed."
+symbols = ["vllm_router.routers.routing_logic:PrefixAwareRouter.route_request"]
+evidence = "Read PrefixAwareRouter.route_request (prompt = request_json['prompt']), main_router (embeddings/rerank/score/responses all go through route_general_request) and route_general_request (awaits route_request for PrefixAwareRouter without a try)."
+check = {kind = "text_in", pattern = "prompt = request_json\\[\"prompt\"\\]"}
+
+[[findings]]
+id = "batch-api-cannot-start"
+severity = "medium"
+category = "risk"
+title = "--enable-batch-api stops the router at start-up: local_processor imports a module that does not exist"
+detail = "Now: local_processor imports BatchInfo and BatchStatus from vllm_router.batch.batch at module level and again inside retrieve_batch, but the package is vllm_router.services.batch_service.batch; there is no vllm_router/batch. initialize_batch_processor imports local_processor ('local' is the only choice), so initialize_all raises ModuleNotFoundError. Without the flag, /v1/files answers 500 because app.state.batch_storage is never set. Even past the import, process_batches only sleeps one second and writes a placeholder text file; it never sends the batch lines to an engine. Trigger: enabling the batch API. Reach: the whole Files and Batches API is unusable today."
+symbols = ["vllm_router.services.batch_service.local_processor:LocalBatchProcessor.retrieve_batch", "vllm_router.services.batch_service:initialize_batch_processor", "vllm_router.services.batch_service.local_processor:LocalBatchProcessor.process_batches"]
+evidence = "find . -name batch.py → only src/vllm_router/services/batch_service/batch.py; grep 'vllm_router.batch' → the two imports in local_processor.py. Read initialize_batch_processor, initialize_all (batch processor created inside initialize_all), files_router:route_files (reads app.state.batch_storage inside try) and process_batches (its own comment says to replace the simulated processing with real logic)."
+check = {kind = "text_in", pattern = "from vllm_router\\.batch\\.batch import"}
+
+[[findings]]
+id = "semantic-cache-blocks-loop"
+severity = "medium"
+category = "risk"
+title = "Semantic cache embeds and rewrites its whole index on the event loop"
+detail = "Now: check_semantic_cache and store_in_semantic_cache are async but call SemanticCache.search/store synchronously; each runs SentenceTransformer.encode, and FAISSAdapter.store then rewrites the full FAISS index file and pickles the full metadata list on every stored answer. Trigger: SemanticCache gate on; cost grows with traffic and cache size. Reach: while one request embeds or saves, the single uvicorn event loop serves no other request, so latency rises for every route, not just chat."
+symbols = ["vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter:FAISSAdapter.store", "vllm_router.experimental.semantic_cache_integration:check_semantic_cache", "vllm_router.experimental.semantic_cache.semantic_cache:SemanticCache.get_embedding"]
+evidence = "Read check_semantic_cache (semantic_cache.search(...) without await or executor), SemanticCache.get_embedding (embedding_model.encode), FAISSAdapter.store (index.add then save_index → faiss.write_index + pickle.dump of all metadata)."
+check = {kind = "calls", target = "vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter:FAISSAdapter.save_index"}
+
+[[findings]]
+id = "semantic-cache-top1-model-filter"
+severity = "low"
+category = "risk"
+title = "Semantic cache misses when the nearest entry belongs to another model"
+detail = "Now: FAISSAdapter.search asks FAISS for the single nearest vector across all models and only then checks that its model matches. Trigger: the same or similar question cached for two models. Reach: lookups for one model miss even though a close-enough entry for that model exists; lower hit rate, never a wrong answer."
+symbols = ["vllm_router.experimental.semantic_cache.db_adapters.faiss_adapter:FAISSAdapter.search"]
+evidence = "Read FAISSAdapter.search: self.index.search(embedding, 1), then 'if metadata[\"model\"] == model'."
+check = {kind = "text_in", pattern = "self\\.index\\.search\\(embedding, 1\\)"}

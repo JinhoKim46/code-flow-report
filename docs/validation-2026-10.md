@@ -140,3 +140,84 @@ Every medium finding was re-read in the code by the dispatching session before p
   - EventBridge schedules → the RSS Lambdas;
   - Step Functions tasks → the workspace Lambdas.
 - **Checks:** the report built at `standard` depth passes the same checks as the other examples (`build` and `check` clean, 20 of 20 edges, no false "fixed", renders at 390 and 1440 px).
+
+## v0.7.0: Terraform
+
+**Test suite:** **89 tests, OK** (79 at the Terraform milestone, 6 for containers, 4 more from the examples below). New fixtures:
+
+- `tf_aws_app`: an `archive_file` Lambda, a container-image Lambda (`image_uri` → `docker_image` build → `jobs/Dockerfile` `CMD`), an SQS event source, an EventBridge schedule, an IAM policy with two statements, and environment variables.
+- `tf_gcp_app`: a Cloud Function with `entry_point` and its source archive, a Pub/Sub `event_trigger`, a Cloud Scheduler job, and a bucket IAM binding for its service account.
+- `tf_azure_app`: a Function App with `app_settings` and a role assignment on its identity, plus `function_app.py` with `route`, `queue_trigger` and `timer_trigger` decorators (the `cloudfn` profile).
+
+**On aws-samples/sample-scribe-ai** (scanner measurements only; not shipped as an example — Terraform, 19 `.tf` files; Python, 28 modules):
+
+- **Resources:** 31, linked by 21 wiring edges, with the Aurora, VPC and ECS community modules counted as resources.
+- **Function → Python links:** 2 of 3 functions. The events Lambda is a container image and links through its Dockerfile; `log_to_s3` links through `archive_file`. The third, the voice processor, runs TypeScript.
+- **Grants:** each IAM policy statement attaches its own actions to its own resource, so Bedrock actions are no longer shown on the Cognito pool, an error the first draft made.
+- **Checks:**
+  - `build` and `check` are clean, and 5 of 5 sampled edges are `ok`.
+  - The page renders at 390 and 1440 px with no horizontal scroll and no errors.
+
+**No regressions** on the earlier repositories: graph coverage is unchanged (95.0, 88.5, 87.9, 80.2 and 88.0 %), and aws-genai-llm-chatbot still reads 93 resources with 17 of 20 Lambdas linked.
+
+### Containers (Docker Compose, Kubernetes, Helm)
+
+**Fixtures:**
+
+- `compose_app`:
+  - an API built from `backend/` whose override file replaces the command with uvicorn;
+  - a celery worker and a `python -m` script;
+  - PostgreSQL and Redis by image, with `${VAR:-default}` in a URL;
+  - an image of the repository itself whose root Dockerfile's last stage inherits a `supervisord` `CMD` (two Python programs and one Node program);
+  - a copy of the stack under `examples/` that must be skipped.
+- `k8s_app`:
+  - a Deployment whose image `ghcr.io/example/api` is matched to `api/Dockerfile`, which runs an entrypoint script that ends in gunicorn `"api.wsgi:create_app()"`;
+  - a Service, an Ingress, a CronJob with `python -m`;
+  - a ConfigMap, a Secret and a claim referenced by `env`, `envFrom` and volumes;
+  - a PostgreSQL StatefulSet;
+  - a Helm chart whose name and image come from `values.yaml`.
+
+**On GoogleCloudPlatform/bank-of-anthos** (scanner measurements only; not shipped as an example — 12 Python files; Kubernetes manifests, kustomize bases and overlays, Terraform for GKE):
+
+- **Resources:** 42, linked by 51 wiring edges. Every Service routes to its Deployment by selector, and the Ingress routes to the frontend Service.
+- **Python links:** 4 of 4 Python workloads link to the function they run (three `create_app` factories and the Locust file). The two PostgreSQL StatefulSets are recognised from their Dockerfile's base image; the Java services are listed and not counted.
+- **Two problems found on this repository and fixed:**
+  - `extras/` held alternative copies of every object and sorted first. It is now read only when alone, and kustomize bases win over overlays.
+  - `POSTGRES_DB=accounts-db` was read as a host. A bare name is now an edge only in a variable named like a host.
+- **Checks:** `build` and `check` are clean, 20 of 20 sampled edges are `ok`, and the page renders at 390 and 1440 px with no horizontal scroll and no errors.
+
+**On earlier repositories:**
+
+- **lfnovo/open-notebook:** its published image is followed through the root Dockerfile, the inherited `CMD` and `supervisord.conf` to `api.main`. Its `examples/` and `scripts/` compose files are skipped.
+- **aws-samples/sample-scribe-ai:** shows its two local-dev Compose stacks beside the Terraform. A repeated `app` service becomes `events/app` and `web/app`, `image: scribe-web` is matched to `web/Dockerfile`, and 4 of 5 functions are linked (the fifth runs TypeScript).
+- **Unchanged:** graph coverage is the same on every repository, and aws-genai-llm-chatbot still reads 93 resources with 17 of 20 linked.
+
+### The shipped examples for 0.7.0
+
+**aws-ia/terraform-aws-control_tower_account_factory** (51 Python files; 115 `.tf` files in 17 local modules):
+
+- **Before the fixes**, the first map linked 0 of 18 Lambdas and found 11 wiring edges.
+  - Every function takes `filename = var.…_archive_path`. The value comes from the root `module "…" { … = module.packaging.… }`, then from the packaging module's `output`, then from a `resource "archive_file"`.
+  - Policies and the three state machine definitions are `templatefile()` calls.
+- **After the fixes:** 18 of 18 Lambdas linked and 54 wiring edges:
+  - 11 Step Functions tasks, including one template written with `${ name }`;
+  - 32 per-statement grants;
+  - EventBridge targets and DynamoDB stream triggers.
+- **Two bugs that only a real repository showed:**
+  - `image_build` shadowed the folder pointer, caught by the sample-scribe-ai regression and now covered by `tf_aws_app`.
+  - A `set()` made the edge order follow the hash seed, so `check` flagged a fresh map as stale; now covered by a test that maps under three seeds.
+
+**vllm-project/production-stack** (69 Python files; a Helm chart, an operator's manifests, tutorials):
+
+- The router Deployment links through `docker/Dockerfile`'s `ENTRYPOINT` and the repository's `vllm-router` console script to `vllm_router.app:main`. It was chosen over `Dockerfile.kvaware` because both start the same command.
+- The cache server's own `command` runs `lmcache_server`, an installed package, so it is shown and not linked. Before the fix, the image name's shared word `vllm` sent it to the router's Dockerfile.
+- Ingress → `release-router-service` → `release-deployment-router` is found by name, because the chart builds selectors with `include`.
+- Tutorials are skipped.
+
+**Checks on all six shipped examples** (smolagents, open-notebook, nanochat, aws-genai-llm-chatbot, aft, production-stack):
+
+- Each was rebuilt with the final scripts.
+- `check` is "up to date" under two hash seeds.
+- 20 of 20 sampled edges are `ok`.
+- Each renders at 390 and 1440 px with no horizontal scroll and no errors.
+- No example carries a high-severity security finding about its repository.

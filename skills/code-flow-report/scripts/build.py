@@ -279,10 +279,10 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
     if infra.get("resources"):
         sec = infra_scanner.section(infra, lang)
         prof_sections.insert(0, {"name": "infra", "rows": sec["rows"], "columns": sec["columns"],
-                                 "title": "인프라 (CDK)" if lang == "ko" else f"Infrastructure ({' and '.join(infra['languages'])} CDK)",
-                                 "intro": (f"CDK 코드에서 읽은 리소스 {len(infra['resources'])}개와 그 연결. 람다마다 실행하는 파이썬 함수({infra['lambdas_linked']}/{infra['lambdas']}개 연결)와, 그것을 호출하는 것(큐, API, 워크플로)과 쓸 수 있는 것(grant), 환경 변수로 이름을 받는 리소스를 보인다."
+                                 "title": f"인프라 ({', '.join(infra['languages'])})" if lang == "ko" else f"Infrastructure ({' and '.join(infra['languages'])})",
+                                 "intro": (f"인프라 코드에서 읽은 리소스 {len(infra['resources'])}개와 그 연결. 함수마다 실행하는 파이썬 함수({infra['lambdas_linked']}/{infra['lambdas']}개 연결)와, 그것을 호출하는 것(큐, API, 일정, 워크플로)과 쓸 수 있는 것(권한), 환경 변수로 이름을 받는 리소스를 보인다."
                                            if lang == "ko" else
-                                           f"{len(infra['resources'])} resources read from the CDK code and how they are wired: for each Lambda, the Python function it runs ({infra['lambdas_linked']} of {infra['lambdas']} linked), what invokes it (queues, APIs, workflows), what it may use (grants) and which resources it is told about through environment variables.")})
+                                           f"{len(infra['resources'])} resources read from the infrastructure code and how they are wired: for each function, the Python function it runs ({infra['lambdas_linked']} of {infra['lambdas']} linked), what invokes it (queues, APIs, schedules, workflows), what it may use (grants and IAM roles) and which resources it is told about through environment variables.")})
     roles = [{**r, "_locs": [enrich(code_map, s) for s in r.get("symbols", [])]} for r in narrative.get("roles", [])]
     flows = [{**f, "steps": with_loc(f.get("steps", []))} for f in narrative.get("input_flows", [])]
     entities = [{**e, "events": with_loc(e.get("events", [])), "auto": tables.get(e.get("table", ""))} for e in narrative.get("entities", [])]

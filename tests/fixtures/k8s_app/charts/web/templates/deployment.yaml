@@ -1,0 +1,21 @@
+{{- if .Values.enabled | default true }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "web.fullname" . }}
+  labels:
+    {{- include "web.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
+          command: ["streamlit", "run", "ui/app.py"]
+          env:
+            - name: API_URL
+              value: "http://api/v1"
+{{- end }}

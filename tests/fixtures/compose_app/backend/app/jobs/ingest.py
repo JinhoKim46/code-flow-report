@@ -1,0 +1,5 @@
+def load():
+    return []
+
+
+load()

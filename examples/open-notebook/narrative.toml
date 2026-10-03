@@ -572,6 +572,7 @@ summary = "The API checks the input, saves an uploaded file, creates a placehold
 type=upload  notebooks=["notebook:k3x9"]  transformations=["transformation:summary"]
 embed=true  async_processing=true  file=quarterly-review.pdf (2.1 MB)
 
+
 '''
   note = "The legacy single `notebook_id` field becomes `notebooks=[id]` in SourceCreate.validate_notebook_fields, so the rest of the code only sees the list."
   [[journeys.steps]]
@@ -589,6 +590,7 @@ embed=true  async_processing=true  file=quarterly-review.pdf (2.1 MB)
   payload = '''
 {"file_path": "/app/data/uploads/quarterly-review.pdf", "delete_source": false}
 
+
 '''
   note = "For links it calls validate_url (link-local and cloud-metadata addresses are refused). For uploads, check_file_support runs before any job is queued, so an unsupported file is rejected right away instead of failing in the worker after every retry has run."
   [[journeys.steps]]
@@ -602,6 +604,7 @@ embed=true  async_processing=true  file=quarterly-review.pdf (2.1 MB)
 {"id": "source:p7q2", "title": "Processing...", "status": "new",
  "command_id": "command:8f1c", "processing_info": {"async": true, "queued": true}}
 
+
 '''
   note = "The asset is saved before the job is queued so the retry endpoint can process the source again if the job fails. If the job cannot be queued, the source record is deleted again. With async_processing=false, _create_source_sync_path runs the same command with execute_command_sync (5-minute timeout) and replies only when it finishes."
   [[journeys.steps]]
@@ -613,6 +616,7 @@ embed=true  async_processing=true  file=quarterly-review.pdf (2.1 MB)
   payload = '''
 {"source_id": "source:p7q2", "content_state": {"file_path": "/app/data/uploads/quarterly-review.pdf", "delete_source": false},
  "notebook_ids": ["notebook:k3x9"], "transformations": ["transformation:summary"], "embed": true}
+
 
 '''
   [[journeys.steps]]
@@ -632,6 +636,7 @@ embed=true  async_processing=true  file=quarterly-review.pdf (2.1 MB)
   stores = "nothing; it deletes the uploaded file when delete_source is set"
   payload = '''
 ExtractionOutput(title="Quarterly Review Q3", content="Revenue grew 12% over ...")
+
 
 '''
   note = "content-core reports a failed fetch as title='Error' with the content 'Failed to extract content:'. This node turns that, and empty text, into ValueError, so the job is marked failed and is not saved as a 'completed' source whose text is the error message. _usable_engine falls back to 'auto' when the configured crawl4ai/docling runtime is not installed."
@@ -660,6 +665,7 @@ ExtractionOutput(title="Quarterly Review Q3", content="Revenue grew 12% over ...
   payload = '''
 {"source": "source:p7q2", "order": 0, "content": "Revenue grew 12% ...", "embedding": [0.013, -0.072, ...]}
 
+
 '''
   note = "Deleting first makes the job safe to run twice. If one insert batch fails, the rows already inserted are deleted, so search never sees half a source."
   [[journeys.steps]]
@@ -679,6 +685,7 @@ ExtractionOutput(title="Quarterly Review Q3", content="Revenue grew 12% over ...
   tables = ["source_insight"]
   payload = '''
 {"source_id": "source:p7q2", "insight_type": "Summary", "content": "The quarter closed with 12% growth ..."}
+
 
 '''
   note = "The insert is a job of its own so that parallel transformations that hit a SurrealDB transaction conflict are retried there (EMBED_RETRY_CONFIG, 5 attempts)."
@@ -700,6 +707,7 @@ summary = "A strategy model splits the question into up to five searches. Each s
 {"question": "What drove revenue growth in Q3?", "strategy_model": "model:gpt5mini",
  "answer_model": "model:gpt5mini", "final_answer_model": "model:claude", "scope_notebook_ids": ["notebook:k3x9"]}
 
+
 '''
   [[journeys.steps]]
   symbol = "open_notebook.domain.notebook:resolve_notebook_scope"
@@ -715,6 +723,7 @@ summary = "A strategy model splits the question into up to five searches. Each s
   returns = "SSE lines; an exception becomes one {type: 'error', message} event, because the HTTP status has already been sent"
   payload = '''
 data: {"type": "strategy", "reasoning": "Need revenue figures and causes", "searches": [{"term": "Q3 revenue growth", "instructions": "Extract growth drivers"}]}
+
 
 '''
   [[journeys.steps]]
@@ -746,6 +755,7 @@ data: {"type": "strategy", "reasoning": "Need revenue figures and causes", "sear
   returns = "{'answers': [text]} (the list reducer collects every branch's answer)"
   payload = '''
 "Growth came mainly from the new enterprise tier [source_embedding:a1b2] and lower churn [source_insight:c3d4]."
+
 
 '''
   note = "Citations are a prompt rule, not checked by code: the template asks the model to cite only the ids in {{ids}}, in square brackets."
@@ -779,6 +789,7 @@ summary = "A chat session is a `chat_session` record linked to its notebook. The
   payload = '''
 {"notebook_id": "notebook:k3x9", "title": "Q3 questions", "model_override": null}
 
+
 '''
   [[journeys.steps]]
   symbol = "open_notebook.domain.notebook:ChatSession.relate_to_notebook"
@@ -795,6 +806,7 @@ summary = "A chat session is a `chat_session` record linked to its notebook. The
   payload = '''
 {"notebook_id": "notebook:k3x9",
  "context_config": {"sources": {"source:p7q2": "full content", "source:r8s1": "insights"}, "notes": {"note:m4": "not in"}}}
+
 
 '''
   [[journeys.steps]]
@@ -815,6 +827,7 @@ summary = "A chat session is a `chat_session` record linked to its notebook. The
 {"session_id": "chat_session:t5", "message": "Which product line grew fastest?",
  "context": {"sources": [{"id": "source:p7q2", "title": "Quarterly Review Q3", "full_text": "..."}], "notes": []},
  "model_override": null}
+
 
 '''
   note = "A model_override in the request beats the session's own. The context is whatever the client sends; the server does not rebuild it."
@@ -838,6 +851,7 @@ summary = "A chat session is a `chat_session` record linked to its notebook. The
   returns = "{'messages': AIMessage}, which the add_messages reducer appends to the thread"
   payload = '''
 AIMessage(content="The enterprise tier grew fastest, up 31% [source:p7q2].")
+
 
 '''
   note = "An empty answer raises IncompleteGenerationError inside the node, so LangGraph never saves a blank AI message that would be sent back as history later. Provider errors go through classify_error to a typed OpenNotebookError."
@@ -875,6 +889,7 @@ summary = "The API checks the episode and speaker profiles, turns the notebook i
   payload = '''
 {"episode_profile": "tech_discussion", "speaker_profile": "tech_experts", "episode_name": "Solar panels explained", "notebook_id": "notebook:k3x9", "briefing_suffix": "Keep it under ten minutes"}
 
+
 '''
   [[journeys.steps]]
   symbol = "api.podcast_service:PodcastService.submit_generation_job"
@@ -885,6 +900,7 @@ summary = "The API checks the episode and speaker profiles, turns the notebook i
   tables = ["episode_profile", "speaker_profile"]
   payload = '''
 {"episode_profile": "tech_discussion", "speaker_profile": "speaker_profile:m81c", "episode_name": "Solar panels explained", "content": "# Source: Home solar guide\n...", "briefing_suffix": "Keep it under ten minutes"}
+
 
 '''
   note = "The speaker name becomes a record ID here, at the API boundary (#630), so everything after this step works with IDs. The command module is imported just before submitting because submit_command checks the command against the local registry."
@@ -928,6 +944,7 @@ summary = "The API checks the episode and speaker profiles, turns the notebook i
   payload = '''
 ("openai", "gpt-4o-mini", {"api_key": "sk-invented", "max_tokens": 4000})
 
+
 '''
   [[journeys.steps]]
   symbol = "open_notebook.domain.base:ObjectModel.save"
@@ -938,6 +955,7 @@ summary = "The API checks the episode and speaker profiles, turns the notebook i
   tables = ["episode"]
   payload = '''
 {"name": "Solar panels explained", "episode_profile": {"name": "tech_discussion", "num_segments": 5}, "speaker_profile": {"name": "tech_experts"}, "briefing": "Create an engaging discussion...\n\nAdditional instructions: Keep it under ten minutes", "command": "command:7fq2", "audio_file": null}
+
 
 '''
   note = "Because the episode is saved first, the episode list can show it while the job runs, through its command link."
@@ -972,6 +990,7 @@ summary = "A query runs either as SurrealDB full-text search (BM25 with highligh
   payload = '''
 {"query": "inverter warranty", "type": "vector", "limit": 20, "search_sources": true, "search_notes": true, "minimum_score": 0.3, "scope_notebook_ids": ["notebook:k3x9"]}
 
+
 '''
   [[journeys.steps]]
   symbol = "open_notebook.domain.notebook:resolve_notebook_scope"
@@ -998,6 +1017,7 @@ summary = "A query runs either as SurrealDB full-text search (BM25 with highligh
   payload = '''
 [{"id": "source_embedding:a1", "parent_id": "source:s7", "title": "Home solar guide", "similarity": 0.81, "matches": ["The inverter carries a 10-year warranty..."]}]
 
+
 '''
   note = "The sort is repeated in Python because the `SELECT * FROM fn::...` wrapper can return rows out of rank order, even though the function itself orders by similarity."
   [[journeys.steps]]
@@ -1022,6 +1042,7 @@ summary = "A query runs either as SurrealDB full-text search (BM25 with highligh
   payload = '''
 [{"id": "source:s7", "parent_id": "source:s7", "title": "Home solar guide", "relevance": 4.2}]
 
+
 '''
   note = "SurrealDB's search::highlight can fail with \"position overflow\" on large or multi-byte chunks. In that case the function falls back to vector_search (issue #648), and it raises only if that fallback fails too, so a total outage does not look like zero results."
 
@@ -1042,6 +1063,7 @@ summary = "An admin saves a provider credential, with the API key encrypted at r
   payload = '''
 {"name": "Team OpenAI", "provider": "openai", "modalities": ["language", "embedding"], "api_key": "sk-invented-123"}
 
+
 '''
   [[journeys.steps]]
   symbol = "open_notebook.domain.credential:Credential.save"
@@ -1052,6 +1074,7 @@ summary = "An admin saves a provider credential, with the API key encrypted at r
   tables = ["credential"]
   payload = '''
 {"name": "Team OpenAI", "provider": "openai", "api_key": "gAAAAAB...invented-ciphertext", "config": null}
+
 
 '''
   [[journeys.steps]]
@@ -1070,6 +1093,7 @@ summary = "An admin saves a provider credential, with the API key encrypted at r
   payload = '''
 [{"name": "gpt-4o-mini", "provider": "openai"}, {"name": "text-embedding-3-small", "provider": "openai"}]
 
+
 '''
   [[journeys.steps]]
   symbol = "api.routers.credentials:register_models_for_credential"
@@ -1080,6 +1104,7 @@ summary = "An admin saves a provider credential, with the API key encrypted at r
   stores = "model rows (next step)"
   payload = '''
 {"models": [{"name": "gpt-4o-mini", "provider": "openai", "model_type": "language"}, {"name": "text-embedding-3-small", "provider": "openai", "model_type": "embedding"}]}
+
 
 '''
   [[journeys.steps]]
@@ -1131,6 +1156,7 @@ summary = "An admin saves a provider credential, with the API key encrypted at r
   tables = ["model", "credential"]
   payload = '''
 AIFactory.create_language(model_name="gpt-4o-mini", provider="openai", config={"api_key": "sk-invented-123", "max_tokens": 2000})
+
 
 '''
   note = "The DB stores provider names with underscores (openai_compatible), but esperanto expects hyphens, so the name is rewritten here. anthropic_compatible takes its own route through resolve_anthropic_compatible_config."
@@ -1404,6 +1430,19 @@ validation = "Constant-time comparison (secrets.compare_digest). No lockout or r
 logging = "none"
 cost = "none"
 result_use = "Gatekeeper only; nothing downstream knows who the caller is."
+
+[[roles]]
+id = "container-open-notebook-docker-compose"
+kind = "infra"
+name = "Container open_notebook"
+symbols = ["api.main:<module>"]
+purpose = "The one application container: the published image runs supervisord, which starts the FastAPI API (api.main), the background command worker and the Next.js frontend side by side."
+message = ["invoked by: host port 5055 → the REST API (uvicorn api.main:app)", "invoked by: host port 8502 → the Next.js frontend, which calls the API"]
+config = "defined in docker-compose.yml; image lfnovo/open_notebook built from the root Dockerfile (runtime stage), CMD supervisord -c supervisord.conf · environment: SURREAL_URL → SurrealDB surrealdb, plus the encryption key and database credentials · ./notebook_data mounted at /app/data"
+output = "HTTP responses from the API and the web UI; notebooks, sources and notes written to SurrealDB; uploaded files under /app/data"
+validation = "supervisord restarts each program on exit (autorestart=true) and starts them in order (api, then worker, then frontend); depends_on only orders start-up, it does not wait for SurrealDB to accept connections"
+logging = "every program logs to the container's stdout (stdout_logfile=/dev/stdout), so docker compose logs open_notebook shows API, worker and frontend interleaved"
+result_use = "may use: SurrealDB surrealdb (depends_on, SURREAL_URL)"
 
 [[input_flows]]
 id = "in-execute-chat"

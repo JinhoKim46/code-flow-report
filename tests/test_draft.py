@@ -69,3 +69,10 @@ class DemoDraft(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UniqueIds(unittest.TestCase):
+    def test_repeated_drafted_ids_get_a_suffix(self):
+        import draft
+        n = draft._unique_ids({"journeys": [{"id": "a"}, {"id": "a"}, {"id": "b"}, {"id": "a"}], "meta": {"id": "x"}})
+        self.assertEqual([j["id"] for j in n["journeys"]], ["a", "a-2", "b", "a-3"])

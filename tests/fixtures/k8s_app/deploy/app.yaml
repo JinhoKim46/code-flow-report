@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/example/api:1.4.0
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: FEATURE_FLAGS
+              valueFrom:
+                configMapKeyRef:
+                  name: settings
+                  key: flags
+          envFrom:
+            - secretRef:
+                name: api-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-report
+spec:
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: report
+              image: ghcr.io/example/api:1.4.0
+              command: ["python", "-m", "api.jobs.report"]
+          volumes:
+            - name: out
+              persistentVolumeClaim:
+                claimName: reports
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+data:
+  flags: "beta"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secrets
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reports
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-cli
+spec:
+  template:
+    spec:
+      containers:
+        - name: cli
+          image: ghcr.io/example/api:1.4.0
+          command: ["report-cli", "--daily"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidecar-cache
+spec:
+  template:
+    spec:
+      containers:
+        - name: cache
+          image: ghcr.io/example/api:1.4.0
+          command: ["/opt/bin/cache-server", "0.0.0.0", "8000"]

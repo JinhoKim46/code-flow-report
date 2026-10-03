@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.7.0 — 2026-10
+
+Terraform (AWS, Google Cloud, Azure), and containers as infrastructure (Docker Compose, Kubernetes, Helm).
+
+- **Terraform scanner** (`scripts/infra_tf.py`, standard library only). HCL blocks are cut out by matching braces, with comments, strings and heredocs respected. References use Terraform's own shapes (`TYPE.NAME.attr`, `data.…`, `module.…`). `local.x`, `${path.module}` and `var.x` defaults are substituted.
+- **Resources:**
+  - **AWS:** Lambda, API Gateway v1/v2, AppSync, SQS, SNS, EventBridge (rules and Scheduler), Step Functions, DynamoDB, S3, RDS/Aurora, OpenSearch, Bedrock knowledge bases and prompts.
+  - **Google Cloud:** Cloud Functions (1st and 2nd gen), Cloud Run, Pub/Sub, Cloud Storage, BigQuery, Firestore, Cloud SQL, Cloud Scheduler, Eventarc, Workflows, Document AI, Vertex AI.
+  - **Azure:** Function Apps, Storage accounts, queues and containers, Service Bus, Event Grid, Event Hubs, Cosmos DB, Key Vault, Azure AI / OpenAI, AI Search.
+  - **Community modules** (`terraform-aws-modules/lambda`, `rds-aurora`, `vpc`, `s3-bucket`, `sqs` …) count as resources.
+- **Wiring:**
+  - **AWS:** event source mappings, Lambda permissions, HTTP and REST API routes with method and path, EventBridge targets with their schedule, S3 notifications, SNS subscriptions, Step Functions definitions, and the community Lambda module's `allowed_triggers` / `event_source_mapping`.
+  - **Google Cloud:** `event_trigger`, HTTP triggers, Cloud Scheduler targets, Pub/Sub push subscriptions, storage notifications.
+  - **Grants:** IAM policies attached to a function's role are read per statement, so each resource gets only its own actions (`dynamodb:GetItem, dynamodb:PutItem → DynamoDB orders`). Google IAM bindings on a function's service account and Azure role assignments on its identity count too.
+  - **Environment:** `variables`, `environment_variables` and `app_settings` entries that name a resource.
+- **Handler links:**
+  - A Lambda through `filename = data.archive_file.x.output_path` or the module's `source_path`.
+  - A Cloud Function through `entry_point` and the archive behind `source_archive_object` / `build_config.source` (`main.py`).
+  - A container-image Lambda through `image_uri` → `docker_image` build context → its Dockerfile's `CMD` and `COPY` lines. The same applies to CDK `DockerImageFunction` / `fromImageAsset`, which 0.6.0 listed as a limit.
+- **Triggers declared in Python:** a new `cloudfn` profile reads Azure Functions v2 decorators, Google `functions_framework` and AWS Chalice; each decorated function is a journey entry. Profiles can set `ENTRY_KIND`.
+- The page section and the map summary name the source ("Terraform", "TypeScript CDK", "Python CDK", "Docker Compose", "Kubernetes", "Helm").
+- **Containers** (`scripts/infra_containers.py`, standard library only, with a small YAML reader: block and flow collections, block scalars, anchors and merge keys, several documents per file):
+  - **Docker Compose:** each service is a resource. Override files are merged into the base. Compose files under `examples/`, `scripts/`, `docs/` or test folders are read only when there is no other. Databases, caches, brokers, proxies and model servers are recognised by image.
+  - **Kubernetes:** Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Pods, Services, Ingress, HTTPRoutes, ConfigMaps, Secrets, volume claims and Knative services. When a kustomize base and an overlay define the same object, the base wins, and `extras/` and `contrib/` are read only when alone.
+  - **Helm:** templates rendered from `values.yaml` as far as `{{ .Values.x }}`, `default`, `.Release.Name` and `.Chart.Name`.
+  - **Wiring:** `depends_on` and `links`; environment values that name another service (a URL or `host:port` always, a bare name only in a variable named like a host, so `POSTGRES_DB=accounts-db` is not an edge); Ingress → Service → workload through the selector; `env`, `envFrom` and volume references to ConfigMaps, Secrets and claims; CronJob schedules; published ports.
+  - **Entry-point links:** a container's `command`, else its Dockerfile's `ENTRYPOINT`/`CMD`. The Dockerfile reader handles multi-stage builds (a stage built from an earlier one keeps its command) and shell-form commands. It also follows an entrypoint script, and a `supervisord` config, which gives one resource per Python program. Images of the repository itself are matched by name. Recognised: uvicorn, gunicorn (`"pkg:create_app()"` links to the factory), hypercorn, fastapi, flask, streamlit, chainlit, celery, rq, dramatiq, arq, locust, `python -m`, `python file.py`, Lambda-style handlers, and the usual wrappers (`uv run`, `poetry run`, `exec`, `sh -c`, `opentelemetry-instrument`).
+  - A module a container runs gets its own `<module>` symbol even when its top level is short. Servers and workers are linked, but are not journey entries; scripts, Jobs and CronJobs are.
+  - A container that runs no Python (a JVM image, a shell script) shows its command and is not counted as an unlinked function.
+- Infrastructure cards are named after the resource ("K8s Deployment frontend", "Container api"), not always "Lambda"; their "may use" line also lists `depends_on` and mounted volumes.
+- **Terraform modules:**
+  - Addresses are scoped to the module folder that declares them, so two modules' `aws_iam_role.lambda` stay apart.
+  - `var.x` is followed to what the module's callers pass in, and `module.m.out` to that module's `output`.
+  - `resource "archive_file"` is read like the data source.
+  - `templatefile()` is expanded with the map passed to it (including a `local` map, and `${ key }` with spaces), so Step Functions definitions and IAM policies kept in template files are read.
+- **Containers:**
+  - A repository's own console scripts (`[project.scripts]`, Poetry) link to their function.
+  - A container's own `command` replaces its image's start command.
+  - Commands that run an installed package (`python -m vllm…`) are shown but not counted as unlinked.
+  - A Helm range variable shows as `<name>`.
+  - A Service whose selector is built with `include` is paired with a workload by the words their names share.
+  - When several Dockerfiles could build an image, the one whose start command shares a word with the image wins.
+- **Determinism:** the infrastructure map no longer depends on the string hash seed, which had made `check` report a fresh `code_map.json` as stale.
+- `draft` suffixes repeated ids (`-2`, `-3`), so every drafted entry can be replaced or dropped.
+- **New examples:** [aft](examples/aft) (Terraform) and [production-stack](examples/production-stack) (Helm and Kubernetes). The open-notebook example now shows its Compose stack: its image is followed through the Dockerfile and `supervisord` to the API.
+
 ## 0.6.0 — 2026-10
 
 The whole stack: infrastructure as code.

@@ -1,0 +1,33 @@
+# codeflow configuration — repo-specific knowledge the extractor cannot infer.
+# paths.root is the repo root relative to this file. param_types: first-parameter names that
+# always mean the same kind of object (lets `cur.execute(...)` resolve). gateways: function names
+# whose first string argument is an action label (a shared write/audit wrapper).
+# profiles: stack profiles are switched on by imports; force with enable / disable.
+
+
+[paths]
+root = "../.."
+
+[project]
+name = "production-stack"
+language = "en"
+repo_url = "https://github.com/vllm-project/production-stack/blob/014d070e6f7611978d321bdb05cbe9a934b614e7"
+store_name = "database"
+audience = "learning the code"
+
+[scan]
+include = ["scripts", "src", "tutorials"]
+exclude = ["tests", "test", "testing", "integtests", "integration_tests", "e2e", ".venv", "venv", "env", ".env", "node_modules", "__pycache__", "build", "dist", ".git", ".tox", ".nox", "site-packages", "migrations", "cdk.out", ".mypy_cache", ".pytest_cache", ".claude", "docs"]
+strip_prefixes = ["src"]
+schema_globs = ["**/*.sql"]
+
+[conventions]
+param_types = {request = "http.request()"}
+returns = {}
+gateways = []
+route_prefixes = {}
+noisy_services = ["Template render", "AWS CDK", "Jinja"]
+
+[profiles]
+enable = []
+disable = []

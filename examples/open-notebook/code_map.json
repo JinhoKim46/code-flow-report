@@ -39,9 +39,9 @@
   "profiles": {
    "llm": 25
   },
-  "infra_resources": 0,
-  "infra_lambdas": 0,
-  "infra_lambdas_linked": 0,
+  "infra_resources": 2,
+  "infra_lambdas": 1,
+  "infra_lambdas_linked": 1,
   "top_unresolved_names": [
    ["get", 230],
    ["strip", 28],
@@ -15303,5 +15303,80 @@
   ]
  },
  "console_scripts": {},
- "infra": {}
+ "infra": {
+  "resources": [
+   {
+    "id": "surrealdb",
+    "var": "compose:docker-compose.yml:surrealdb",
+    "cls": "compose:surrealdb/surrealdb:v2",
+    "service": "SurrealDB",
+    "category": "data",
+    "file": "docker-compose.yml",
+    "line": 2,
+    "owner": null,
+    "image": "surrealdb/surrealdb:v2",
+    "ports": [
+     "127.0.0.1:8000:8000"
+    ]
+   },
+   {
+    "id": "open_notebook",
+    "var": "compose:docker-compose.yml:open_notebook",
+    "cls": "compose:lfnovo/open_notebook:v1-latest",
+    "service": "Container",
+    "category": "compute",
+    "file": "docker-compose.yml",
+    "line": 26,
+    "owner": null,
+    "image": "lfnovo/open_notebook:v1-latest",
+    "ports": ["8502:8502", "5055:5055"],
+    "handler": "uvicorn api.main:app --host x --port 5055",
+    "entry": false,
+    "handler_symbol": "api.main:<module>",
+    "asset": "."
+   }
+  ],
+  "edges": [
+   {
+    "from": 1,
+    "to": 0,
+    "kind": "depends",
+    "label": "depends_on",
+    "file": "docker-compose.yml",
+    "line": 26
+   },
+   {
+    "from": 1,
+    "to": 0,
+    "kind": "env",
+    "label": "SURREAL_URL",
+    "file": "docker-compose.yml",
+    "line": 26
+   },
+   {
+    "from": "host port 8502",
+    "to": 1,
+    "kind": "route",
+    "label": "port 8502:8502",
+    "file": "docker-compose.yml",
+    "line": 26
+   },
+   {
+    "from": "host port 5055",
+    "to": 1,
+    "kind": "route",
+    "label": "port 5055:5055",
+    "file": "docker-compose.yml",
+    "line": 26
+   }
+  ],
+  "files": [
+   "docker-compose.yml"
+  ],
+  "languages": [
+   "Docker Compose"
+  ],
+  "lambdas": 1,
+  "lambdas_linked": 1
+ }
 }

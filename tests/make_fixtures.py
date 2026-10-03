@@ -731,6 +731,768 @@ FIXTURES = {
                 return len(event["Records"])
         """,
     },
+    "tf_aws_app": {
+        "infra/main.tf": """
+            locals {
+              src = "${path.module}/../src"
+            }
+
+            data "archive_file" "orders" {
+              type        = "zip"
+              source_dir  = "${local.src}/orders"
+              output_path = "${path.module}/build/orders.zip"
+            }
+
+            resource "aws_dynamodb_table" "orders" {
+              name     = "orders"
+              hash_key = "id"
+            }
+
+            resource "aws_sqs_queue" "jobs" {
+              name = "jobs"
+            }
+
+            resource "aws_iam_role" "fn" {
+              name               = "orders-fn"
+              assume_role_policy = jsonencode({ Version = "2012-10-17" })
+            }
+
+            resource "aws_iam_role_policy" "fn" {
+              role = aws_iam_role.fn.id
+              policy = jsonencode({
+                Statement = [
+                  { Effect = "Allow", Action = ["dynamodb:PutItem", "dynamodb:GetItem"], Resource = [aws_dynamodb_table.orders.arn] },
+                  { Effect = "Allow", Action = ["sqs:SendMessage"], Resource = [aws_sqs_queue.jobs.arn] },
+                ]
+              })
+            }
+
+            resource "aws_lambda_function" "create_order" {
+              function_name = "create-order"
+              role          = aws_iam_role.fn.arn
+              handler       = "app.create_order"
+              runtime       = "python3.12"
+              filename      = data.archive_file.orders.output_path
+              environment {
+                variables = {
+                  TABLE_NAME = aws_dynamodb_table.orders.name
+                  QUEUE_URL  = aws_sqs_queue.jobs.url
+                }
+              }
+            }
+
+            resource "aws_lambda_function" "worker" {
+              function_name = "worker"
+              role          = aws_iam_role.fn.arn
+              handler       = "worker.handle"
+              runtime       = "python3.12"
+              filename      = data.archive_file.orders.output_path
+            }
+
+            # resource "aws_lambda_function" "commented" { handler = "x.y" }
+
+            resource "aws_lambda_event_source_mapping" "jobs" {
+              event_source_arn = aws_sqs_queue.jobs.arn
+              function_name    = aws_lambda_function.worker.arn
+            }
+
+            resource "aws_apigatewayv2_api" "http" {
+              name          = "orders"
+              protocol_type = "HTTP"
+            }
+
+            resource "aws_apigatewayv2_integration" "create" {
+              api_id           = aws_apigatewayv2_api.http.id
+              integration_type = "AWS_PROXY"
+              integration_uri  = aws_lambda_function.create_order.invoke_arn
+            }
+
+            resource "aws_apigatewayv2_route" "create" {
+              api_id    = aws_apigatewayv2_api.http.id
+              route_key = "POST /orders"
+              target    = "integrations/${aws_apigatewayv2_integration.create.id}"
+            }
+
+            resource "aws_cloudwatch_event_rule" "nightly" {
+              name                = "nightly"
+              schedule_expression = "cron(0 2 * * ? *)"
+            }
+
+            resource "aws_cloudwatch_event_target" "nightly" {
+              rule = aws_cloudwatch_event_rule.nightly.name
+              arn  = aws_lambda_function.worker.arn
+            }
+
+            resource "docker_image" "jobs" {
+              name = "jobs:latest"
+              build {
+                context    = "${path.module}/.."
+                dockerfile = "jobs/Dockerfile"
+              }
+            }
+
+            resource "docker_registry_image" "jobs" {
+              name = docker_image.jobs.name
+            }
+
+            resource "aws_lambda_function" "image_fn" {
+              function_name = "image-fn"
+              role          = aws_iam_role.fn.arn
+              package_type  = "Image"
+              image_uri     = docker_registry_image.jobs.name
+            }
+        """,
+        "jobs/Dockerfile": """
+            FROM public.ecr.aws/lambda/python:3.12
+            COPY ./jobs/handler.py .
+            CMD ["handler.run"]
+        """,
+        "jobs/handler.py": """
+            def run(event, context):
+                return "done"
+        """,
+        "src/orders/app.py": """
+            import os
+
+            import boto3
+
+
+            def create_order(event, context):
+                boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"]).put_item(Item={"id": event["id"]})
+                return {"statusCode": 201}
+        """,
+        "src/orders/worker.py": """
+            def handle(event, context):
+                return len(event.get("Records", []))
+        """,
+    },
+    "tf_gcp_app": {
+        "terraform/main.tf": """
+            data "archive_file" "src" {
+              type        = "zip"
+              source_dir  = "${path.module}/../function"
+              output_path = "/tmp/function.zip"
+            }
+
+            resource "google_storage_bucket" "source" {
+              name     = "src-bucket"
+              location = "US"
+            }
+
+            resource "google_storage_bucket_object" "zip" {
+              name   = "function.zip"
+              bucket = google_storage_bucket.source.name
+              source = data.archive_file.src.output_path
+            }
+
+            resource "google_pubsub_topic" "jobs" {
+              name = "jobs"
+            }
+
+            resource "google_service_account" "fn" {
+              account_id = "fn-sa"
+            }
+
+            resource "google_cloudfunctions2_function" "process" {
+              name = "process"
+              build_config {
+                runtime     = "python312"
+                entry_point = "process_job"
+                source {
+                  storage_source {
+                    bucket = google_storage_bucket.source.name
+                    object = google_storage_bucket_object.zip.name
+                  }
+                }
+              }
+              service_config {
+                service_account_email = google_service_account.fn.email
+                environment_variables = {
+                  OUTPUT_BUCKET = google_storage_bucket.source.name
+                }
+              }
+              event_trigger {
+                event_type   = "google.cloud.pubsub.topic.v1.messagePublished"
+                pubsub_topic = google_pubsub_topic.jobs.id
+              }
+            }
+
+            resource "google_cloudfunctions_function" "api" {
+              name                  = "api"
+              runtime               = "python311"
+              entry_point           = "handle_http"
+              trigger_http          = true
+              source_archive_bucket = google_storage_bucket.source.name
+              source_archive_object = google_storage_bucket_object.zip.name
+            }
+
+            resource "google_cloud_scheduler_job" "hourly" {
+              name     = "hourly"
+              schedule = "0 * * * *"
+              pubsub_target {
+                topic_name = google_pubsub_topic.jobs.id
+                data       = base64encode("go")
+              }
+            }
+
+            resource "google_storage_bucket_iam_member" "writer" {
+              bucket = google_storage_bucket.source.name
+              role   = "roles/storage.objectAdmin"
+              member = "serviceAccount:${google_service_account.fn.email}"
+            }
+        """,
+        "function/main.py": """
+            def process_job(event, context):
+                return event
+
+
+            def handle_http(request):
+                return "ok"
+        """,
+    },
+    "tf_azure_app": {
+        "infra/main.tf": """
+            resource "azurerm_storage_account" "main" {
+              name                     = "ordersstore"
+              account_tier             = "Standard"
+              account_replication_type = "LRS"
+            }
+
+            resource "azurerm_storage_queue" "jobs" {
+              name                 = "jobs"
+              storage_account_name = azurerm_storage_account.main.name
+            }
+
+            resource "azurerm_cosmosdb_account" "db" {
+              name = "orders-db"
+            }
+
+            resource "azurerm_linux_function_app" "api" {
+              name                       = "orders-api"
+              storage_account_name       = azurerm_storage_account.main.name
+              app_settings = {
+                COSMOS_ENDPOINT = azurerm_cosmosdb_account.db.endpoint
+                JOBS_QUEUE      = azurerm_storage_queue.jobs.name
+              }
+              identity {
+                type = "SystemAssigned"
+              }
+            }
+
+            resource "azurerm_role_assignment" "cosmos" {
+              scope                = azurerm_cosmosdb_account.db.id
+              role_definition_name = "Cosmos DB Built-in Data Contributor"
+              principal_id         = azurerm_linux_function_app.api.identity[0].principal_id
+            }
+        """,
+        "app/function_app.py": """
+            import azure.functions as func
+
+            app = func.FunctionApp()
+
+
+            @app.route(route="orders", methods=["POST"])
+            def create_order(req: func.HttpRequest) -> func.HttpResponse:
+                return func.HttpResponse("created", status_code=201)
+
+
+            @app.queue_trigger(arg_name="msg", queue_name="jobs", connection="AzureWebJobsStorage")
+            def process_job(msg: func.QueueMessage) -> None:
+                print(msg.get_body())
+
+
+            @app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer")
+            def sweep(timer: func.TimerRequest) -> None:
+                return None
+        """,
+    },
+    "tf_modules_app": {
+        "main.tf": """
+            module "packaging" {
+              source = "./modules/archives"
+            }
+
+            module "intake" {
+              source       = "./modules/intake"
+              archive_path = module.packaging.intake_archive_path
+            }
+
+            module "reports" {
+              source       = "./modules/reports"
+              archive_path = module.packaging.reports_archive_path
+            }
+        """,
+        "modules/archives/main.tf": """
+            locals {
+              src = "${path.module}/../../src"
+            }
+
+            resource "archive_file" "intake" {
+              type        = "zip"
+              source_dir  = "${local.src}/intake"
+              output_path = "${local.src}/intake.zip"
+            }
+
+            resource "archive_file" "reports" {
+              type        = "zip"
+              source_dir  = "${local.src}/reports"
+              output_path = "${local.src}/reports.zip"
+            }
+        """,
+        "modules/archives/outputs.tf": """
+            output "intake_archive_path" {
+              value = archive_file.intake.output_path
+            }
+
+            output "reports_archive_path" {
+              value = archive_file.reports.output_path
+            }
+        """,
+        "modules/intake/variables.tf": """
+            variable "archive_path" {
+              type = string
+            }
+        """,
+        "modules/intake/main.tf": """
+            resource "aws_dynamodb_table" "requests" {
+              name = "requests"
+            }
+
+            resource "aws_iam_role" "lambda" {
+              name = "intake-lambda"
+            }
+
+            resource "aws_iam_role_policy" "lambda" {
+              role   = aws_iam_role.lambda.id
+              policy = templatefile("${path.module}/policy.tpl", {
+                table_arn = aws_dynamodb_table.requests.arn
+              })
+            }
+
+            resource "aws_lambda_function" "validate" {
+              function_name = "validate"
+              filename      = var.archive_path
+              handler       = "validate.handler"
+              role          = aws_iam_role.lambda.arn
+            }
+
+            resource "aws_lambda_function" "store" {
+              function_name = "store"
+              filename      = var.archive_path
+              handler       = "store.handler"
+              role          = aws_iam_role.lambda.arn
+            }
+
+            locals {
+              replacements = {
+                validate_arn = aws_lambda_function.validate.arn
+                store_arn    = aws_lambda_function.store.arn
+              }
+            }
+
+            resource "aws_sfn_state_machine" "intake" {
+              name       = "intake"
+              role_arn   = aws_iam_role.lambda.arn
+              definition = templatefile("${path.module}/states.json", local.replacements)
+            }
+        """,
+        "modules/intake/policy.tpl": """
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {"Effect": "Allow", "Action": ["dynamodb:PutItem"], "Resource": "${table_arn}"}
+              ]
+            }
+        """,
+        "modules/intake/states.json": """
+            {
+              "StartAt": "Validate",
+              "States": {
+                "Validate": {"Type": "Task", "Resource": "${validate_arn}", "Next": "Store"},
+                "Store": {"Type": "Task", "Resource": "${ store_arn }", "End": true}
+              }
+            }
+        """,
+        "modules/reports/variables.tf": """
+            variable "archive_path" {
+              type = string
+            }
+        """,
+        "modules/reports/main.tf": """
+            resource "aws_iam_role" "lambda" {
+              name = "reports-lambda"
+            }
+
+            resource "aws_lambda_function" "nightly" {
+              function_name = "nightly"
+              filename      = var.archive_path
+              handler       = "nightly.handler"
+              role          = aws_iam_role.lambda.arn
+            }
+        """,
+        "src/intake/validate.py": """
+            def handler(event, context):
+                return event
+        """,
+        "src/intake/store.py": """
+            def handler(event, context):
+                return "stored"
+        """,
+        "src/reports/nightly.py": """
+            def handler(event, context):
+                return "report"
+        """,
+    },
+    "compose_app": {
+        "compose.yaml": """
+            x-env: &common-env
+              LOG_LEVEL: info
+
+            services:
+              api:
+                build:
+                  context: ./backend
+                ports:
+                  - "8000:8000"
+                environment:
+                  <<: *common-env
+                  DATABASE_URL: postgresql://app:${DB_PASSWORD:-changeme}@db:5432/app
+                  REDIS_URL: redis://cache:6379/0
+                depends_on:
+                  db:
+                    condition: service_healthy
+                  cache:
+                    condition: service_started
+
+              worker:
+                build: ./backend
+                command: celery -A app.worker worker --loglevel=info
+                environment:
+                  - REDIS_URL=redis://cache:6379/0
+                depends_on: [cache]
+
+              ingest:
+                build: ./backend
+                command: ["python", "-m", "app.jobs.ingest"]
+                depends_on:
+                  - db
+
+              db:
+                image: postgres:16
+                volumes:
+                  - pgdata:/var/lib/postgresql/data
+
+              cache:
+                image: redis:7-alpine
+
+              allinone:
+                image: example/compose_app:latest
+                depends_on: [db]
+
+            volumes:
+              pgdata:
+        """,
+        "Dockerfile": """
+            FROM python:3.12-slim AS base
+            WORKDIR /app
+            COPY backend/ .
+            COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+            CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+
+            FROM base AS runtime
+            ENV MODE=prod
+        """,
+        "supervisord.conf": """
+            [supervisord]
+            nodaemon=true
+
+            [program:api]
+            command=uv run --no-sync uvicorn app.main:app --port %(ENV_PORT)s
+
+            [program:worker]
+            command=sh -c "celery -A app.worker worker"
+
+            [program:web]
+            command=node server.js
+        """,
+        "examples/compose.yaml": """
+            services:
+              demo:
+                build: ../backend
+        """,
+        "compose.override.yaml": """
+            services:
+              api:
+                command: uvicorn app.main:app --host 0.0.0.0 --reload
+        """,
+        "backend/Dockerfile": """
+            FROM python:3.12-slim
+            WORKDIR /app
+            COPY . .
+            CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "app.main:app"]
+        """,
+        "backend/app/__init__.py": "",
+        "backend/app/main.py": """
+            from fastapi import FastAPI
+
+            app = FastAPI()
+
+
+            @app.get("/health")
+            def health():
+                return {"ok": True}
+        """,
+        "backend/app/worker.py": """
+            from celery import Celery
+
+            celery = Celery("app")
+
+
+            @celery.task
+            def reindex(doc_id):
+                return doc_id
+        """,
+        "backend/app/jobs/__init__.py": "",
+        "backend/app/jobs/ingest.py": """
+            def load():
+                return []
+
+
+            load()
+        """,
+    },
+    "k8s_app": {
+        "deploy/app.yaml": """
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: api
+            spec:
+              selector:
+                matchLabels: {app: api}
+              template:
+                metadata:
+                  labels:
+                    app: api
+                spec:
+                  containers:
+                    - name: api
+                      image: ghcr.io/example/api:1.4.0
+                      env:
+                        - name: DB_HOST
+                          value: postgres
+                        - name: FEATURE_FLAGS
+                          valueFrom:
+                            configMapKeyRef:
+                              name: settings
+                              key: flags
+                      envFrom:
+                        - secretRef:
+                            name: api-secrets
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: api
+            spec:
+              selector:
+                app: api
+              ports:
+                - port: 80
+                  targetPort: 8000
+            ---
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: public
+            spec:
+              rules:
+                - host: example.com
+                  http:
+                    paths:
+                      - path: /v1
+                        pathType: Prefix
+                        backend:
+                          service:
+                            name: api
+                            port:
+                              number: 80
+            ---
+            apiVersion: batch/v1
+            kind: CronJob
+            metadata:
+              name: nightly-report
+            spec:
+              schedule: "0 3 * * *"
+              jobTemplate:
+                spec:
+                  template:
+                    spec:
+                      containers:
+                        - name: report
+                          image: ghcr.io/example/api:1.4.0
+                          command: ["python", "-m", "api.jobs.report"]
+                      volumes:
+                        - name: out
+                          persistentVolumeClaim:
+                            claimName: reports
+            ---
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: settings
+            data:
+              flags: "beta"
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: api-secrets
+            ---
+            apiVersion: v1
+            kind: PersistentVolumeClaim
+            metadata:
+              name: reports
+            ---
+            apiVersion: apps/v1
+            kind: StatefulSet
+            metadata:
+              name: postgres
+            spec:
+              template:
+                metadata:
+                  labels: {app: postgres}
+                spec:
+                  containers:
+                    - name: postgres
+                      image: postgres:16
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: postgres
+            spec:
+              selector: {app: postgres}
+              ports: [{port: 5432}]
+            ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: report-cli
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: cli
+                      image: ghcr.io/example/api:1.4.0
+                      command: ["report-cli", "--daily"]
+            ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: sidecar-cache
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: cache
+                      image: ghcr.io/example/api:1.4.0
+                      command: ["/opt/bin/cache-server", "0.0.0.0", "8000"]
+        """,
+        "pyproject.toml": """
+            [project]
+            name = "example"
+            version = "0.1.0"
+
+            [project.scripts]
+            report-cli = "api.jobs.report:build"
+        """,
+        "api/Dockerfile": """
+            FROM python:3.12-slim
+            WORKDIR /srv
+            COPY . .
+            ENTRYPOINT ["./entrypoint.sh"]
+        """,
+        "api/entrypoint.sh": """
+            #!/bin/sh
+            set -e
+            python -m api.migrate
+            exec gunicorn -b 0.0.0.0:8000 "api.wsgi:create_app()"
+        """,
+        "api/__init__.py": "",
+        "api/migrate.py": """
+            def run():
+                return None
+        """,
+        "api/wsgi.py": """
+            from flask import Flask
+
+
+            def create_app():
+                return Flask(__name__)
+        """,
+        "api/jobs/__init__.py": "",
+        "api/jobs/report.py": """
+            def build():
+                return "report"
+
+
+            build()
+        """,
+        "charts/web/Chart.yaml": """
+            apiVersion: v2
+            name: web
+            version: 0.1.0
+        """,
+        "charts/web/values.yaml": """
+            image:
+              repository: ghcr.io/example/web
+            command: ["streamlit", "run", "ui/app.py"]
+        """,
+        "charts/web/templates/engines.yaml": """
+            {{- range $spec := .Values.engines }}
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: "{{ .Release.Name }}-{{ $spec.name }}-engine"
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: engine
+                      image: "vllm/vllm-openai:latest"
+            ---
+            {{- end }}
+        """,
+        "charts/web/templates/deployment.yaml": """
+            {{- if .Values.enabled | default true }}
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: {{ include "web.fullname" . }}
+              labels:
+                {{- include "web.labels" . | nindent 4 }}
+            spec:
+              template:
+                metadata:
+                  labels:
+                    app: web
+                spec:
+                  containers:
+                    - name: web
+                      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
+                      command: ["streamlit", "run", "ui/app.py"]
+                      env:
+                        - name: API_URL
+                          value: "http://api/v1"
+            {{- end }}
+        """,
+        "ui/app.py": """
+            import streamlit as st
+
+            st.title("web")
+        """,
+    },
     "streamlit_app": {
         "app/main.py": """
             import streamlit as st

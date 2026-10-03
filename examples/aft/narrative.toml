@@ -1,0 +1,1736 @@
+# Narrative for the code-flow report — the only hand-written input.
+#
+# Structure (modules, functions, call edges, routes, SQL access, boundaries) comes from code_map.json.
+# This file adds the explanation around it. Every `symbol` / `module` / `table` named here is checked
+# against the code on every build; a name that no longer exists fails the build and the staleness test.
+# Never write line numbers — the builder adds file:line from the code map.
+#
+# Proposed by `codeflow.py draft`. Replace every "TODO: …" (the report shows how many are left).
+# Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
+# A finding with a `check` retires itself: once the code no longer shows it, it moves to the page's Fixed list.
+# Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+# [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
+
+
+[meta]
+title = "aft"
+lede = "AFT is a Terraform module that installs, in an AFT management account, a serverless pipeline that turns an account request committed to a Git repository into a new, tagged and customised AWS account in a Control Tower organization. A CodePipeline run writes each request to DynamoDB aft-request, whose stream feeds trigger Lambdas that queue it on an SQS FIFO queue; a 5-minute processor hands one request at a time to Control Tower through Service Catalog, and Control Tower's lifecycle event then starts the provisioning, feature-options and customizations Step Functions, every Lambda importing the shared aft_common layer that the same Terraform builds and deploys."
+audience = "learning the code"
+
+[module_notes.__init__]
+purpose = "Marks src/ as a package so the Lambda handler paths resolve."
+does = "Nothing at run time; holds only the licence header."
+flow = "Imported implicitly when a handler under src/aft_lambda is loaded; no code."
+
+[module_notes.aft_lambda]
+purpose = "Package root for every Lambda handler AFT ships."
+does = "Groups the handler packages: request framework, provisioning framework, feature options, customizations and the layer builder."
+flow = "Each Lambda resource in the Terraform modules points its handler at a module below this package; the package itself has no code."
+
+[module_notes."aft_lambda.aft_account_provisioning_framework"]
+purpose = "Package for the four Lambda tasks of the aft-account-provisioning-framework state machine."
+does = "Groups persist_metadata, create_role, tag_account and account_metadata_ssm; no code of its own."
+flow = "Step Functions aft_account_provisioning_framework_sfn invokes the four handlers below, in the order persist_metadata → create_role → tag_account → account_metadata_ssm (journey 4)."
+
+[module_notes."aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_account_metadata_ssm"]
+purpose = "Gives Terraform in the new account a way to read the request's custom_fields, by mirroring them into that account's SSM Parameter Store."
+does = "Decodes custom_fields from the account request; opens an AWSAFTService session in the vended account narrowed by a session policy to the custom-fields path; deletes parameters whose key is no longer in custom_fields and puts the rest."
+flow = "Last task of Step Functions aft_account_provisioning_framework_sfn (Lambda account_metadata_ssm) → AuthClient.get_target_account_session → ssm.get_ssm_parameters_names_by_path, delete_ssm_parameters, put_ssm_parameters under /aft/account-request/custom-fields/ in the vended account; on error, notifications.send_lambda_failure_sns_message. After it the state machine moves on to aft-features and customizations."
+note = "The session policy's second statement is covered by finding metadata-ssm-session-policy-dollar."
+
+[module_notes."aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_create_role"]
+purpose = "Puts the AWSAFTExecution and AWSAFTService roles into a newly vended account so every later AFT step can reach it."
+does = "Checks that the Step Functions action is create_role; runs ProvisionRoles.deploy_aws_aft_roles for the target account; reports failures to the failure SNS topic and re-raises so the state machine fails."
+flow = "Second task of aft_account_provisioning_framework_sfn (Lambda create_role) → account_provisioning_framework.ProvisionRoles (through AWSControlTowerExecution, via the CT management account) → IAM in the vended account."
+
+[module_notes."aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_persist_metadata"]
+purpose = "Records each AFT-managed account in DynamoDB aft-request-metadata, the table later steps use to know which accounts AFT owns and where they sit."
+does = "Checks that the action is persist_metadata; writes the account's metadata row and returns the PutItem response to the state machine."
+flow = "First task of aft_account_provisioning_framework_sfn (Lambda persist_metadata) → account_provisioning_framework.persist_metadata → DynamoDB aft-request-metadata (table name from SSM). The row is read later by detect_customization_triggers, customizations.get_all_aft_account_ids and premium_support."
+note = "The row is replaced as a whole on every run; see finding support-flag-overwritten-by-persist-metadata."
+
+[module_notes."aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_tag_account"]
+purpose = "Applies the request's account_tags to the account in AWS Organizations."
+does = "Checks that the action is tag_account; opens the CT management session as AWSAFTService; calls tag_account, passing an optional rollback flag from the event."
+flow = "Third task of aft_account_provisioning_framework_sfn (Lambda tag_account) → account_provisioning_framework.tag_account → OrganizationsAgent.tag_org_resource in the CT management account."
+note = "The rollback flag is described in finding tag-rollback-dead-and-broken."
+
+[module_notes."aft_lambda.aft_account_request_framework"]
+purpose = "Package for the request-pipeline Lambdas: stream triggers, queue processor, Control Tower event handlers and cleanup."
+does = "Groups six handlers; no code of its own."
+flow = "Its handlers are wired to DynamoDB aft-request's stream, the 5-minute EventBridge schedule and the Control Tower EventBridge rule (journeys 1–3)."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_account_request_action_trigger"]
+purpose = "The consumer of aft-request changes that decides what each change means for the account."
+does = "Wraps the stream record in AccountRequestRecordHandler and lets process_request route it to queueing, customization-only, or cleanup; sends any error to the failure SNS topic and re-raises."
+flow = "DynamoDB aft-request stream → Lambda aft-account-request-action-trigger → account_request_record_handler.AccountRequestRecordHandler.process_request → SQS aft-account-request.fifo (create/update), Step Functions aft-account-provisioning-framework (customization only) or Lambda aft-cleanup-resources (REMOVE)."
+note = "See finding stream-record-dropped-after-one-retry for what happens when it raises."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_account_request_audit_trigger"]
+purpose = "Keeps a history of every change to an account request, independent of whether acting on it succeeds."
+does = "Accepts only DynamoDB stream events; picks NewImage, or OldImage for REMOVE; writes it with a timestamp and the event name to the audit table; reports errors to SNS."
+flow = "DynamoDB aft-request stream (beside the action trigger) → Lambda aft-account-request-audit-trigger → account_request_framework.put_audit_record → DynamoDB aft-request-audit (name from SSM)."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_account_request_processor"]
+purpose = "The throttle between the request queue and Control Tower: it starts account creations and updates at a pace Control Tower accepts."
+does = "Re-associates AWSAFTService with the Account Factory portfolio; stops early when the number of Control Tower baselines UNDER_CHANGE reaches AFT_PROVISIONING_CONCURRENCY; takes one message from the FIFO queue, validates it, and calls create_new_account (ADD) or update_existing_account (UPDATE); posts a usage metric and deletes the message."
+flow = "EventBridge rule aft-lambda-account-request-processor, rate(5 minutes) → Lambda aft-account-request-processor → account_request_framework.AccountRequest, sqs.receive_sqs_message → new_ct_request_is_valid / modify_ct_request_is_valid → Service Catalog provision_product or update_provisioned_product in the CT management account → sqs.delete_sqs_message; failures go to the failure SNS topic (journey 2)."
+note = "Throughput and failure behaviour are covered by findings processor-one-request-per-run, processor-no-retry-dlq-after-one-failure, processor-portfolio-calls-every-run and metrics-post-without-timeout."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_cleanup_resources"]
+purpose = "Removes what AFT built for an account once its request is deleted from aft-request."
+does = "Looks up the account id from the request email in Organizations; deletes the account's customization pipeline unless it is running; deletes its row from aft-request-metadata."
+flow = "REMOVE on the aft-request stream → AccountRequestRecordHandler.handle_remove invokes Lambda aft-cleanup-resources asynchronously → OrganizationsAgent.get_account_id_from_email → codepipeline.delete_customization_pipeline → ddb.delete_ddb_item on DynamoDB aft-request-metadata."
+note = "It does not close or remove the AWS account itself. Its error path is covered by finding cleanup-error-path-unbound."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_controltower_event_logger"]
+purpose = "Keeps a raw record of every Control Tower lifecycle event AFT receives, for troubleshooting."
+does = "Writes the EventBridge event unchanged to the events table; reports errors to SNS."
+flow = "Control Tower lifecycle event, forwarded from the CT management account → EventBridge rule aft-controltower-event-logger → Lambda aft-controltower-event-logger → ddb.put_ddb_item on DynamoDB aft-controltower-events (name from SSM)."
+
+[module_notes."aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework"]
+purpose = "Connects Control Tower's 'account ready' signal to AFT's own provisioning state machine."
+does = "Accepts a supported Control Tower event (CreateManagedAccount, UpdateManagedAccount) or a bare account_request; finds the account id and its aft-request record; builds the customization payload; adds an account_move trigger when an UpdateManagedAccount moved the account to another OU and SSM enables that trigger; starts the state machine."
+flow = "EventBridge rule aft-controltower-event-logger → Lambda aft-invoke-aft-account-provisioning-framework → OrganizationsAgent.get_account_email_from_id → account_request_framework.get_account_request_record (DynamoDB aft-request) → build_account_customization_payload → detect_customization_triggers (DynamoDB aft-request-metadata) → aft_utils.invoke_step_function → Step Functions aft-account-provisioning-framework (journey 3)."
+note = "The opt-out it honours is covered by finding skip-triggers-attribute-not-in-module."
+
+[module_notes."aft_lambda.aft_builder.codebuild_trigger"]
+purpose = "Builds the aft_common Lambda layer during terraform apply, so the layer version exists before any other Lambda is created."
+does = "Starts the layer CodeBuild project named in the event; polls it every 10 seconds for up to 14 minutes; returns Status 200 on success and raises on failure or timeout."
+flow = "Terraform data source aws_lambda_invocation.trigger_codebuild_job → Lambda codebuild_trigger → CodeBuild start_build / batch_get_builds; the build writes layer.zip to S3 and aws_lambda_layer_version depends on this invocation."
+note = "It must not import aft_common: it runs before the layer it builds exists."
+
+[module_notes."aft_lambda.aft_customizations"]
+purpose = "Package for the Lambda tasks of the aft-invoke-customizations state machine."
+does = "Groups identify_targets, audit_trigger, get_pipeline_executions and execute_pipeline; no code of its own."
+flow = "Step Functions aft-invoke-customizations invokes the handlers below (journey 6)."
+
+[module_notes."aft_lambda.aft_customizations.aft_customizations_audit_trigger"]
+purpose = "Records who or what started each aft-invoke-customizations run, so a pipeline run can be traced back to its request."
+does = "Classifies the run as account_move, manual or account_request from the event; writes one row per execution with targets, bypass_steps and customization_request_id; logs a line linking the execution id to the request id."
+flow = "Step Functions aft-invoke-customizations → Lambda aft-customizations-audit-trigger → ddb.put_ddb_item on DynamoDB aft-customizations-audit (name from SSM) → logger.customization_request_logger."
+note = "Unlike the other handlers it never raises: any error is returned as status 'skipped', so a failed audit write does not stop customizations."
+
+[module_notes."aft_lambda.aft_customizations.aft_customizations_execute_pipeline"]
+purpose = "Starts account customization pipelines without exceeding the configured concurrency."
+does = "Reads maximum_concurrent_customizations from SSM; starts that many minus the running count from pending_accounts, passing plan_only through; returns the accounts still pending so the state machine can loop."
+flow = "Step Functions aft-invoke-customizations (after get_pipeline_executions) → Lambda aft-customizations-execute-pipeline → codepipeline.execute_pipeline → CodePipeline start_pipeline_execution on the account's <account-id>-customizations pipeline."
+
+[module_notes."aft_lambda.aft_customizations.aft_customizations_get_pipeline_executions"]
+purpose = "Tells the customizations loop how many account pipelines are already running."
+does = "Lists AFT customization pipelines by name pattern and counts those whose latest execution is InProgress."
+flow = "Step Functions aft-invoke-customizations loop → Lambda aft-customizations-get-pipeline-executions → codepipeline.list_pipelines, get_running_pipeline_count → returns running_pipelines to execute_pipeline."
+note = "Cost of the count is covered by finding pipeline-count-pages-full-history."
+
+[module_notes."aft_lambda.aft_customizations.aft_customizations_identify_targets"]
+purpose = "Turns an include/exclude target selection into the concrete list of accounts to customise."
+does = "Validates the request against its JSON schema; resolves include and exclude selectors to account ids; skips closed or suspended accounts; builds one customization payload per account and stores the list in S3 for the Map state."
+flow = "Start of Step Functions aft-invoke-customizations → Lambda aft-customizations-identify-targets → customizations.validate_identify_targets_request, get_included_accounts / get_excluded_accounts → account_request_framework.get_account_request_record, build_account_customization_payload → customizations.upload_target_account_info (S3 customizations bucket)."
+note = "See finding identify-targets-list-mutated-while-iterating."
+
+[module_notes."aft_lambda.aft_feature_options"]
+purpose = "Package for the three Lambda tasks of the aft-features state machine."
+does = "Groups delete_default_vpc, enroll_support and enable_cloudtrail; no code of its own."
+flow = "Step Functions aft_features, started by the provisioning framework, invokes the handlers below (journey 5)."
+
+[module_notes."aft_lambda.aft_feature_options.aft_delete_default_vpc"]
+purpose = "Implements the delete-default-VPCs feature option for vended accounts."
+does = "Reads the SSM flag /aft/config/feature/delete-default-vpcs-enabled; per region, finds the default VPC and removes its internet gateways, subnets, route tables, ACLs and security groups before the VPC; skips regions it cannot reach."
+flow = "Step Functions aft_features → Lambda aft_delete_default_vpc → feature_options.get_aws_regions, get_default_vpc, delete_internet_gateways … delete_vpc → EC2."
+note = "Which account the per-region clients reach is covered by finding delete-default-vpc-wrong-account."
+
+[module_notes."aft_lambda.aft_feature_options.aft_enable_cloudtrail"]
+purpose = "Implements the CloudTrail data-events feature option at organization level."
+does = "When the SSM flag is 'true', ensures the AFT organization trail exists in the CT management account, has data-event selectors for the log-archive buckets and is logging; when 'false', deletes that trail."
+flow = "Step Functions aft_features → Lambda aft_enable_cloudtrail → SSM /aft/account/log-archive/log_bucket_arn and kms_key_arn → feature_options.get_log_bucket_arns (log-archive account), trail_exists, create_trail, put_event_selectors, start_logging / delete_trail → CloudTrail in the CT management account."
+note = "The trail is organization-wide, so this runs the same check for every vended account."
+
+[module_notes."aft_lambda.aft_feature_options.aft_enroll_support"]
+purpose = "Implements the Enterprise Support feature option for vended accounts."
+does = "Validates the target account id; when the SSM flag is 'true', asks premium_support to make sure an enrolment case exists for the account."
+flow = "Step Functions aft_features → Lambda aft_enroll_support → premium_support.ensure_enterprise_support_enrollment → DynamoDB aft-request-metadata flag and the AWS Support API in the CT management account."
+
+[module_notes."sources.aft-lambda-layer.aft_common"]
+purpose = "Package root of the shared library that is published as the aft_common Lambda layer."
+does = "Holds no code; its submodules are imported by every handler as aft_common.*."
+flow = "Built by Lambda codebuild_trigger's CodeBuild project into layer.zip and attached to every AFT Lambda."
+
+[module_notes."sources.aft-lambda-layer.aft_common.account_provisioning_framework"]
+purpose = "Holds the work done inside or for a freshly vended account by the provisioning state machine."
+does = "Creates or updates AWSAFTService and AWSAFTExecution in the target account with a trust policy to AWSAFTAdmin, then waits until both can be assumed; writes the account's aft-request-metadata row; turns account_tags into Organizations tags. Also defines the AFT role-name constants the rest of the library imports."
+flow = "Called by the create_role, persist_metadata and tag_account handlers (journey 4); its ProvisionRoles constants are imported across the layer → IAM in the vended account (via AWSControlTowerExecution), DynamoDB aft-request-metadata, Organizations."
+note = "deploy_aws_aft_roles sleeps 65 s for IAM propagation after the roles become assumable. See finding role-names-in-three-places."
+
+[module_notes."sources.aft-lambda-layer.aft_common.account_request_framework"]
+purpose = "The request rules: what goes on the queue, whether a request is valid, and how it becomes a Service Catalog call."
+does = "Builds and sends the SQS message for a stream record; validates new requests (name and email unused in Organizations) and updates (only the OU may change); provisions or updates the Account Factory product in the CT management account; reads aft-request records and builds the customization payload every later step uses; manages the AWSAFTService association with the Account Factory portfolio and the concurrency threshold."
+flow = "Used by the action trigger (via AccountRequestRecordHandler), the audit trigger, the processor, the invoke-provisioning-framework Lambda and identify_targets → SQS aft-account-request.fifo, DynamoDB aft-request and aft-request-audit, Service Catalog and Control Tower in the CT management account."
+
+[module_notes."sources.aft-lambda-layer.aft_common.account_request_record_handler"]
+purpose = "Turns one aft-request stream record into exactly one action."
+does = "Validates that the event comes from DynamoDB and opens the needed sessions; decides between remove, customization-only, create and update; for customization-only, builds the payload and starts the provisioning state machine directly."
+flow = "Lambda aft-account-request-action-trigger → AccountRequestRecordHandler.process_request → handle_remove (Lambda aft-cleanup-resources), handle_account_request (account_request_framework.insert_msg_into_acc_req_queue → SQS) or handle_customization_request (Step Functions aft-account-provisioning-framework)."
+note = "See finding stale-invoke-lambda-wiring."
+
+[module_notes."sources.aft-lambda-layer.aft_common.aft_types"]
+purpose = "Names the shape of the payload that flows through every provisioning and customization step."
+does = "Defines AftAccountInfo (account details from Organizations) and AftInvokeAccountCustomizationPayload (account_info, account_request, control_tower_event, customization_request_id and optional plan_only and customization_triggers)."
+flow = "Type hints only: organizations.get_aft_account_info returns AftAccountInfo; account_request_framework.build_account_customization_payload and s3.put_target_account_info use the payload type."
+
+[module_notes."sources.aft-lambda-layer.aft_common.aft_utils"]
+purpose = "Common plumbing every AWS-calling module in the layer leans on."
+does = "Retries throttled boto3 calls with backoff (resubmit_request_on_boto_throttle) and provides high-retry and region-probe boto configs; starts Lambdas asynchronously and Step Functions executions by name; recognises the Control Tower events AFT handles; pages nextToken APIs and splits lists into batches; escapes newlines and tabs in values before they are logged."
+flow = "Imported throughout aft_common and by several handlers; invoke_lambda and invoke_step_function are how the record handler and the invoke-provisioning-framework Lambda reach Lambda aft-cleanup-resources and Step Functions aft-account-provisioning-framework."
+note = "The throttle decorator re-sends the whole call, so it is meant only for reads or idempotent writes."
+
+[module_notes."sources.aft-lambda-layer.aft_common.auth"]
+purpose = "The one place AFT gets credentials for any account it touches."
+does = "Refuses to start unless running in the AFT management account (checked against SSM); assumes the hub role AWSAFTAdmin and from it a spoke role (AWSAFTExecution by default) in a target account; shortcuts for the CT management and log-archive accounts; accepts an optional session policy to narrow a spoke session."
+flow = "AuthClient is built by almost every handler → SSM role and session names, STS AssumeRole (hub then spoke) → returns boto3 Sessions used for Organizations, Service Catalog, IAM, SSM, CloudTrail and Support calls."
+
+[module_notes."sources.aft-lambda-layer.aft_common.codepipeline"]
+purpose = "Finds and drives the per-account customization pipelines in the AFT management account."
+does = "Finds an account's pipeline by name prefix and the managed_by=AFT tag; tells whether its latest execution is in progress; starts it (optionally with PLAN_ONLY) unless already running; counts running pipelines; deletes a pipeline that is not running."
+flow = "Used by execute_pipeline and get_pipeline_executions (aft-invoke-customizations) and by aft_cleanup_resources → CodePipeline list_pipelines, list_pipeline_executions, start_pipeline_execution, delete_pipeline."
+note = "See finding pipeline-count-pages-full-history."
+
+[module_notes."sources.aft-lambda-layer.aft_common.constants"]
+purpose = "One list of the SSM parameter names through which AFT finds its own resources and settings at run time."
+does = "Names the SSM paths for tables, queue, state machines, Lambdas, SNS topics, buckets, shared account ids, feature flags and versions; the custom-fields path; the account_move trigger token."
+flow = "Imported by most aft_common modules and handlers and passed to ssm.get_ssm_parameter_value; the parameters themselves are created by the Terraform module aft-ssm-parameters."
+
+[module_notes."sources.aft-lambda-layer.aft_common.control_tower"]
+purpose = "Lets the processor see how busy Control Tower is before it asks for another account."
+does = "Finds the AWSControlTowerBaseline ARN (memoised per instance); lists enabled baselines with filters; counts those UNDER_CHANGE."
+flow = "AccountRequest.provisioning_threshold_reached (Lambda aft-account-request-processor) → ControlTowerFacade.get_enabled_baselines_under_change_count → Control Tower list_baselines / list_enabled_baselines in the CT management account."
+
+[module_notes."sources.aft-lambda-layer.aft_common.customizations"]
+purpose = "Resolves who should be customised when someone re-runs customizations."
+does = "Validates the request against schemas/identify_targets_request_schema.json; expands selectors all, core, ous, tags and accounts into account ids and keeps only AFT-managed or core ones; subtracts the exclude list; uploads the per-account payloads to S3."
+flow = "Lambda aft-customizations-identify-targets → DynamoDB aft-request-metadata (all AFT accounts), SSM core-account ids, OrganizationsAgent (OUs, tags) → s3.put_target_account_info to the customizations bucket under sfn/<execution-id>/target_account_info.json."
+note = "See finding map-itemreader-hardcoded-partition."
+
+[module_notes."sources.aft-lambda-layer.aft_common.ddb"]
+purpose = "Minimal DynamoDB access shared by the handlers."
+does = "Gets, puts and deletes one item by key through the resource API; converts stream images from DynamoDB's typed format to plain Python."
+flow = "Used by the event logger, record handler, persist_metadata, cleanup, customizations audit, premium_support and account_request_framework → DynamoDB aft-request, aft-request-metadata, aft-controltower-events, aft-customizations-audit."
+
+[module_notes."sources.aft-lambda-layer.aft_common.exceptions"]
+purpose = "Named errors for the Account Factory portfolio association."
+does = "Defines ServiceRoleNotAssociated and NoAccountFactoryPortfolioFound."
+flow = "Raised in account_request_framework.AccountRequest; the processor catches NoAccountFactoryPortfolioFound and only logs a warning."
+
+[module_notes."sources.aft-lambda-layer.aft_common.feature_options"]
+purpose = "The EC2 and CloudTrail operations behind the feature-option Lambdas."
+does = "Lists regions and finds, empties and deletes a default VPC (gateways, subnets, route tables, ACLs, security groups); checks, creates, configures, starts and deletes the AFT organization trail; lists log-archive bucket ARNs; extracts and validates the target account id from a Step Functions event."
+flow = "Called by aft_delete_default_vpc, aft_enable_cloudtrail and aft_enroll_support (Step Functions aft_features) with sessions those handlers open → EC2 in each region, CloudTrail in the CT management account, S3 list_buckets in the log-archive account."
+
+[module_notes."sources.aft-lambda-layer.aft_common.logger"]
+purpose = "Makes every AFT log line one JSON object, so CloudWatch Logs Insights can query them."
+does = "Sets a JSON log format and the level from the log_level env var; encodes dicts, datetimes and streaming bodies; offers a logger adapter that adds account_id and customization_request_id to every line."
+flow = "configure_aft_logger runs at import in every handler; customization_request_logger is used by the provisioning, feature-option and customizations audit handlers to tie log lines to one request."
+note = "It replaces the process-wide log record factory, so any library logging in the same Lambda is JSON-encoded too."
+
+[module_notes."sources.aft-lambda-layer.aft_common.metrics"]
+purpose = "Optional usage reporting to the AWS Solutions metrics endpoint."
+does = "Checks the SSM opt-in flag; builds a payload with version, deployment UUID, account id and feature-flag settings; POSTs it; also runs as a script from CodeBuild."
+flow = "Lambda aft-account-request-processor posts after each provisioning or update call; the customization buildspecs run metrics.py --codebuild-name … at the end of a build → SSM reads → HTTPS POST."
+note = "See finding metrics-post-without-timeout."
+
+[module_notes."sources.aft-lambda-layer.aft_common.notifications"]
+purpose = "How a failing Lambda tells operators, since most AFT work runs unattended."
+does = "Publishes to an SNS topic; formats a failure message with the function name, request id and log group and sends it to the failure topic named in SSM."
+flow = "Called from the except block of nearly every handler → SSM /aft/account/aft-management/sns/failure-topic-arn → SNS aft-failure-notifications."
+
+[module_notes."sources.aft-lambda-layer.aft_common.organizations"]
+purpose = "Answers AFT's questions about the organization: which account has this email, which OU is it in, what is it tagged with."
+does = "Looks accounts up by email or id and builds AftAccountInfo; walks OUs, including the nested 'Name (ou-id)' format, and lists accounts per OU; checks OU membership; tags and reads tags on accounts. Results of the account and OU listings are memoised per instance."
+flow = "OrganizationsAgent is built with a CT management session by the record handler, processor, invoke-provisioning-framework, cleanup, identify_targets, customizations, service_catalog and tag_account → Organizations API in the CT management account."
+note = "See finding tag-rollback-dead-and-broken."
+
+[module_notes."sources.aft-lambda-layer.aft_common.premium_support"]
+purpose = "Enrols a vended account in Enterprise Support without opening duplicate cases."
+does = "Reads and sets an enrolment flag on the account's aft-request-metadata row; searches existing support cases for one about the account; opens a case if none exists."
+flow = "Lambda aft_enroll_support → is_enrollment_flagged_in_metadata (DynamoDB aft-request-metadata) → account_enrollment_requested / generate_case (Support API in the CT management account) → set_enrollment_flag_in_metadata."
+note = "See finding support-flag-overwritten-by-persist-metadata."
+
+[module_notes."sources.aft-lambda-layer.aft_common.s3"]
+purpose = "Stores the customization target list where the Step Functions Map state can read it."
+does = "Serialises the payload list to JSON and puts it as one S3 object."
+flow = "customizations.upload_target_account_info → put_target_account_info → S3 customizations bucket."
+
+[module_notes."sources.aft-lambda-layer.aft_common.service_catalog"]
+purpose = "Talks to the Control Tower Account Factory product in Service Catalog."
+does = "Finds the product id and an active provisioning artifact by the product name in SSM; decides whether an account is already enrolled by finding a healthy (AVAILABLE or TAINTED, once provisioned) provisioned product for it; pages healthy products and matches emails."
+flow = "Used by account_request_framework.create_new_account / update_existing_account and by AccountRequestRecordHandler (get_account_id_if_enrolled) → Service Catalog in the CT management account, assumed as AWSAFTService."
+
+[module_notes."sources.aft-lambda-layer.aft_common.shared_account"]
+purpose = "Stops AFT from treating the Control Tower shared accounts like vended ones."
+does = "Reads the CT management, log-archive and audit account ids from SSM; reports whether a request names one of them; rejects a request whose email and name only half-match a shared account or that would move one out of its OU."
+flow = "AccountRequestRecordHandler.process_request → shared_account_request → Organizations describe_account in the CT management account; True sends the request down the customization-only path."
+
+[module_notes."sources.aft-lambda-layer.aft_common.sqs"]
+purpose = "The SQS calls behind the account-request queue."
+does = "Builds the queue URL from the session's region and account; sends a JSON message; receives one message; deletes a message by receipt handle."
+flow = "account_request_framework.insert_msg_into_acc_req_queue sends; Lambda aft-account-request-processor receives and deletes → SQS aft-account-request.fifo."
+note = "See findings fifo-unique-group-id and processor-one-request-per-run."
+
+[module_notes."sources.aft-lambda-layer.aft_common.ssm"]
+purpose = "Reads and writes SSM parameters, the registry through which AFT code finds its own resources."
+does = "Reads one parameter with an in-process cache; lists parameter names under a path; puts and deletes parameters under the custom-fields path, retrying on throttling."
+flow = "get_ssm_parameter_value is called from nearly every module with names from constants; the put/list/delete functions are used by Lambda account_metadata_ssm in the vended account."
+note = "See finding ssm-cache-never-expires."
+
+[module_notes."sources.aft-lambda-layer.setup"]
+purpose = "Packages aft_common for the layer build."
+does = "Declares the packages and includes the JSON schemas as package data."
+flow = "Run by the layer CodeBuild project that Lambda codebuild_trigger starts; output goes into layer.zip."
+
+[module_notes."sources.scripts.terraform_client"]
+purpose = "A small client for the Terraform Cloud / Enterprise API, used when AFT runs Terraform remotely instead of in CodeBuild."
+does = "Creates and finds workspaces and projects; uploads configuration versions; sets, updates and deletes workspace variables; starts plan, apply and destroy runs and waits for them to settle; fetches plan JSON."
+flow = "Imported only by workspace_manager inside CodeBuild → HTTPS to the endpoint passed to init."
+note = "See finding terraform-client-delete-precedence."
+
+[module_notes."sources.scripts.workspace_manager"]
+purpose = "The command-line entry point CodeBuild runs to apply, plan or destroy a Terraform Cloud / Enterprise workspace for an AFT pipeline."
+does = "Creates or reuses the workspace and gives it AWS access, either through HCP OIDC variables or role credentials it obtains by assuming a role; uploads the configuration and starts a run, plan-only or apply; exports a plan's JSON to the plan-output S3 bucket; destroys and deletes a workspace."
+flow = "Buildspecs for the account-request, provisioning-customizations, global- and account-customizations pipelines run it with --operation deploy|plan|delete → terraform_client (HTTPS), STS AssumeRole, S3 put_object."
+
+[[layers]]
+id = "handlers-request"
+name = "Account request handlers"
+owns = "The Lambdas of the request pipeline: audit and act on aft-request stream records, pull one request off the FIFO queue every 5 minutes and hand it to Control Tower, record Control Tower events and start the provisioning state machine, clean up after a removed request. Each file is one Lambda; each catches every error, publishes it to the failure SNS topic and re-raises."
+modules = ["aft_lambda.aft_account_request_framework", "aft_lambda.aft_account_request_framework.*", "aft_lambda", "__init__"]
+
+[[layers]]
+id = "handlers-provisioning"
+name = "Provisioning framework handlers"
+owns = "The four Lambda tasks of the aft-account-provisioning-framework state machine: persist account metadata, create the AFT roles in the new account, tag the account in Organizations, mirror custom fields into SSM in the new account. Each reads its input from the Step Functions payload (action + payload) and checks the action name."
+modules = ["aft_lambda.aft_account_provisioning_framework", "aft_lambda.aft_account_provisioning_framework.*"]
+
+[[layers]]
+id = "handlers-feature-options"
+name = "Feature option handlers"
+owns = "The three Lambda tasks of the aft-features state machine: delete default VPCs, open an Enterprise Support enrolment case, manage the AFT CloudTrail data-events trail. Each one is a no-op unless its SSM feature flag says \"true\"."
+modules = ["aft_lambda.aft_feature_options", "aft_lambda.aft_feature_options.*"]
+
+[[layers]]
+id = "handlers-customizations"
+name = "Customization handlers"
+owns = "The Lambda tasks of the aft-invoke-customizations state machine: work out which accounts to customise, write an audit row, count running pipelines and start more account pipelines up to the configured maximum."
+modules = ["aft_lambda.aft_customizations", "aft_lambda.aft_customizations.*"]
+
+[[layers]]
+id = "common-requests"
+name = "aft_common: request records"
+owns = "Turns an aft-request stream record into a decision (create, update, customise, remove), builds the SQS message and the customization payload, validates requests against Organizations, and calls Service Catalog to provision or update the account. Also recognises the shared Control Tower accounts (management, log archive, audit)."
+modules = ["sources.aft-lambda-layer.aft_common.account_request_record_handler", "sources.aft-lambda-layer.aft_common.account_request_framework", "sources.aft-lambda-layer.aft_common.shared_account"]
+
+[[layers]]
+id = "common-provisioning"
+name = "aft_common: provisioning and features"
+owns = "Work done inside or for a vended account: AWSAFTExecution / AWSAFTService role creation, account tags, the aft-request-metadata row, default-VPC and CloudTrail helpers, and Enterprise Support enrolment. ProvisionRoles also holds the AFT role-name constants that much of the library imports."
+modules = ["sources.aft-lambda-layer.aft_common.account_provisioning_framework", "sources.aft-lambda-layer.aft_common.feature_options", "sources.aft-lambda-layer.aft_common.premium_support"]
+
+[[layers]]
+id = "common-customizations"
+name = "aft_common: customizations"
+owns = "Resolves an include/exclude target spec (all, core, ous, tags, accounts) into account ids from the metadata table and Organizations, and uploads the per-account payload list to S3 for the Map state."
+modules = ["sources.aft-lambda-layer.aft_common.customizations"]
+
+[[layers]]
+id = "common-aws"
+name = "aft_common: AWS clients and auth"
+owns = "Thin wrappers over one AWS service each (SSM, DynamoDB, SQS, S3, SNS, Organizations, Service Catalog, Control Tower, CodePipeline), the cross-account session factory AuthClient, and the opt-in usage-metrics HTTP call."
+modules = ["sources.aft-lambda-layer.aft_common.auth", "sources.aft-lambda-layer.aft_common.ssm", "sources.aft-lambda-layer.aft_common.ddb", "sources.aft-lambda-layer.aft_common.sqs", "sources.aft-lambda-layer.aft_common.s3", "sources.aft-lambda-layer.aft_common.notifications", "sources.aft-lambda-layer.aft_common.organizations", "sources.aft-lambda-layer.aft_common.service_catalog", "sources.aft-lambda-layer.aft_common.control_tower", "sources.aft-lambda-layer.aft_common.codepipeline", "sources.aft-lambda-layer.aft_common.metrics"]
+
+[[layers]]
+id = "common-utils"
+name = "aft_common: utilities"
+owns = "Leaf helpers with no AWS calls of their own beyond what the caller passes in: SSM parameter-name constants, boto retry configs and the throttle-resubmit decorator, Lambda/Step Functions start helpers, log sanitising, the JSON logger, typed payloads and exceptions."
+modules = ["sources.aft-lambda-layer.aft_common", "sources.aft-lambda-layer.aft_common.aft_utils", "sources.aft-lambda-layer.aft_common.constants", "sources.aft-lambda-layer.aft_common.logger", "sources.aft-lambda-layer.aft_common.aft_types", "sources.aft-lambda-layer.aft_common.exceptions"]
+
+[[layers]]
+id = "build-and-scripts"
+name = "Layer build and CodeBuild scripts"
+owns = "Code that runs outside the request flow: the Lambda that builds the aft_common layer during terraform apply (it must not import aft_common), the layer's setup.py, and the Terraform Cloud / Enterprise workspace scripts that CodeBuild runs for account-request and customization pipelines."
+modules = ["aft_lambda.aft_builder.*", "sources.aft-lambda-layer.setup", "sources.scripts.*"]
+
+[[journeys]]
+id = "account-request-intake"
+title = "1 · An account request lands in DynamoDB and is queued"
+actor = "customer · account-request repository"
+trigger = "CodePipeline applies the aft-account-request Terraform → item in DynamoDB aft-request → stream → Lambda aft-account-request-action-trigger"
+summary = "The customer's Terraform writes one item per account (key = the account email) to DynamoDB aft-request. Two Lambdas read the table's stream: aft-account-request-audit-trigger copies every image into aft-request-audit, and aft-account-request-action-trigger decides what the change means — a new account goes on the SQS FIFO queue as ADD, a changed Control Tower parameter as UPDATE, a customization-only change goes straight to the provisioning Step Functions, and a deleted item triggers cleanup."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_account_request_audit_trigger:lambda_handler"
+  actor = "DynamoDB stream of aft-request (batch_size 1)"
+  action = "Audit copy, running beside the action trigger on the same stream: looks up the audit table name in SSM, picks NewImage (or OldImage for REMOVE) and writes it with a timestamp and the event name."
+  receives = "stream event: Records[0] with eventSource aws:dynamodb, eventName INSERT/MODIFY/REMOVE, dynamodb.NewImage/OldImage"
+  returns = "nothing; on error an SNS failure message and a re-raise"
+  stores = "one item in DynamoDB aft-request-audit (via put_audit_record)"
+  payload = '''
+{"eventName": "INSERT", "dynamodb": {"NewImage": {"id": {"S": "dev-team@example.com"},
+ "control_tower_parameters": {"M": {"AccountName": {"S": "dev-team"}, "ManagedOrganizationalUnit": {"S": "Sandbox"}}}}}}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_account_request_action_trigger:lambda_handler"
+  actor = "DynamoDB stream of aft-request (batch_size 1, maximum_retry_attempts 1)"
+  action = "The real consumer of the change. Builds an AuthClient, wraps the stream record in AccountRequestRecordHandler and calls process_request."
+  receives = "the same stream event as the audit trigger"
+  returns = "nothing; on error an SNS failure message ('AFT account request failed') and a re-raise"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler"
+  action = "Constructor: _validate_event rejects anything whose eventSource is not aws:dynamodb, opens the AFT-management and CT-management sessions, keeps OldImage/NewImage and works out whether control_tower_parameters changed (only on MODIFY)."
+  receives = "auth, event"
+  returns = "the handler object with is_create_action / is_update_action / control_tower_parameters_updated"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"
+  action = "The decision tree, in this order: REMOVE → handle_remove (invokes Lambda aft-cleanup-resources, named in SSM); not a CT-parameter change and the account is a shared core account → customization only; INSERT for an account not yet enrolled → ADD; INSERT for an account already enrolled in Control Tower → customization only; MODIFY with CT parameters changed → UPDATE; any other MODIFY → customization only."
+  receives = "the parsed record"
+  returns = "nothing; 'Unsupported account request' raises"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.shared_account:shared_account_request"
+  action = "Is the request about a shared account (CT management, log archive, audit)? Compares email and name with each shared account in Organizations, and refuses a request that tries to move one out of its OU."
+  receives = "event_record, auth"
+  returns = "True for a shared account"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.service_catalog:get_account_id_if_enrolled"
+  action = "For an INSERT: looks the email up in Organizations and then searches Service Catalog for a healthy Account Factory provisioned product with that account as physicalId."
+  receives = "the stream record"
+  returns = "the account id if already enrolled, else None (→ a new account)"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.handle_account_request"
+  action = "ADD or UPDATE path: hands the record to insert_msg_into_acc_req_queue with new_account True/False."
+  receives = "new_account flag"
+  returns = "nothing"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:insert_msg_into_acc_req_queue"
+  action = "Reads the queue name from SSM /aft/resources/sqs/aft-request-queue-name, builds the queue URL from the caller identity, builds the message and sends it."
+  receives = "event_record, new_account, session"
+  returns = "nothing"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_sqs_message"
+  action = "Shrinks the record to what the processor needs: the operation, the new control_tower_parameters and, on MODIFY, the old ones."
+  receives = "the stream record"
+  returns = "message dict"
+  payload = '''
+{"operation": "ADD",
+ "control_tower_parameters": {"AccountEmail": "dev-team@example.com", "AccountName": "dev-team",
+   "ManagedOrganizationalUnit": "Sandbox", "SSOUserEmail": "jane.doe@example.com",
+   "SSOUserFirstName": "Jane", "SSOUserLastName": "Doe"}}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:send_sqs_message"
+  action = "Sends the JSON body to SQS aft-account-request.fifo. Deduplication id and message group id are both a fresh uuid1, so every message is its own group."
+  receives = "sqs_url, message"
+  returns = "SQS SendMessage response"
+  stores = "one message on SQS aft-account-request.fifo — picked up by journey 2"
+
+[[journeys]]
+id = "account-request-processor"
+title = "2 · Every 5 minutes, one queued request goes to Control Tower"
+actor = "EventBridge schedule"
+trigger = "EventBridge rule aft-lambda-account-request-processor, rate(5 minutes) → Lambda aft-account-request-processor"
+summary = "A scheduled Lambda makes sure the AWSAFTService role can use the Account Factory portfolio, stops if too many Control Tower baselines are already UNDER_CHANGE, then takes at most one message from the FIFO queue. ADD becomes a Service Catalog ProvisionProduct in the CT management account, UPDATE an UpdateProvisionedProduct; the message is deleted once handled."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_account_request_processor:lambda_handler"
+  actor = "EventBridge rule aft-lambda-account-request-processor (rate(5 minutes))"
+  action = "Orchestrates one run. The concurrency limit comes from the env var AFT_PROVISIONING_CONCURRENCY; the queue name from SSM."
+  receives = "the scheduled EventBridge event (content unused)"
+  returns = "None; on error an SNS failure message and a re-raise"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest"
+  action = "Constructor: assumes into the CT management account as AWSAFTService, reads its account id and finds the Account Factory product id."
+  receives = "auth"
+  returns = "AccountRequest with ct_management_session and account_factory_product_id"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest.associate_aft_service_role_with_account_factory"
+  action = "Associates the AWSAFTService role ARN with the 'AWS Control Tower Account Factory Portfolio' (found by name through account_factory_portfolio_id). A missing portfolio only logs a warning."
+  receives = "nothing"
+  returns = "nothing"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest.provisioning_threshold_reached"
+  action = "Counts Control Tower enabled baselines in status UNDER_CHANGE (ControlTowerFacade.get_enabled_baselines_under_change_count); at or above the threshold the run ends without touching the queue."
+  receives = "threshold"
+  returns = "bool"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:receive_sqs_message"
+  action = "ReceiveMessage with MaxNumberOfMessages=1 on aft-account-request.fifo."
+  receives = "queue name"
+  returns = "one message (Body = the JSON from journey 1) or None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:new_ct_request_is_valid"
+  action = "ADD only: the request is valid when neither the AccountName nor the AccountEmail is already used in Organizations (account_name_or_email_in_use pages through every account). UPDATE uses modify_ct_request_is_valid instead: only ManagedOrganizationalUnit may differ from the old parameters."
+  receives = "ct_management_session, request body"
+  returns = "bool"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:create_new_account"
+  action = "Calls Service Catalog provision_product in the CT management account: product and provisioning artifact from service_catalog helpers, ProvisionedProductName = AccountName with spaces turned into hyphens, every control_tower_parameters key passed as a provisioning parameter, a User-Agent header carrying the AFT version from SSM. UPDATE goes to update_existing_account, which finds the healthy provisioned product for the account and calls update_provisioned_product."
+  receives = "session, ct_management_session, request"
+  returns = "ProvisionProduct response (record id)"
+  stores = "a Control Tower account creation in progress; when it ends, Control Tower emits CreateManagedAccount — journey 3"
+  payload = '''
+{"ProvisionedProductName": "dev-team",
+ "ProvisioningParameters": [{"Key": "AccountEmail", "Value": "dev-team@example.com"},
+   {"Key": "ManagedOrganizationalUnit", "Value": "Sandbox"}]}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:delete_sqs_message"
+  action = "Deletes the message — also when the request was judged invalid, after which the handler raises 'CT Request is not valid' (SNS failure). If provisioning itself raised, the message is not deleted and goes to the DLQ (maxReceiveCount 1)."
+  receives = "the message's ReceiptHandle"
+  returns = "nothing"
+
+[[journeys]]
+id = "controltower-event-starts-provisioning"
+title = "3 · Control Tower's lifecycle event starts the provisioning framework"
+actor = "Control Tower (CT management account)"
+trigger = "EventBridge rule aft-capture-ct-events (CT management) → bus aft-events-from-ct-management → rule aft-controltower-event-logger → Lambdas aft-controltower-event-logger and aft-invoke-aft-account-provisioning-framework"
+summary = "When Control Tower finishes CreateManagedAccount or UpdateManagedAccount, the event is forwarded to AFT's own bus. One target stores the raw event in DynamoDB aft-controltower-events; the other turns it into the customization payload — account info from Organizations, the request from aft-request, optional OU-move triggers — and starts the account provisioning Step Functions."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_controltower_event_logger:lambda_handler"
+  actor = "EventBridge rule aft-controltower-event-logger (pattern: account = CT management account)"
+  action = "Writes the whole EventBridge event, as received, to the table named in SSM /aft/resources/ddb/aft-controltower-events-table-name (keys id and time come from the event envelope)."
+  receives = "the EventBridge event"
+  returns = "the PutItem response"
+  stores = "one item in DynamoDB aft-controltower-events"
+  payload = '''
+{"id": "6f1c0e2a-0000-4000-8000-000000000001", "time": "2026-10-04T09:12:00Z",
+ "source": "aws.controltower", "account": "111111111111",
+ "detail": {"eventName": "CreateManagedAccount", "serviceEventDetails": {"createManagedAccountStatus":
+   {"account": {"accountId": "222222222222", "accountName": "dev-team"}, "state": "SUCCEEDED"}}}}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:lambda_handler"
+  actor = "EventBridge rule aft-controltower-event-logger (second target, same event)"
+  action = "Accepts two event shapes: a supported Control Tower event, or a bare {account_request: …}. Anything else raises 'Invoked with unrecognized event type'."
+  receives = "the same EventBridge event"
+  returns = "None; on error an SNS failure message and a re-raise"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.aft_utils:is_aft_supported_controltower_event"
+  action = "True only for source aws.controltower with eventName CreateManagedAccount or UpdateManagedAccount."
+  receives = "event"
+  returns = "bool"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.get_account_email_from_id"
+  action = "The CT event carries the account id but not the email, and the email is the key of aft-request — so it asks Organizations."
+  receives = "account_id 222222222222"
+  returns = "dev-team@example.com"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:get_account_request_record"
+  action = "GetItem on the table named in SSM /aft/resources/ddb/aft-request-table-name; a missing record raises."
+  receives = "request_table_id = the email"
+  returns = "the account request item"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_account_customization_payload"
+  action = "Decodes account_tags from its JSON string, fetches account info (OrganizationsAgent.get_aft_account_info) and builds the payload every later Lambda reads, with a new customization_request_id and run_create_pipeline 'true'."
+  receives = "ct_management_session, account_id, account_request, control_tower_event"
+  returns = "AftInvokeAccountCustomizationPayload"
+  payload = '''
+{"account_info": {"account": {"id": "222222222222", "email": "dev-team@example.com", "name": "dev-team",
+   "parent_id": "ou-ab12-cdef3456", "status": "ACTIVE"}},
+ "account_request": {"id": "dev-team@example.com", "account_tags": {"team": "dev"}, "custom_fields": "{\"cost_center\": \"42\"}"},
+ "account_provisioning": {"run_create_pipeline": "true"},
+ "customization_request_id": "0b7d5c1e-1111-4222-8333-444455556666"}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:detect_customization_triggers"
+  action = "Only for UpdateManagedAccount and only when SSM /aft/config/customization-triggers lists account_move: compares the new parent OU with parent_ou in aft-request-metadata, honours account_skip_customization_triggers on the request item, and returns an account_move trigger. Any error is logged and treated as 'no trigger'."
+  receives = "event_name, account_id, account_email, new_parent_id"
+  returns = "[] or [{type: account_move, old_parent, new_parent}] — added to the payload as customization_triggers"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.aft_utils:invoke_step_function"
+  action = "Starts the state machine named in SSM /aft/account/aft-management/sfn/aft-account-provisioning-framework-sfn-name with the payload as input."
+  receives = "sfn_name, input JSON"
+  returns = "StartExecution response"
+  stores = "a running execution of Step Functions aft-account-provisioning-framework — journey 4"
+
+[[journeys]]
+id = "provisioning-framework"
+title = "4 · The provisioning framework prepares the new account"
+actor = "Step Functions aft-account-provisioning-framework"
+trigger = "StartExecution from aft-invoke-aft-account-provisioning-framework, from the action trigger (customization-only requests), or from the aft-invoke-customizations Map state"
+summary = "Four Lambda tasks run in a fixed order — persist_metadata, create_role, tag_account, account_metadata_ssm — each receiving {action, payload = the whole state}. Then the state machine runs the feature-options state machine (journey 5) and the customer's aft-account-provisioning-customizations state machine, starts CodeBuild aft-create-pipeline to create the account's customizations pipeline, optionally starts aft-invoke-customizations for OU-move triggers, and publishes to SNS."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_persist_metadata:lambda_handler"
+  actor = "Step Functions task aft_account_provisioning_framework_persist_metadata (first state)"
+  action = "Checks action == 'persist_metadata' and calls persist_metadata."
+  receives = "{job_name, action: 'persist_metadata', payload: <journey 3 payload>}"
+  returns = "the PutItem response"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:persist_metadata"
+  action = "Writes the account's metadata row: id, email, name, creation time, status, tags, account_customizations_name and parent_ou (later read by detect_customization_triggers and the enterprise-support feature)."
+  receives = "payload, account_info, session"
+  returns = "PutItem response"
+  stores = "one item in DynamoDB aft-request-metadata, keyed by account id"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_create_role:lambda_handler"
+  actor = "Step Functions task aft_account_provisioning_framework_create_role (Retry 5×, 60 s, backoff 1.5)"
+  action = "Checks action == 'create_role' and runs ProvisionRoles(...).deploy_aws_aft_roles for the target account."
+  receives = "{action: 'create_role', payload}"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles.deploy_aws_aft_roles"
+  action = "Creates or updates AWSAFTService and AWSAFTExecution in the new account, trusted by AWSAFTAdmin in the AFT management account, waits until both can be assumed, then sleeps 65 s for IAM eventual consistency."
+  receives = "nothing (target account id held by the object)"
+  returns = "nothing"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles._deploy_role_in_target_account"
+  action = "Reaches the new account through AWSControlTowerExecution, using a session already federated into the CT management account (or uses that session directly when the target is the CT management account), then _put_role and _put_policy_on_role."
+  receives = "role_name, trust_policy, policy_arn"
+  returns = "nothing"
+  stores = "IAM roles in the vended account"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_tag_account:lambda_handler"
+  actor = "Step Functions task aft_account_provisioning_framework_tag_account"
+  action = "Checks action == 'tag_account', opens the CT management session as AWSAFTService and calls tag_account (rollback flag optional)."
+  receives = "{action: 'tag_account', payload, account_info}"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:tag_account"
+  action = "Turns account_tags into a Key/Value list and tags the account resource in Organizations (OrganizationsAgent.tag_org_resource)."
+  receives = "payload, account_info, ct_management_session, rollback"
+  returns = "nothing"
+  stores = "tags on the account in AWS Organizations"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_account_metadata_ssm:lambda_handler"
+  actor = "Step Functions task aft_account_provisioning_framework_account_metadata_ssm"
+  action = "Publishes custom_fields from the request as SSM parameters under /aft/account-request/custom-fields/ in the new account: assumes AWSAFTService there with a session policy limited to that path, deletes parameters no longer in custom_fields, then puts the rest."
+  receives = "{payload: {account_request: {custom_fields: '{\"cost_center\": \"42\"}'}}}"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.ssm:put_ssm_parameters"
+  action = "PutParameter (String, Overwrite) for each custom field. After this task the state machine starts Step Functions aft-features (journey 5), then aft-account-provisioning-customizations, then CodeBuild aft-create-pipeline with VENDED_ACCOUNT_ID, then SNS aft-notifications."
+  receives = "target session, {cost_center: '42'}"
+  returns = "nothing"
+  stores = "SSM parameter /aft/account-request/custom-fields/cost_center in the vended account"
+
+[[journeys]]
+id = "feature-options"
+title = "5 · Feature options: default VPCs, Enterprise Support, CloudTrail"
+actor = "Step Functions aft-features"
+trigger = "startExecution.sync from the provisioning framework, input = the whole provisioning state"
+summary = "Three Lambda tasks run in order, each switched on or off by an SSM flag under /aft/config/feature/. Each reads customization_request_id and account_info.account.id from the input; a failure in any of them goes to SNS aft-failure-notifications and fails the parent execution."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_feature_options.aft_delete_default_vpc:lambda_handler"
+  actor = "Step Functions task 'Delete Default VPCs'"
+  action = "Lists regions with the target account's session; if SSM /aft/config/feature/delete-default-vpcs-enabled is 'true', for each region finds the default VPC and deletes its internet gateways, subnets, route tables, ACLs, security groups and the VPC, skipping unreachable regions. Note: the per-region clients are built from the Lambda's own session — see the finding."
+  receives = "{customization_request_id, account_info: {account: {id: '222222222222'}}}"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.feature_options:get_default_vpc"
+  action = "DescribeVpcs filtered on isDefault."
+  receives = "an EC2 client for one region"
+  returns = "VPC id or None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.feature_options:delete_vpc"
+  action = "DeleteVpc, after the dependent resources were removed."
+  receives = "client, vpc id"
+  returns = "nothing"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_feature_options.aft_enroll_support:lambda_handler"
+  actor = "Step Functions task 'Enroll Enterprise Support' (Retry on Lambda service errors, 5×)"
+  action = "If SSM /aft/config/feature/enterprise-support-enabled is 'true', calls ensure_enterprise_support_enrollment."
+  receives = "the same input"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.premium_support:ensure_enterprise_support_enrollment"
+  action = "Skips when aft-request-metadata already flags the account; otherwise looks for an existing support case 'Add Account <id> to Enterprise Support' in the CT management account, opens one if none, and sets the flag afterwards so a failure retries."
+  receives = "aft_session, ct_management_session, metadata_table_name, account_id"
+  returns = "nothing"
+  stores = "a support case in the CT management account; an enrollment flag on the aft-request-metadata row"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_feature_options.aft_enable_cloudtrail:lambda_handler"
+  actor = "Step Functions task 'Enable CloudTrail'"
+  action = "If SSM /aft/config/feature/cloudtrail-data-events-enabled is 'true', makes sure the organization trail exists in the CT management account with data-event selectors and is logging (bucket and KMS key from SSM /aft/account/log-archive/*); if 'false', deletes that trail."
+  receives = "the same input"
+  returns = "None"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.feature_options:create_trail"
+  action = "CreateTrail: multi-region organization trail with log-file validation, into the log-archive bucket, KMS-encrypted."
+  receives = "CT management session, bucket name, KMS key ARN"
+  returns = "nothing"
+  stores = "the AFT organization CloudTrail trail"
+
+[[journeys]]
+id = "invoke-customizations"
+title = "6 · Re-running customizations for chosen accounts"
+actor = "operator · Step Functions console/CLI, or the provisioning framework on an OU move"
+trigger = "StartExecution of Step Functions aft-invoke-customizations with {include: [...], exclude?: [...], bypass_steps?: [...]}"
+summary = "The state machine resolves the include/exclude selectors to AFT-managed accounts, writes one customization payload per account to S3, re-runs the provisioning framework for each (unless provisioning_bootstrap is bypassed), records an audit item, then starts each account's '<account id>-customizations-pipeline' CodePipeline, never more at a time than SSM /aft/config/customizations/maximum_concurrent_customizations."
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_customizations.aft_customizations_identify_targets:lambda_handler"
+  actor = "Step Functions task 'Identify Targets' (after a Pass state adds get_execution_id = the execution name)"
+  action = "Validates the request, resolves the target accounts, and builds one customization payload per account."
+  receives = "{get_execution_id: {execution_id}, include: [{type: 'ous', target_value: ['Sandbox']}], exclude?: [...]}"
+  returns = "{number_pending_accounts, pending_accounts, target_accounts_info: {bucket, key}}"
+  payload = '''
+{"include": [{"type": "ous", "target_value": ["Sandbox"]}],
+ "exclude": [{"type": "accounts", "target_value": ["333333333333"]}]}
+
+
+
+
+
+'''
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:validate_identify_targets_request"
+  action = "jsonschema against schemas/identify_targets_request_schema.json."
+  receives = "the input"
+  returns = "True, or raises ValidationError"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:get_included_accounts"
+  action = "Expands each selector — all (every id in aft-request-metadata), core, ous, tags, accounts — removes duplicates and keeps only AFT-managed or core accounts (filter_non_aft_accounts). get_excluded_accounts / get_target_accounts subtract the exclude list."
+  receives = "sessions, orgs_agent, include list"
+  returns = "list of account ids"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_account_customization_payload"
+  action = "Per account: email from Organizations, request from aft-request (get_account_request_record), then the same payload shape as journey 3, with an empty control_tower_event."
+  receives = "ct_management_session, account_id, account_request, {}"
+  returns = "AftInvokeAccountCustomizationPayload"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:upload_target_account_info"
+  action = "Writes the list of payloads to S3 so the Map state can read it (Step Functions state size is limited). Unless bypass_steps contains provisioning_bootstrap, a distributed Map then starts the provisioning framework (journey 4) once per account, MaxConcurrency = maximum_concurrent_customizations."
+  receives = "session, payload list, execution_id"
+  returns = "{bucket, key}"
+  stores = "sfn/<execution id>/target_account_info.json in the bucket named by SSM /aft/config/customizations/aft_codepipeline_customizations_bucket_id"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_customizations.aft_customizations_audit_trigger:lambda_handler"
+  actor = "Step Functions task 'Record Audit' (errors are caught and the run continues)"
+  action = "Records who started this execution: trigger_source account_move if customization_triggers is present, manual if bypass_steps is present, else account_request."
+  receives = "the state"
+  returns = "{status: 'recorded', execution_id}"
+  stores = "one item in DynamoDB aft-customizations-audit"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_customizations.aft_customizations_get_pipeline_executions:lambda_handler"
+  actor = "Step Functions task 'Get Pipeline Executions'"
+  action = "Counts customization pipelines whose latest execution is InProgress (list_pipelines + get_running_pipeline_count)."
+  receives = "the state"
+  returns = "{running_pipelines: 2}"
+  [[journeys.steps]]
+  symbol = "aft_lambda.aft_customizations.aft_customizations_execute_pipeline:lambda_handler"
+  actor = "Step Functions task 'Execute Pipelines' (looped with a Wait state until no account is pending)"
+  action = "Starts maximum_concurrent_customizations − running pipelines, removing each started account from pending_accounts; plan_only is passed through."
+  receives = "{running_executions: {running_pipelines}, targets: {pending_accounts}}"
+  returns = "{number_pending_accounts, pending_accounts}"
+  [[journeys.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.codepipeline:execute_pipeline"
+  action = "Finds the account's pipeline by its tag (get_pipeline_for_account) and StartPipelineExecution unless it is already running (PLAN_ONLY variable when asked)."
+  receives = "session, account_id, plan_only"
+  returns = "nothing"
+  stores = "a CodePipeline execution that runs the global and account customizations Terraform against the account"
+
+[[roles]]
+id = "http-requests"
+name = "Terraform Cloud / Enterprise API (CodeBuild scripts)"
+kind = "external"
+symbols = ["sources.scripts.terraform_client:check_workspace_exists", "sources.scripts.terraform_client:create_run", "sources.scripts.terraform_client:wait_to_stabilize", "sources.scripts.terraform_client:__delete", "sources.scripts.terraform_client:__get", "sources.scripts.terraform_client:__patch"]
+purpose = "When AFT is configured for Terraform Cloud or Enterprise instead of open-source Terraform, the CodeBuild buildspecs call workspace_manager.py, which uses this client to create the workspace, upload the configuration, set credentials/variables, run plan/apply and wait for the result."
+input = "Organization, workspace and project names, the API endpoint, the API token and the configuration tarball, all passed as command-line arguments by the buildspec."
+message = ["Authorization: Bearer <token>, Content-type: application/vnd.api+json", "JSON:API bodies for workspaces, configuration-versions, vars and runs; status polls every 10 s"]
+config = "SSM /aft/config/terraform/api-endpoint, /aft/config/terraform/org-name, /aft/config/terraform/project-name, /aft/config/terraform/distribution (read by the buildspecs) and env TF_DISTRIBUTION read by the client."
+output = "Parsed JSON; an 'errors' array becomes ClientError(status, title)."
+validation = "No retries and no request timeout; wait_to_stabilize polls without a deadline, so the CodeBuild project timeout is the limit."
+logging = "print() to the CodeBuild log, with sanitised status values."
+cost = "not measured."
+result_use = "Run and workspace ids drive the next call; the build fails on a non-success run state."
+
+[[roles]]
+id = "aws-sts"
+name = "STS for Terraform workspace credentials (CodeBuild script)"
+kind = "external"
+symbols = ["sources.scripts.workspace_manager:__assume_role", "sources.scripts.workspace_manager:set_aws_credentials", "sources.scripts.workspace_manager:set_oidc_configuration"]
+purpose = "Gives a Terraform Cloud workspace AWS access for one run: either it assumes the target role with the CodeBuild role and writes the temporary keys into the workspace's environment variables, or (OIDC mode) it writes the role ARN and audience so Terraform Cloud federates by itself."
+input = "--assume_role_arn and --assume_role_session_name from the buildspec; --hcp_oidc_enabled / --hcp_oidc_audience."
+message = ["sts:AssumeRole RoleArn=<arn> RoleSessionName=<name> (default duration)", "Terraform API: create/update/delete workspace env vars AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN or TFC_AWS_PROVIDER_AUTH / TFC_AWS_RUN_ROLE_ARN / TFC_AWS_WORKLOAD_IDENTITY_AUDIENCE"]
+config = "SSM /aft/config/terraform/oidc-integration, /aft/config/terraform/oidc-aws-audience (via the buildspecs)."
+output = "Credentials dict from STS; workspace vars written."
+validation = "No retry; a failure fails the CodeBuild job."
+logging = "print() lines in the CodeBuild log naming the vars added or removed."
+cost = "not measured."
+result_use = "The Terraform run in the workspace uses those credentials for the target account."
+
+[[roles]]
+id = "aws-s3"
+name = "S3 (customization target list and plan output)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.s3:put_target_account_info", "sources.aft-lambda-layer.aft_common.customizations:upload_target_account_info", "sources.scripts.workspace_manager:export_plan_to_s3"]
+purpose = "Two uses: identify-targets writes the list of per-account customization payloads to the customizations bucket so the Step Functions Map can read it (too large to pass as state); the CodeBuild script optionally copies a Terraform Cloud plan JSON to the plan-output bucket."
+input = "A list of AftInvokeAccountCustomizationPayload dicts; or the plan JSON fetched from the Terraform API."
+message = ["s3:PutObject sfn/<execution_id>/target_account_info.json", "s3:PutObject <vended account>/<timestamp>/<customization type>/plan.json ContentType application/json"]
+config = "SSM /aft/config/customizations/aft_codepipeline_customizations_bucket_id; /aft/resources/s3/aft-plan-output-bucket-name and /aft/config/plan-output/export-to-s3 (read by the buildspecs); env VENDED_ACCOUNT_ID, CUSTOMIZATION_TYPE."
+output = "{bucket, key} returned to the state machine; nothing for the plan export."
+validation = "The plan export swallows any exception and prints a warning (best effort by design); the target-list upload raises."
+logging = "CloudWatch (Lambda) / CodeBuild log."
+cost = "not measured."
+result_use = "The Map state's ItemReader reads the target list object."
+
+[[roles]]
+id = "lambda-create-role-aft-account-provisioning-framework-l"
+kind = "infra"
+name = "Lambda create_role"
+symbols = ["aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_create_role:lambda_handler"]
+purpose = "Second task of the provisioning state machine: creates or refreshes AWSAFTService and AWSAFTExecution (AdministratorAccess, trusted by AWSAFTAdmin) in the target account."
+message = ["invoked by: Step Functions aft_account_provisioning_framework_sfn (lambda:invoke task, after persist_metadata)", "told: {action: 'create_role', payload: <customization payload>}"]
+config = "defined in modules/aft-account-provisioning-framework/lambda.tf (timeout 300 s, function name from var.create_role_lambda_function_name)."
+output = "Nothing; the roles exist and can be assumed."
+validation = "Rejects any other action. The state machine Retry on this task waits 60 s between attempts; afterwards Catch goes to notify_error."
+logging = "customization_request_logger lines in its CloudWatch log; failures to SNS aft-failure-notifications."
+result_use = "may use: sts:AssumeRole AWSAFTAdmin → AWSAFTService in CT management → AWSControlTowerExecution in the target account; IAM in the target account; ssm:GetParameter; SNS; KMS (shared lambda-aft-account-provisioning-framework policy)."
+
+[[roles]]
+id = "lambda-tag-account-aft-account-provisioning-framework-l"
+kind = "infra"
+name = "Lambda tag_account"
+symbols = ["aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_tag_account:lambda_handler"]
+purpose = "Third task of the provisioning state machine: writes the request's account_tags onto the account in Organizations."
+message = ["invoked by: Step Functions aft_account_provisioning_framework_sfn (lambda:invoke task)", "told: {action: 'tag_account', payload: <customization payload>, rollback?}"]
+config = "defined in modules/aft-account-provisioning-framework/lambda.tf (timeout 300 s)."
+output = "organizations:TagResource on the account id."
+validation = "Rejects any other action; TagResource is resubmitted up to 3 times on throttling."
+logging = "customization_request_logger lines; failures to SNS aft-failure-notifications."
+result_use = "may use: Organizations in CT management through AWSAFTAdmin → AWSAFTService; SNS; KMS."
+
+[[roles]]
+id = "lambda-persist-metadata-aft-account-provisioning-framew"
+kind = "infra"
+name = "Lambda persist_metadata"
+symbols = ["aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_persist_metadata:lambda_handler"]
+purpose = "First task of the provisioning state machine: writes (overwrites) the account's aft-request-metadata row from the Organizations account info and the request."
+message = ["invoked by: Step Functions aft_account_provisioning_framework_sfn (StartAt state, lambda:invoke task)", "told: {action: 'persist_metadata', payload: <customization payload>}"]
+config = "defined in modules/aft-account-provisioning-framework/lambda.tf (timeout 300 s); SSM /aft/resources/ddb/aft-request-metadata-table-name."
+output = "PutItem on aft-request-metadata: id, email, account_name, account_creation_time, account_status, account_level_tags, account_customizations_name, parent_ou, empty vcs_information and terraform_workspace."
+validation = "Rejects any other action; no condition on the put."
+logging = "Logs the full item; failures to SNS aft-failure-notifications."
+result_use = "may use: DynamoDB aft-request-metadata, ssm:GetParameter, SNS, KMS."
+
+[[roles]]
+id = "lambda-account-metadata-ssm-aft-account-provisioning-fr"
+kind = "infra"
+name = "Lambda account_metadata_ssm"
+symbols = ["aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_account_metadata_ssm:lambda_handler"]
+purpose = "Fourth task of the provisioning state machine: makes /aft/account-request/custom-fields/* in the target account match the request's custom_fields (puts new and changed keys, deletes keys no longer present)."
+message = ["invoked by: Step Functions aft_account_provisioning_framework_sfn (lambda:invoke task)", "told: {action, payload} with payload.account_request.custom_fields as a JSON string"]
+config = "defined in modules/aft-account-provisioning-framework/lambda.tf (timeout 300 s); path constant SSM_PARAMETER_PATH."
+output = "SSM String parameters in the target account, in the AFT home region."
+validation = "Assumes AWSAFTService in the target account with a session policy limited to that parameter path; write helpers resubmit on throttling."
+logging = "Lists of deleted and written keys in its CloudWatch log; failures to SNS."
+result_use = "may use: SSM in the target account (GetParametersByPath, PutParameter, DeleteParameters under the custom-fields path), SNS, KMS."
+
+[[roles]]
+id = "lambda-aft-account-request-audit-trigger-aft-account-re"
+kind = "infra"
+name = "Lambda aft-account-request-audit-trigger"
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_audit_trigger:lambda_handler"]
+purpose = "Copies every INSERT, MODIFY and REMOVE on aft-request into aft-request-audit, so the history of each request survives edits and deletion."
+message = ["invoked by: DynamoDB aft-request stream (event source mapping, batch_size 1, starting_position LATEST, maximum_retry_attempts 1)", "told: Records[0] with eventName and NewImage / OldImage in low-level DynamoDB format"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 300 s, aft_common layer, optional VPC); table name from SSM /aft/resources/ddb/aft-request-audit-table-name."
+output = "One aft-request-audit item: the image (OldImage for REMOVE) plus timestamp and ddb_event_name."
+validation = "Unsupported event names are logged and skipped; a non-DynamoDB event raises. A failing record is retried once by the mapping and then dropped (no on-failure destination)."
+logging = "CloudWatch /aws/lambda/aft-account-request-audit-trigger; failures to SNS aft-failure-notifications."
+result_use = "may use: DynamoDB aft-request stream (read), DynamoDB aft-request-audit (PutItem, Query), SQS aft-account-request.fifo (SendMessage, granted but unused by the code), KMS key aft, SNS aft-notifications and aft-failure-notifications."
+
+[[roles]]
+id = "lambda-aft-account-request-action-trigger-aft-account-r"
+kind = "infra"
+name = "Lambda aft-account-request-action-trigger"
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_action_trigger:lambda_handler", "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"]
+purpose = "Decides what an aft-request change means and starts it: queue a new account (ADD) or a Control Tower parameter change (UPDATE), start the provisioning state machine for a customization-only change, or invoke cleanup for a removed request."
+message = ["invoked by: DynamoDB aft-request stream (event source mapping, batch_size 1, starting_position LATEST, maximum_retry_attempts 1)", "told: Records[0] with eventName, OldImage, NewImage"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 600 s); SSM /aft/resources/sqs/aft-request-queue-name, /aft/account/aft-management/sfn/aft-account-provisioning-framework-sfn-name, /aft/resources/lambda/aft-cleanup-resources."
+output = "An SQS message, a Step Functions execution, or an async Lambda invoke; returns nothing."
+validation = "Raises 'Unsupported account request' for combinations it does not handle and ValueError for an OU change or name/email mismatch on a shared account. A failing record is retried once and then dropped (no on-failure destination)."
+logging = "CloudWatch /aws/lambda/aft-account-request-action-trigger; failures to SNS aft-failure-notifications."
+result_use = "may use: DynamoDB aft-request stream, DynamoDB aft-request-audit (PutItem, Query), SQS aft-account-request.fifo (SendMessage), states:StartExecution on aft-account-provisioning-framework, lambda:InvokeFunction on aft-cleanup-resources and aft-invoke-aft-account-provisioning-framework (the latter unused by the code), sts:AssumeRole AWSAFTAdmin, SNS topics, KMS key aft."
+
+[[roles]]
+id = "lambda-aft-controltower-event-logger-aft-account-reques"
+kind = "infra"
+name = "Lambda aft-controltower-event-logger"
+symbols = ["aft_lambda.aft_account_request_framework.aft_controltower_event_logger:lambda_handler"]
+purpose = "Stores every Control Tower event forwarded from the CT management account in aft-controltower-events, as a raw record of what Control Tower reported."
+message = ["invoked by: EventBridge rule aft-controltower-event-logger on bus aft-events-from-ct-management (pattern: account = CT management account)", "upstream: rule aft-capture-ct-events in the CT management account forwards aws.controltower CreateManagedAccount / UpdateManagedAccount events to that bus", "told: the whole EventBridge event (id, time, detail.serviceEventDetails ...)"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 300 s); SSM /aft/resources/ddb/aft-controltower-events-table-name."
+output = "The event written as one item (hash key id, range key time); returns the PutItem response."
+validation = "No filtering or validation; any error goes to SNS and is re-raised (EventBridge async retry applies)."
+logging = "CloudWatch /aws/lambda/aft-controltower-event-logger; failures to SNS aft-failure-notifications with subject 'AFT Event Logging failed'."
+result_use = "may use: DynamoDB aft-controltower-events (PutItem), SNS topics, KMS key aft."
+
+[[roles]]
+id = "lambda-aft-account-request-processor-aft-account-reques"
+kind = "infra"
+name = "Lambda aft-account-request-processor"
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_processor:lambda_handler"]
+purpose = "The only place that talks to the Account Factory: every 5 minutes it checks the Control Tower concurrency threshold, takes at most one message from the FIFO queue, validates it and provisions or updates the account through Service Catalog."
+message = ["invoked by: EventBridge rule aft-lambda-account-request-processor (rate(5 minutes))", "told: nothing useful (the scheduled event is ignored); work comes from the queue"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 300 s); env AFT_PROVISIONING_CONCURRENCY = var.concurrent_account_factory_actions; SSM /aft/resources/sqs/aft-request-queue-name, /aft/resources/sc/account-factory-product-name, /aft/config/aft/version."
+output = "A ProvisionProduct or UpdateProvisionedProduct call in the CT management account; the SQS message deleted; a metrics event when enabled."
+validation = "Returns early when UNDER_CHANGE baselines >= threshold. An invalid request (name/email already used, non-OU parameter changed) is deleted and then raised as an error. Any other exception leaves the message undeleted, which sends it to aft-account-request-dlq.fifo on the next poll (maxReceiveCount 1)."
+logging = "CloudWatch /aws/lambda/aft-account-request-processor; failures to SNS aft-failure-notifications."
+result_use = "may use: SQS aft-account-request.fifo (ReceiveMessage, DeleteMessage), sts:AssumeRole AWSAFTAdmin (then AWSAFTService in CT management for Service Catalog, Organizations, Control Tower), ssm:GetParameter /aft/*, SNS topics, KMS key aft."
+
+[[roles]]
+id = "lambda-aft-invoke-aft-account-provisioning-framework-af"
+kind = "infra"
+name = "Lambda aft-invoke-aft-account-provisioning-framework"
+symbols = ["aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:lambda_handler", "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:detect_customization_triggers"]
+purpose = "Turns a finished Control Tower account operation into a provisioning run: looks up the account's request by email, builds the customization payload (adding an account_move trigger when the OU changed and triggers are enabled) and starts the aft-account-provisioning-framework state machine."
+message = ["invoked by: EventBridge rule aft-controltower-event-logger on bus aft-events-from-ct-management (same rule as the logger)", "told: a CT event (detail.eventName CreateManagedAccount / UpdateManagedAccount with serviceEventDetails.*Status.account.accountId), or an {account_request} customization event", "the IAM grant lets aft-account-request-action-trigger invoke it, but no code does"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 300 s); SSM /aft/account/aft-management/sfn/aft-account-provisioning-framework-sfn-name, /aft/config/customization-triggers, /aft/resources/ddb/aft-request-table-name, /aft/resources/ddb/aft-request-metadata-table-name."
+output = "One Step Functions execution with the AftInvokeAccountCustomizationPayload as input."
+validation = "Raises on an unrecognised event or a missing aft-request row; trigger detection swallows its own errors and continues without triggers."
+logging = "CloudWatch /aws/lambda/aft-invoke-aft-account-provisioning-framework; failures to SNS aft-failure-notifications."
+result_use = "may use: DynamoDB aft-request and aft-request-metadata (GetItem), states:StartExecution on the provisioning state machine, sts:AssumeRole AWSAFTAdmin (Organizations in CT management), SNS topics, KMS key aft."
+
+[[roles]]
+id = "lambda-aft-cleanup-resources-aft-account-request-framew"
+kind = "infra"
+name = "Lambda aft-cleanup-resources"
+symbols = ["aft_lambda.aft_account_request_framework.aft_cleanup_resources:lambda_handler"]
+purpose = "Undoes AFT's bookkeeping when a request is removed from aft-request: deletes the account's customization pipeline (unless it is running) and its aft-request-metadata row. The AWS account itself is left alone."
+message = ["invoked by: aft-account-request-action-trigger via lambda:Invoke InvocationType=Event (AccountRequestRecordHandler.handle_remove)", "told: {account_request: <unmarshalled OldImage>}, whose id is the account email"]
+config = "defined in modules/aft-account-request-framework/lambda.tf (timeout 300 s); SSM /aft/resources/ddb/aft-request-metadata-table-name."
+output = "Pipeline deleted, metadata row deleted."
+validation = "A running pipeline is skipped with a warning (and is then never deleted). Async invoke: Lambda's default async retries apply."
+logging = "CloudWatch /aws/lambda/aft-cleanup-resources; failures to SNS aft-failure-notifications."
+result_use = "may use: DynamoDB aft-request-metadata (GetItem, DeleteItem), CodePipeline in the AFT management account, Organizations in CT management through AWSAFTAdmin, SNS topics, KMS key aft."
+
+[[roles]]
+id = "lambda-aft-customizations-identify-targets-aft-customiz"
+kind = "infra"
+name = "Lambda aft-customizations-identify-targets"
+symbols = ["aft_lambda.aft_customizations.aft_customizations_identify_targets:lambda_handler"]
+purpose = "First task of aft-invoke-customizations: resolves the include/exclude spec into AFT-managed account ids, builds one customization payload per account and uploads the list to S3."
+message = ["invoked by: Step Functions aft-invoke-customizations ('Identify Targets' task), which an operator starts or the provisioning state machine starts for one account", "told: {include: [...], exclude?: [...], get_execution_id: {execution_id}, ...}"]
+config = "defined in modules/aft-customizations/lambda.tf (timeout 300 s); SSM /aft/resources/ddb/aft-request-metadata-table-name, /aft/resources/ddb/aft-request-table-name, /aft/config/customizations/aft_codepipeline_customizations_bucket_id."
+output = "{number_pending_accounts, pending_accounts, target_accounts_info: {bucket, key}}."
+validation = "Rejects an invalid request; accounts no longer in Organizations are skipped (see the finding on list mutation); a missing aft-request row raises."
+logging = "CloudWatch; failures to SNS with subject 'Failed to identify targets for AFT account customizations'."
+result_use = "may use: DynamoDB GetItem/Scan, S3 aft_codepipeline_customizations_bucket (Put*), Organizations via AWSAFTAdmin, SNS, KMS."
+
+[[roles]]
+id = "lambda-aft-customizations-execute-pipeline-aft-customiz"
+kind = "infra"
+name = "Lambda aft-customizations-execute-pipeline"
+symbols = ["aft_lambda.aft_customizations.aft_customizations_execute_pipeline:lambda_handler"]
+purpose = "Starts as many pending account pipelines as the cap allows (maximum minus running) and returns the rest for the next loop."
+message = ["invoked by: Step Functions aft-invoke-customizations ('Execute Pipelines' when running < maximum)", "told: running_executions.running_pipelines, targets.pending_accounts, plan_only"]
+config = "defined in modules/aft-customizations/lambda.tf (timeout 300 s); SSM /aft/config/customizations/maximum_concurrent_customizations."
+output = "{number_pending_accounts, pending_accounts}."
+validation = "A pipeline already InProgress is not restarted (but still counted as dispatched)."
+logging = "Accounts remaining in CloudWatch; failures to SNS."
+result_use = "may use: codepipeline:ListPipelines, ListTagsForResource, ListPipelineExecutions, StartPipelineExecution; SNS; KMS."
+
+[[roles]]
+id = "lambda-aft-customizations-get-pipeline-executions-aft-c"
+kind = "infra"
+name = "Lambda aft-customizations-get-pipeline-executions"
+symbols = ["aft_lambda.aft_customizations.aft_customizations_get_pipeline_executions:lambda_handler"]
+purpose = "Counts AFT customization pipelines whose newest execution is InProgress, for the state machine's concurrency check."
+message = ["invoked by: Step Functions aft-invoke-customizations ('Get Pipeline Executions', re-entered after every 30 s wait)", "told: nothing it reads"]
+config = "defined in modules/aft-customizations/lambda.tf (timeout 300 s)."
+output = "{running_pipelines: <int>}."
+validation = "Errors go to SNS and Notify Failure."
+logging = "Per-pipeline latest execution in CloudWatch."
+result_use = "may use: codepipeline:ListPipelines, ListPipelineExecutions; SNS; KMS."
+
+[[roles]]
+id = "lambda-aft-customizations-audit-trigger-aft-customizati"
+kind = "infra"
+name = "Lambda aft-customizations-audit-trigger"
+symbols = ["aft_lambda.aft_customizations.aft_customizations_audit_trigger:lambda_handler"]
+purpose = "Writes one aft-customizations-audit row per customizations execution (targets, bypass steps, triggers, source = account_move / manual / account_request) and links it to the provisioning request id in the log."
+message = ["invoked by: Step Functions aft-invoke-customizations ('Record Audit' task, Catch continues to Get Pipeline Executions)", "told: the state input (get_execution_id, targets, bypass_steps, customization_triggers, customization_request_id)"]
+config = "defined in modules/aft-customizations/lambda.tf (timeout 120 s); SSM /aft/resources/ddb/aft-customizations-audit-table-name."
+output = "{status: recorded | skipped, execution_id}."
+validation = "Best effort: every exception is caught and returned as status 'skipped', so auditing never stops a customization."
+logging = "A warning line on failure; no SNS."
+result_use = "may use: DynamoDB aft-customizations-audit (PutItem), ssm:GetParameter, KMS."
+
+[[roles]]
+id = "lambda-aft-delete-default-vpc-aft-feature-options-lambd"
+kind = "infra"
+name = "Lambda aft_delete_default_vpc"
+symbols = ["aft_lambda.aft_feature_options.aft_delete_default_vpc:lambda_handler"]
+purpose = "First task of the aft-features state machine: when the delete-default-VPCs flag is on, removes the default VPC (gateways, subnets, route tables, ACLs, security groups) region by region."
+message = ["invoked by: Step Functions aft_features ('Delete Default VPCs' task; the ARN is templated with a space in '${ aft_delete_default_vpc_function_arn}', which is why the extractor found no trigger)", "aft_features is started synchronously by the provisioning state machine's aft_features state", "told: the customization payload (customization_request_id, account_info ...)"]
+config = "defined in modules/aft-feature-options/lambda.tf (timeout 300 s); SSM /aft/config/feature/delete-default-vpcs-enabled."
+output = "Default VPCs deleted (see the finding about which account); unreachable regions skipped with a warning."
+validation = "Region endpoint timeouts are skipped; any other error goes to the state machine's Notify Failure."
+logging = "customization_request_logger lines; failures to SNS aft-failure-notifications."
+result_use = "may use: ec2 Describe*/Delete* on '*' in the AFT management account (its own role), sts:AssumeRole AWSAFTAdmin (target account, used to list regions), SNS, KMS."
+
+[[roles]]
+id = "lambda-aft-enroll-support-aft-feature-options-lambda"
+kind = "infra"
+name = "Lambda aft_enroll_support"
+symbols = ["aft_lambda.aft_feature_options.aft_enroll_support:lambda_handler"]
+purpose = "Second task of the aft-features state machine: when enterprise support is enabled, makes sure one support case asking to add the account to Enterprise Support exists, and records that on the metadata row."
+message = ["invoked by: Step Functions aft_features ('Enroll Enterprise Support' task, with Retry: 30 s interval, max delay 300 s)", "told: the customization payload"]
+config = "defined in modules/aft-feature-options/lambda.tf (timeout 300 s); SSM /aft/config/feature/enterprise-support-enabled, /aft/resources/ddb/aft-request-metadata-table-name."
+output = "Possibly a support case in the CT management account; enterprise_support_case_created = 'true' on aft-request-metadata."
+validation = "Idempotent through the flag and a DescribeCases subject search; see the finding about the flag being overwritten."
+logging = "customization_request_logger lines; failures to SNS."
+result_use = "may use: DynamoDB aft-request-metadata (GetItem, UpdateItem), Support API in CT management via AWSAFTAdmin → AWSAFTService, SNS, KMS."
+
+[[roles]]
+id = "lambda-aft-enable-cloudtrail-aft-feature-options-lambda"
+kind = "infra"
+name = "Lambda aft_enable_cloudtrail"
+symbols = ["aft_lambda.aft_feature_options.aft_enable_cloudtrail:lambda_handler"]
+purpose = "Third task of the aft-features state machine: keeps the organisation trail aws-aft-CustomizationsCloudTrail (S3 and Lambda data events to the log-archive bucket) in the CT management account in line with the flag: create and start it when on, delete it when off."
+message = ["invoked by: Step Functions aft_features ('Enable CloudTrail' task)", "told: the customization payload (only the id and request id are used)"]
+config = "defined in modules/aft-feature-options/lambda.tf (timeout 300 s); SSM /aft/config/feature/cloudtrail-data-events-enabled, /aft/account/log-archive/log_bucket_arn, /aft/account/log-archive/kms_key_arn."
+output = "Trail created / event selectors put / logging started, or the trail deleted."
+validation = "Each step checks current state first, so reruns are no-ops."
+logging = "customization_request_logger lines; failures to SNS."
+result_use = "may use: CloudTrail in CT management and S3 listing in log archive, both through AWSAFTAdmin → AWSAFTService; SNS; KMS."
+
+[[roles]]
+id = "lambda-codebuild-trigger-aft-lambda-layer-lambda"
+kind = "infra"
+name = "Lambda codebuild_trigger"
+symbols = ["aft_lambda.aft_builder.codebuild_trigger:lambda_handler"]
+purpose = "Builds the aft_common Lambda layer during terraform apply: starts the layer CodeBuild project and waits (up to 14 minutes) for it to succeed, so the layer version exists before the other Lambdas are created."
+message = ["invoked by: Terraform data source aws_lambda_invocation.trigger_codebuild_job in modules/aft-lambda-layer/lambda.tf, on every plan/apply", "told: {codebuild_project_name}"]
+config = "defined in modules/aft-lambda-layer/lambda.tf (timeout 900 s, function name local.codebuild_trigger_function_name)."
+output = "{Status: 200} on SUCCEEDED; Terraform exposes it as output lambda_layer_build_status."
+validation = "Raises on any non-success terminal status or after 14 minutes, which fails the terraform run."
+logging = "Its own CloudWatch log group; no SNS (it deliberately does not import aft_common)."
+result_use = "may use: codebuild:StartBuild and BatchGetBuilds on the layer project (role codebuild_trigger_role)."
+
+[[roles]]
+id = "aws-cross-account-auth"
+name = "Cross-account sessions (STS hub and spoke)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.auth:AuthClient.get_target_account_session", "sources.aft-lambda-layer.aft_common.auth:AuthClient._get_hub_session", "sources.aft-lambda-layer.aft_common.auth:AuthClient.get_ct_management_session", "sources.aft-lambda-layer.aft_common.auth:AuthClient.get_log_archive_session", "sources.aft-lambda-layer.aft_common.auth:AuthClient._get_session", "sources.aft-lambda-layer.aft_common.auth:AuthClient._is_aft_management_session"]
+purpose = "Every call AFT makes outside its own account goes through AuthClient: it assumes the hub role AWSAFTAdmin in the AFT management account, then from that hub assumes a spoke role (AWSAFTExecution by default, or AWSAFTService) in the Control Tower management, log-archive or target account."
+input = "Role ARNs are built from the partition, the account id (target, or read from SSM /aft/account/ct-management/account-id, /aft/account/log-archive/account-id) and the role name (argument, or SSM /aft/resources/iam/aft-execution-role-name and /aft/resources/iam/aft-administrator-role-name)."
+message = ["sts:AssumeRole on arn:<partition>:iam::<aft-mgmt>:role/AWSAFTAdmin (hub)", "sts:AssumeRole from the hub on arn:<partition>:iam::<target>:role/<spoke role> with RoleSessionName from SSM /aft/resources/iam/aft-session-name, DurationSeconds 900 by default, optional session Policy and ExternalId"]
+config = "SSM /aft/account/aft-management/account-id (the constructor refuses to run unless the caller's account equals it), /aft/resources/iam/aft-session-name, /aft/resources/iam/aft-administrator-role-name, /aft/resources/iam/aft-execution-role-name. The names themselves come from locals.tf (aft_execution_role_name, aft_administrator_role_name, aft_session_name)."
+output = "A boto3 Session holding the temporary credentials, in the requested region (default: the caller's region). Success is simply that AssumeRole returned credentials."
+validation = "No retry wrapper: a ClientError from AssumeRole propagates to the handler, which publishes to the failure topic and re-raises. ProvisionRoles._ensure_role_can_be_assumed is the one place that polls (every 5 s for up to 1 minute) until a freshly created role can be assumed."
+logging = "Logs the hub caller ARN and the spoke role ARN to the Lambda's CloudWatch log group."
+cost = "not measured; each get_*_session call is two AssumeRole calls (hub + spoke) and no session is cached across calls."
+result_use = "Callers build service clients from the returned session: Organizations / Service Catalog / Control Tower in the CT management account, IAM and SSM in the target account, CloudTrail in CT management, S3 in log archive."
+
+[[roles]]
+id = "aws-service-catalog-ct"
+name = "Control Tower Account Factory (Service Catalog + Control Tower API)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.account_request_framework:create_new_account", "sources.aft-lambda-layer.aft_common.account_request_framework:update_existing_account", "sources.aft-lambda-layer.aft_common.service_catalog:get_ct_product_id", "sources.aft-lambda-layer.aft_common.service_catalog:get_ct_provisioning_artifact_id", "sources.aft-lambda-layer.aft_common.service_catalog:get_account_id_if_enrolled", "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest.associate_aft_service_role_with_account_factory", "sources.aft-lambda-layer.aft_common.control_tower:ControlTowerFacade.get_enabled_baselines_under_change_count"]
+purpose = "The only way AFT creates or changes an account: it provisions or updates the Control Tower Account Factory product in Service Catalog (in the CT management account, as AWSAFTService), and asks the Control Tower API how many account baselines are still UNDER_CHANGE to throttle itself."
+input = "The control_tower_parameters map of the request (AccountEmail, AccountName, ManagedOrganizationalUnit, SSOUserEmail, SSOUserFirstName, SSOUserLastName), the product name from SSM /aft/resources/sc/account-factory-product-name, and the AFT version from SSM /aft/config/aft/version for the User-Agent header."
+message = ["servicecatalog:DescribeProductAsAdmin (product id + an active provisioning artifact)", "servicecatalog:ProvisionProduct with ProvisionedProductName = AccountName with spaces turned into hyphens, ProvisioningParameters = control_tower_parameters, ProvisionToken = uuid1 (ADD)", "servicecatalog:SearchProvisionedProducts physicalId:<account id> then UpdateProvisionedProduct (UPDATE)", "servicecatalog:ListPortfolios + AssociatePrincipalWithPortfolio for AWSAFTService (every processor run)", "controltower:ListBaselines + ListEnabledBaselines status UNDER_CHANGE (threshold check)", "User-Agent: account-factory-terraform-<version> added before signing"]
+config = "SSM /aft/resources/sc/account-factory-product-name, /aft/config/aft/version; env AFT_PROVISIONING_CONCURRENCY (from Terraform var concurrent_account_factory_actions) for the threshold."
+output = "ProvisionProduct returns a record detail; AFT only logs it. Account creation finishes asynchronously and is reported back as a Control Tower CreateManagedAccount / UpdateManagedAccount event."
+validation = "Fresh ProvisionToken / UpdateToken on every call, so a retried message is a new provisioning attempt, not an idempotent replay. update_existing_account raises when no AVAILABLE/TAINTED product with a successful provisioning record exists. Read-side Service Catalog clients use the 16-attempt adaptive retry config; ProvisionProduct uses the default client."
+logging = "Sanitised parameters and responses in the processor's CloudWatch log; failures go to SNS aft-failure-notifications."
+cost = "not measured; Control Tower limits concurrent account operations, which is why the threshold check exists."
+result_use = "Nothing reads the ProvisionProduct response; the follow-up is driven by the Control Tower lifecycle event on EventBridge."
+
+[[roles]]
+id = "aws-organizations"
+name = "AWS Organizations (CT management account)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.get_account_id_from_email", "sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.get_aft_account_info", "sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.tag_org_resource", "sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.get_account_by_email", "sources.aft-lambda-layer.aft_common.account_request_framework:account_name_or_email_in_use", "sources.aft-lambda-layer.aft_common.shared_account:shared_account_request"]
+purpose = "The source of truth for which accounts exist: maps the request key (account email) to an account id and back, describes an account and its parent OU for the customization payload, resolves OU names, checks that a new name/email is unused, and writes account tags."
+input = "Account email (the aft-request id), account id, OU names in plain or nested 'Name (ou-xxxx)' format, the account_tags map from the request."
+message = ["organizations:ListAccounts (paginated, memoised per OrganizationsAgent instance)", "organizations:DescribeAccount, ListParents, ListOrganizationalUnitsForParent, ListAccountsForParent", "organizations:TagResource on the account id"]
+config = "Reached only through AuthClient.get_ct_management_session (AWSAFTExecution or AWSAFTService in the CT management account). Clients use the 16-attempt adaptive retry config."
+output = "Account ids, emails, an AftAccountInfo dict (id, email, name, joined_method, joined_date, status, parent_id, parent_type), or an exception when the email is not in the organisation."
+validation = "Emails are compared case-insensitively (emails_are_equal). get_account_id_from_email raises when nothing matches. tag_org_resource is wrapped in resubmit_request_on_boto_throttle (up to 3 fresh requests)."
+logging = "Account details and lookups in the caller's CloudWatch log."
+cost = "not measured; ListAccounts walks the whole organisation on every new OrganizationsAgent."
+result_use = "Ids feed the provisioning payload and pipeline lookups; account_info becomes account_info.account in every Step Functions payload; the name/email check decides whether an ADD request is rejected."
+
+[[roles]]
+id = "aws-ssm"
+name = "SSM Parameter Store (service registry and custom fields)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.ssm:get_ssm_parameter_value", "sources.aft-lambda-layer.aft_common.ssm:put_ssm_parameters", "sources.aft-lambda-layer.aft_common.ssm:get_ssm_parameters_names_by_path", "sources.aft-lambda-layer.aft_common.ssm:delete_ssm_parameters"]
+purpose = "In the AFT management account, /aft/* parameters (written by modules/aft-ssm-parameters) name every table, queue, topic, state machine, role and feature flag, so the Lambdas need almost no environment variables. In each vended account, /aft/account-request/custom-fields/* holds the request's custom_fields."
+input = "A parameter name from aft_common.constants (or a literal path such as /aft/account/log-archive/log_bucket_arn); for custom fields, the custom_fields JSON of the request."
+message = ["ssm:GetParameter Name=<param> (WithDecryption only if asked)", "ssm:GetParametersByPath /aft/account-request/custom-fields/ (target account)", "ssm:PutParameter Type=String Overwrite=True; ssm:DeleteParameters in batches of 10 (target account)"]
+config = "Parameter names are constants in aft_common.constants; the values are set by modules/aft-ssm-parameters/ssm.tf from root Terraform variables."
+output = "The parameter value as a string; reads raise ParameterNotFound when missing (AuthClient treats that as 'not the AFT management account')."
+validation = "get_ssm_parameter_value caches every value in a module-level dict for the life of the Lambda container (keyed by name only). The write/list/delete helpers are wrapped in resubmit_request_on_boto_throttle with the high-retry config; the read is not."
+logging = "Each uncached read logs 'Getting SSM Parameter <name>'."
+cost = "not measured; the cache keeps warm invocations from re-reading."
+result_use = "Table names, queue name, topic ARNs, state machine name and flags are used directly to build clients and ARNs."
+
+[[roles]]
+id = "aws-dynamodb"
+name = "DynamoDB tables (aft-request, audit, metadata, events, customizations audit)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.ddb:get_ddb_item", "sources.aft-lambda-layer.aft_common.ddb:put_ddb_item", "sources.aft-lambda-layer.aft_common.ddb:delete_ddb_item", "sources.aft-lambda-layer.aft_common.account_request_framework:put_audit_record", "sources.aft-lambda-layer.aft_common.customizations:get_all_aft_account_ids", "sources.aft-lambda-layer.aft_common.premium_support:set_enrollment_flag_in_metadata"]
+purpose = "State lives in five tables in the AFT management account: aft-request (the desired accounts, written by Terraform, streamed), aft-request-audit (one row per stream change), aft-request-metadata (one row per provisioned account), aft-controltower-events (raw CT events) and aft-customizations-audit (one row per customizations run)."
+input = "Plain dicts (resource API) or low-level attribute maps (put_audit_record re-uses the stream image as is). Table names come from SSM /aft/resources/ddb/*."
+message = ["GetItem / PutItem / DeleteItem by id", "PutItem on aft-request-audit with id + timestamp (range key) + ddb_event_name", "Scan of aft-request-metadata (projection id) for 'all' targets", "UpdateItem SET enterprise_support_case_created with ConditionExpression attribute_exists(id)"]
+config = "SSM /aft/resources/ddb/aft-request-table-name, aft-request-audit-table-name, aft-request-metadata-table-name, aft-controltower-events-table-name, aft-customizations-audit-table-name. Tables are PAY_PER_REQUEST, KMS-encrypted with the aft key, point-in-time recovery on (modules/aft-account-request-framework/ddb.tf)."
+output = "The item dict or None; put/delete responses are logged and returned."
+validation = "No conditional writes except the support flag; put_ddb_item overwrites the whole item. No retry wrapper beyond boto defaults."
+logging = "Every put logs the full item and the sanitised response."
+cost = "not measured (on-demand billing)."
+result_use = "The request row drives all decisions; the metadata row is the list of AFT-managed accounts for customizations and holds the previous parent OU for move detection."
+
+[[roles]]
+id = "aws-sqs"
+name = "SQS FIFO queue aft-account-request.fifo"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.sqs:send_sqs_message", "sources.aft-lambda-layer.aft_common.sqs:receive_sqs_message", "sources.aft-lambda-layer.aft_common.sqs:delete_sqs_message", "sources.aft-lambda-layer.aft_common.account_request_framework:insert_msg_into_acc_req_queue"]
+purpose = "Holds create (ADD) and Control Tower parameter-change (UPDATE) requests between the stream-triggered action Lambda and the schedule-driven processor, so Control Tower is fed at most one request per processor run."
+input = "{operation, control_tower_parameters, old_control_tower_parameters?} built by build_sqs_message from the stream images."
+message = ["SendMessage MessageBody=<json>, MessageGroupId=uuid1, MessageDeduplicationId=uuid1 (a new value per message)", "ReceiveMessage MaxNumberOfMessages=1, ReceiveRequestAttemptId=uuid1", "DeleteMessage with the receipt handle"]
+config = "Queue name from SSM /aft/resources/sqs/aft-request-queue-name; URL built from the session's region and account. Queue settings in modules/aft-account-request-framework/sqs.tf: visibility 240 s, KMS aft key, redrive to aft-account-request-dlq.fifo after maxReceiveCount 1."
+output = "One message or None."
+validation = "The processor deletes the message only after the Service Catalog call (or after deciding the request is invalid). Any exception before that leaves it in flight; with maxReceiveCount 1 the next receive moves it to the DLQ. Nothing in the code reads the DLQ."
+logging = "Queue URL, message and send response in CloudWatch."
+cost = "not measured."
+result_use = "The processor parses Body as JSON and branches on operation."
+
+[[roles]]
+id = "aws-sns"
+name = "SNS notification topics"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.notifications:send_lambda_failure_sns_message", "sources.aft-lambda-layer.aft_common.notifications:send_sns_message"]
+purpose = "How a human learns something failed: every handler's except block publishes to aft-failure-notifications, and the state machines publish success/failure to aft-notifications / aft-failure-notifications from their own Notify states."
+input = "The exception text, a subject chosen by the handler, and the Lambda context (function name, request id, log group)."
+message = ["sns:Publish TopicArn=<failure topic> Subject=<handler subject> Message='An error occurred in the <function> Lambda function ... search AWS Request ID <id> in CloudWatch log group <group> ... Error Message: <text>'"]
+config = "SSM /aft/account/aft-management/sns/failure-topic-arn and /aft/account/aft-management/sns/topic-arn; topics in modules/aft-account-request-framework/sns.tf. Subscriptions are left to the operator."
+output = "The publish response, only logged."
+validation = "No retry; if publishing itself fails, that exception replaces the original one in the handler."
+logging = "The sanitised publish response in CloudWatch."
+cost = "not measured."
+result_use = "None in code; the handler re-raises after publishing."
+
+[[roles]]
+id = "aws-codepipeline"
+name = "CodePipeline (per-account customization pipelines)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.codepipeline:execute_pipeline", "sources.aft-lambda-layer.aft_common.codepipeline:get_running_pipeline_count", "sources.aft-lambda-layer.aft_common.codepipeline:list_pipelines", "sources.aft-lambda-layer.aft_common.codepipeline:get_pipeline_for_account", "sources.aft-lambda-layer.aft_common.codepipeline:delete_customization_pipeline"]
+purpose = "Each AFT account gets a pipeline named <account id>-customizations-pipeline (created by the aft-create-pipeline CodeBuild step of the provisioning state machine); these helpers find, count, start and delete those pipelines."
+input = "Account ids; the PLAN_ONLY flag from the customizations input."
+message = ["codepipeline:ListPipelines (all pages), ListTagsForResource (managed_by=AFT)", "codepipeline:ListPipelineExecutions (all pages) to find the newest execution", "codepipeline:StartPipelineExecution name=<pipeline> [variables PLAN_ONLY=true]", "codepipeline:DeletePipeline"]
+config = "Concurrency cap from SSM /aft/config/customizations/maximum_concurrent_customizations (also rendered into the state machine definition); name pattern AFT_CUSTOMIZATIONS_PIPELINE_NAME_PATTERN in codepipeline.py."
+output = "Running-pipeline count; nothing from start/delete is used beyond logging."
+validation = "A pipeline whose newest execution is InProgress is not started again and not deleted. get_pipeline_for_account raises when no AFT-tagged pipeline matches."
+logging = "Pipeline names and executions in CloudWatch."
+cost = "not measured; see the finding on full execution-history pagination."
+result_use = "The Step Functions loop compares running_pipelines to the cap and calls execute-pipeline again after a 30 s wait."
+
+[[roles]]
+id = "aws-stepfunctions-lambda-start"
+name = "Starting Step Functions and Lambdas from code"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.aft_utils:invoke_step_function", "sources.aft-lambda-layer.aft_common.aft_utils:invoke_lambda"]
+purpose = "Hands work to the next stage without waiting: the provisioning state machine is started for a new or changed account, and the cleanup Lambda is invoked asynchronously for a removed request."
+input = "The state machine name from SSM /aft/account/aft-management/sfn/aft-account-provisioning-framework-sfn-name and a JSON customization payload; or the cleanup function name from SSM /aft/resources/lambda/aft-cleanup-resources and {account_request}."
+message = ["states:StartExecution stateMachineArn=arn:<partition>:states:<region>:<account>:stateMachine:<name> input=<json>", "lambda:Invoke InvocationType=Event Payload=<json>"]
+config = "SSM parameters above; the state machine definition is modules/aft-account-provisioning-framework/states/aft_account_provisioning_framework.asl.json."
+output = "The execution ARN / a 202 for the async invoke; only logged."
+validation = "Fire and forget: failures inside the started execution or the async Lambda are reported by those components, not by the caller."
+logging = "The target ARN/name in the caller's log."
+cost = "not measured."
+result_use = "None."
+
+[[roles]]
+id = "aws-target-iam"
+name = "IAM in the vended account (AFT role bootstrap)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles.deploy_aws_aft_roles", "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles._deploy_role_in_target_account", "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles._put_role", "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles._put_policy_on_role"]
+purpose = "Creates or refreshes AWSAFTService and AWSAFTExecution in the new account so every later step can reach it through the hub role. Because those roles do not exist yet, it goes in as AWSControlTowerExecution from a CT-management session."
+input = "Target account id; the trust policy from generate_aft_trust_policy (AWSAFTAdmin role and its AWSAFT-Session assumed-role ARN in the AFT management account)."
+message = ["iam:GetRole, then UpdateAssumeRolePolicy or CreateRole (MaxSessionDuration 3600, tag managed_by=AFT) + role_exists waiter", "iam:ListAttachedRolePolicies / AttachRolePolicy AdministratorAccess", "sts:AssumeRole of each new role until it works (1 minute max), then a fixed 65 s sleep"]
+config = "Role names are ProvisionRoles constants; the CT management account id comes from SSM /aft/account/ct-management/account-id."
+output = "Nothing returned; success means both roles can be assumed."
+validation = "Raises TimeoutError if a role cannot be assumed within a minute; the state machine retries this task (60 s interval) before going to notify_error."
+logging = "Per-role progress via the customization_request_logger (account id + customization_request_id)."
+cost = "Lambda time: at least 65 s per run because of the consistency sleep."
+result_use = "Later tasks (tag, SSM, features, customizations) assume these roles."
+
+[[roles]]
+id = "aws-support"
+name = "AWS Support API (Enterprise Support enrolment)"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.premium_support:ensure_enterprise_support_enrollment", "sources.aft-lambda-layer.aft_common.premium_support:account_enrollment_requested", "sources.aft-lambda-layer.aft_common.premium_support:generate_case"]
+purpose = "When enterprise support is enabled, opens a support case from the CT management account asking AWS to add the new account to the Enterprise Support plan, once per account."
+input = "Target account id; the metadata row's enterprise_support_case_created flag."
+message = ["support:DescribeCases includeResolvedCases=true (all pages) looking for subject 'Add Account <id> to Enterprise Support'", "support:CreateCase issueType=customer-service serviceCode=account-management categoryCode=billing severityCode=low"]
+config = "SSM /aft/config/feature/enterprise-support-enabled; botocore config _SUPPORT_BOTOCONFIG in premium_support.py."
+output = "Nothing; the flag is then set on the metadata row."
+validation = "Skips when the flag is already 'true'; a throttled DescribeCases is treated as 'no case yet' and a case is created anyway; the flag is written after the case so a failure retries."
+logging = "customization_request_logger lines in the enroll-support Lambda log."
+cost = "not measured."
+result_use = "Sets enterprise_support_case_created = 'true' on the aft-request-metadata row."
+
+[[roles]]
+id = "aws-metrics-endpoint"
+name = "AWS Solutions usage metrics endpoint"
+kind = "external"
+symbols = ["sources.aft-lambda-layer.aft_common.metrics:AFTMetrics.post_event", "sources.aft-lambda-layer.aft_common.metrics:AFTMetrics.wrap_event_for_api"]
+purpose = "Opt-in anonymous usage reporting: the processor posts 'new-account-creation-invoked' / 'existing-account-update-invoked', and CodeBuild jobs post their own status."
+input = "Action and status, a deployment UUID and AFT config flags read from SSM."
+message = ["HTTPS POST https://metrics.awssolutionsbuilder.com/generic, JSON with solution id SO0089-aft, uuid, timestamp and the event"]
+config = "SSM /aft/config/metrics-reporting (must be 'true'), /aft/config/metrics-reporting-uuid."
+output = "The HTTP response is ignored."
+validation = "No timeout on requests.post; callers wrap post_event in try/except and only log failures."
+logging = "'Successfully logged metrics' / 'Unable to report metrics' in the caller's log."
+cost = "not measured."
+result_use = "None."
+
+[[input_flows]]
+id = "account-request-record"
+source = "Account request item written to DynamoDB aft-request by the customer's Terraform (arrives as a stream record)"
+sink = "SQS aft-account-request.fifo, then a Service Catalog ProvisionProduct / UpdateProvisionedProduct in the CT management account"
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler"
+  guard = "_validate_event checks only that Records[0].eventSource is aws:dynamodb. The item's shape is trusted: a missing control_tower_parameters raises KeyError (→ SNS failure, one stream retry, then the record is dropped)."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.shared_account:shared_account_request"
+  guard = "A request naming a shared core account is never sent to Account Factory; asking to move one to another OU raises."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:new_ct_request_is_valid"
+  guard = "ADD: rejected if AccountName or AccountEmail is already in use in Organizations (emails compared case-insensitively by emails_are_equal). No format check of the values here."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:modify_ct_request_is_valid"
+  guard = "UPDATE: every old control_tower_parameters key except ManagedOrganizationalUnit must be unchanged."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:create_new_account"
+  guard = "Every key of control_tower_parameters is forwarded as a provisioning parameter without an allow-list; Service Catalog's product definition is what rejects unknown or malformed parameters."
+
+[[input_flows]]
+id = "controltower-event"
+source = "Event on EventBridge bus aft-events-from-ct-management (sent by the CT management account)"
+sink = "DynamoDB aft-controltower-events and a StartExecution of the provisioning framework"
+  [[input_flows.steps]]
+  symbol = "aft_lambda.aft_account_request_framework.aft_controltower_event_logger:lambda_handler"
+  guard = "None in code: the rule matches any event whose account is the CT management account, and the whole event is stored as-is. The bus policy lets only that account put events; its forwarding rule only sends CreateManagedAccount / UpdateManagedAccount."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.aft_utils:is_aft_supported_controltower_event"
+  guard = "Only source aws.controltower with one of the two event names is treated as a CT event; other events either carry account_request or raise 'unrecognized event type' (SNS failure)."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:get_account_request_record"
+  guard = "The account must have a record in aft-request (looked up by the email Organizations reports); an account Control Tower created outside AFT raises here and never reaches the state machine."
+
+[[input_flows]]
+id = "customization-request"
+source = "Input of a StartExecution on Step Functions aft-invoke-customizations (operator, or the provisioning framework on an OU move)"
+sink = "S3 target-account list, provisioning-framework executions and per-account customization CodePipelines"
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:validate_identify_targets_request"
+  guard = "jsonschema requires get_execution_id.execution_id (set by the state machine from the execution name, not by the caller) and include with 1–4 unique items that each have a type. type is not restricted to the known values, so a misspelled selector silently selects no accounts."
+  [[input_flows.steps]]
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:filter_non_aft_accounts"
+  guard = "Included account ids that are neither in aft-request-metadata nor core accounts are dropped, so a caller cannot point customizations at an arbitrary account in the organization."
+  [[input_flows.steps]]
+  symbol = "aft_lambda.aft_customizations.aft_customizations_execute_pipeline:lambda_handler"
+  guard = "Concurrency capped by SSM maximum_concurrent_customizations minus pipelines already InProgress; a pipeline already running is not started twice."
+
+[[findings]]
+id = "delete-default-vpc-wrong-account"
+severity = "medium"
+category = "risk"
+title = "Default-VPC deletion runs against the AFT management account, not the vended account"
+detail = "True now: lambda_handler gets a target_account_session but uses it only to list regions; inside the region loop it builds boto3.session.Session(region_name=region) and boto3.resource('ec2', region_name=region) — the Lambda's own credentials in the AFT management account (its log line even says 'for AFT management account'). Its IAM policy grants ec2:Delete* on '*' in that account. Trigger: aft_feature_delete_default_vpcs_enabled = true. Reach: the first provisioning run deletes the AFT management account's default VPC (and subnets, gateways, route tables, ACLs, security groups) in every region the vended account has enabled, and fails if one is in use; the vended accounts keep theirs. The flag's description says only 'deletion of default VPCs'; that the Lambda runs once per vended account, with that account's id, suggests the vended accounts were the target."
+symbols = ["aft_lambda.aft_feature_options.aft_delete_default_vpc:lambda_handler"]
+evidence = "Read aft_delete_default_vpc:lambda_handler and modules/aft-feature-options/iam/role-policies/aft_delete_default_vpc_lambda.tpl; feature_options.get_default_vpc/delete_* use whatever client/resource they are given."
+check = {kind = "text_in", pattern = "boto3\\.session\\.Session\\(region_name=region\\)"}
+
+[[findings]]
+id = "identify-targets-list-mutated-while-iterating"
+severity = "medium"
+category = "risk"
+title = "A closed account makes Identify Targets skip the next account's provisioning run"
+detail = "True now: the loop 'for account_id in target_accounts' calls target_accounts.remove(account_id) when Organizations answers AccountNotFoundException. Removing from the list being iterated skips the following element. Trigger: an AFT account that was closed or suspended but still has a row in aft-request-metadata (cleanup only runs when the request item is deleted) and is selected by include. Reach: the next account gets no payload, so the Map state never re-runs the provisioning framework for it, yet it stays in pending_accounts and its customization pipeline is still started — one account per closed account, silently."
+symbols = ["aft_lambda.aft_customizations.aft_customizations_identify_targets:lambda_handler"]
+evidence = "Read aft_customizations_identify_targets:lambda_handler (the loop and the returned pending_accounts) and the 'Invoke Provisioning Framework' Map in modules/aft-customizations/states/invoke_customizations.asl.json, which reads only target_accounts_info."
+check = {kind = "text_in", pattern = "target_accounts\\.remove\\(account_id\\)"}
+
+[[findings]]
+id = "processor-one-request-per-run"
+severity = "low"
+category = "risk"
+title = "At most one account request is started per 5-minute run"
+detail = "True now: receive_sqs_message asks for MaxNumberOfMessages=1 and the processor handles that one message and returns; the rule fires every 5 minutes. Trigger: a batch of new account requests (e.g. 50 committed at once). Reach: about 12 requests per hour at best, whatever AFT_PROVISIONING_CONCURRENCY allows — 50 requests take over four hours just to be submitted. Performance only; nothing is lost."
+symbols = ["sources.aft-lambda-layer.aft_common.sqs:receive_sqs_message"]
+evidence = "Read sqs:receive_sqs_message, aft_account_request_processor:lambda_handler and the rate(5 minutes) rule in modules/aft-account-request-framework/eventbridge.tf."
+check = {kind = "text_in", pattern = "MaxNumberOfMessages=1"}
+
+[[findings]]
+id = "ssm-cache-never-expires"
+severity = "low"
+category = "risk"
+title = "SSM parameter values are cached for the life of a warm Lambda"
+detail = "True now: get_ssm_parameter_value stores every value in the module-level _ssm_cache and never expires it. Trigger: an operator changes an AFT setting through Terraform — a feature flag, maximum_concurrent_customizations, customization-triggers. Reach: every Lambda container already warm keeps using the old value until AWS recycles it, so the change takes effect unevenly for minutes to hours."
+symbols = ["sources.aft-lambda-layer.aft_common.ssm:get_ssm_parameter_value"]
+evidence = "Read aft_common/ssm.py: _ssm_cache dict, get_ssm_parameter_value returns the cached value before calling GetParameter."
+check = {kind = "text_in", pattern = "_ssm_cache\\[param\\] = param_value"}
+
+[[findings]]
+id = "skip-triggers-attribute-not-in-module"
+severity = "low"
+category = "doc vs code"
+title = "The documented per-account opt-out cannot be set through the shipped account-request module"
+detail = "variables.tf (aft_customization_triggers) says 'Per-account opt-out via account_skip_customization_triggers attribute in aft-request', and detect_customization_triggers does read that attribute. But the aft-account-request Terraform module that writes aft-request items (modules/aft-account-request/ddb.tf) has a fixed item with no such attribute and no variable for it. Trigger: a customer enables account_move and tries to opt one account out. Reach: the opt-out is unreachable unless they edit the module or write items by hand."
+symbols = ["aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:detect_customization_triggers"]
+evidence = "grep for account_skip_customization_triggers: only variables.tf/README.md and detect_customization_triggers; read sources/aft-customizations-repos/aft-account-request/terraform/modules/aft-account-request/ddb.tf."
+check = {kind = "text_in", pattern = "account_skip_customization_triggers"}
+
+[[findings]]
+id = "metadata-ssm-session-policy-dollar"
+severity = "info"
+category = "risk"
+title = "A stray '$' makes one session-policy statement match nothing"
+detail = "True now: the session policy in account_metadata_ssm's handler builds the sts:AssumeRole resource as f\"...:role/${ProvisionRoles.EXECUTION_ROLE_NAME}\", which renders as role/$AWSAFTExecution. Trigger: none today — the handler never assumes a role with that session. Reach: harmless, but someone who later relies on the statement will find it never grants anything."
+symbols = ["aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_account_metadata_ssm:lambda_handler"]
+evidence = "Read the aft_ssm_session_policy literal in the handler; the session is used only for get_ssm_parameters_names_by_path, delete_ssm_parameters and put_ssm_parameters."
+check = {kind = "text_in", pattern = "role/\\$\\{ProvisionRoles"}
+
+[[findings]]
+id = "cleanup-error-path-unbound"
+severity = "low"
+category = "risk"
+title = "Cleanup Lambda can lose its own error report"
+detail = "True now: aft_cleanup_resources builds AuthClient and aft_management_session inside the try, while the except block passes aft_management_session to send_lambda_failure_sns_message. Trigger: AuthClient() or get_aft_management_session fails (e.g. STS or SSM unavailable). Reach: the except raises UnboundLocalError instead, no SNS failure message is sent, and the log shows the wrong error for that deletion."
+symbols = ["aft_lambda.aft_account_request_framework.aft_cleanup_resources:lambda_handler"]
+evidence = "Read aft_cleanup_resources:lambda_handler; compare aft_invoke_aft_account_provisioning_framework:lambda_handler, which also assigns aft_management_session inside try but builds AuthClient outside it."
+check = {kind = "text_in", pattern = "try:\\s+auth = AuthClient\\(\\)"}
+
+[[findings]]
+id = "processor-no-retry-dlq-after-one-failure"
+severity = "medium"
+category = "risk"
+title = "One failed processor run sends the account request to the DLQ, and nothing reads the DLQ"
+detail = "True now: the queue's redrive policy has maxReceiveCount = 1 and the processor deletes the message only after the Service Catalog call succeeds. Any exception before delete_sqs_message (a throttled Organizations or Service Catalog call, a Control Tower error, a Lambda timeout) leaves the message received once, so the next receive moves it to aft-account-request-dlq.fifo. The Lambda timeout (300 s) is also longer than the queue's visibility timeout (240 s). No code or alarm reads the DLQ. Trigger: any transient error while handling a message. Reach: that one account is never created or updated until someone redrives the DLQ or re-touches the request; the only signal is the SNS failure message sent at the time."
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_processor:lambda_handler"]
+evidence = "Read aft_account_request_processor:lambda_handler (delete_sqs_message after create_new_account / update_existing_account), modules/aft-account-request-framework/sqs.tf (visibility_timeout_seconds 240, maxReceiveCount 1) and lambda.tf (timeout 300); grep for dlq / cloudwatch_metric_alarm over modules found nothing else."
+
+[[findings]]
+id = "fifo-unique-group-id"
+severity = "low"
+category = "risk"
+title = "Every queue message gets its own MessageGroupId, so the FIFO queue neither orders nor de-duplicates requests"
+detail = "True now: send_sqs_message sets MessageGroupId and MessageDeduplicationId to a new uuid1 for each message. SQS FIFO only orders within a group, so ADD and a later UPDATE for the same email may be delivered in either order, and a repeated stream delivery creates a second message. Trigger: a customer changes control_tower_parameters (for example the OU) before the processor has taken the ADD. Reach: the UPDATE taken first fails in update_existing_account ('No healthy provisioned product') and, by the finding above, lands in the DLQ."
+symbols = ["sources.aft-lambda-layer.aft_common.sqs:send_sqs_message"]
+evidence = "Read sqs:send_sqs_message and account_request_framework:insert_msg_into_acc_req_queue; the processor's one-message-per-run receive is the only serialisation."
+check = {kind = "text_in", pattern = "MessageGroupId=unique_id"}
+
+[[findings]]
+id = "stream-record-dropped-after-one-retry"
+severity = "low"
+category = "risk"
+title = "A failed aft-request stream record is retried once and then dropped"
+detail = "True now: both event source mappings on the aft-request stream set maximum_retry_attempts = 1 and have no on-failure destination. Trigger: the action trigger fails twice on a record (for example an Organizations throttle while checking shared accounts). Reach: that request change is never queued or audited; the failure SNS message is the only trace, and the customer has to change the request again to retry it."
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_action_trigger:lambda_handler"]
+evidence = "Read modules/aft-account-request-framework/lambda.tf (aws_lambda_event_source_mapping blocks: batch_size 1, starting_position LATEST, maximum_retry_attempts 1, no destination_config) and the handler's except block (SNS publish then re-raise)."
+
+[[findings]]
+id = "support-flag-overwritten-by-persist-metadata"
+severity = "low"
+category = "risk"
+title = "persist_metadata overwrites the row that holds the Enterprise Support flag, so every run re-checks support cases"
+detail = "True now: persist_metadata does a full put_item of the aft-request-metadata row without enterprise_support_case_created, and it is the first task of every provisioning run (including every customizations re-run). aft_enroll_support then finds no flag and falls back to DescribeCases, which only returns cases from the last 12 months, and creates a case anyway when that call is throttled. Trigger: enterprise support enabled and an account re-customised more than 12 months after its case, or a throttled DescribeCases. Reach: a duplicate 'Add Account <id> to Enterprise Support' case per affected account per run."
+symbols = ["sources.aft-lambda-layer.aft_common.account_provisioning_framework:persist_metadata"]
+evidence = "Read account_provisioning_framework:persist_metadata (item has no support field; ddb.put_ddb_item), premium_support:ensure_enterprise_support_enrollment and set_enrollment_flag_in_metadata, and the ASL (persist_metadata is StartAt; aft_features runs later)."
+check = {kind = "calls", target = "sources.aft-lambda-layer.aft_common.ddb:put_ddb_item"}
+
+[[findings]]
+id = "metrics-post-without-timeout"
+severity = "low"
+category = "risk"
+title = "The usage-metrics POST has no timeout and sits between provisioning and deleting the queue message"
+detail = "True now: AFTMetrics.post_event calls requests.post without a timeout. In the processor it runs after create_new_account / update_existing_account and before delete_sqs_message; the try/except around it only catches errors, not a hang. Trigger: metrics reporting enabled and the endpoint unreachable through a proxy or NAT that never answers. Reach: the processor hits its 300 s timeout after the account operation has already started; the message is not deleted and goes to the DLQ."
+symbols = ["sources.aft-lambda-layer.aft_common.metrics:AFTMetrics.post_event"]
+evidence = "Read metrics:AFTMetrics.post_event (requests.post(self.api_endpoint, json=payload)) and the processor's call order."
+check = {kind = "text_in", pattern = "requests\\.post\\(self\\.api_endpoint, json=payload\\)"}
+
+[[findings]]
+id = "tag-rollback-dead-and-broken"
+severity = "low"
+category = "dead code"
+title = "The tag rollback path is never used and would fail if it were"
+detail = "True now: tag_org_resource(rollback=True) re-tags with the whole list_tags_for_resource response dict instead of its 'Tags' list, and no state machine or code sets 'rollback' in the tag_account input. Trigger: someone wires rollback in. Reach: that call would raise a parameter-validation error; today nothing is affected."
+symbols = ["sources.aft-lambda-layer.aft_common.organizations:OrganizationsAgent.tag_org_resource"]
+evidence = "Read OrganizationsAgent.tag_org_resource and the tag_account handler; grep for '\"rollback\"' over modules/ and sources/ found no producer."
+check = {kind = "text_in", pattern = "Tags=cast\\(Sequence\\[TagTypeDef\\], current_tags\\)"}
+
+[[findings]]
+id = "terraform-client-delete-precedence"
+severity = "low"
+category = "risk"
+title = "terraform_client.__delete reports almost any non-JSON response as success"
+detail = "True now: the fallback is 'response.status_code >= 200 & response.status_code <= 299'; & binds tighter than the comparisons, so it evaluates as a chained comparison against (200 & status) and is true for typical error codes such as 404 or 500. Trigger: a DELETE to the Terraform API that fails with a non-JSON body. Reach: workspace or variable deletion in the CodeBuild scripts is treated as done when it was not."
+symbols = ["sources.scripts.terraform_client:__delete"]
+evidence = "Read terraform_client:__delete; worked through 404 (200 & 404 = 128, so 404 >= 128 <= 299 is True)."
+check = {kind = "text_in", pattern = "status_code >= 200 &"}
+
+[[findings]]
+id = "map-itemreader-hardcoded-partition"
+severity = "low"
+category = "doc vs code"
+title = "The customizations Map reads its target list with a hard-coded 'arn:aws' resource"
+detail = "True now: invoke_customizations.asl.json uses Resource 'arn:aws:states:::s3:getObject' for the Map ItemReader, while every other ARN in the state machines is built from ${current_partition} and the Python derives the partition at run time (get_aws_partition). Trigger: deploying AFT in a non-commercial partition (aws-us-gov, aws-cn). Reach: the 'Invoke Provisioning Framework' Map cannot read the object that upload_target_account_info writes, so customizations runs that do not bypass provisioning fail."
+symbols = ["sources.aft-lambda-layer.aft_common.customizations:upload_target_account_info"]
+evidence = "grep 'arn:aws:' over modules/ JSON and templates returned only this line in modules/aft-customizations/states/invoke_customizations.asl.json."
+
+[[findings]]
+id = "stale-invoke-lambda-wiring"
+severity = "info"
+category = "dead code"
+title = "The action trigger starts the state machine directly; the Lambda-invoke wiring for it is left over"
+detail = "True now: handle_customization_request calls invoke_step_function. Still present: the action trigger's IAM grant of lambda:InvokeFunction on aft-invoke-aft-account-provisioning-framework, the SSM parameter /aft/resources/lambda/aft-invoke-aft-account-provisioning-framework and its constant SSM_PARAM_AFT_ACCOUNT_PROVISIONING_FRAMEWORK_LAMBDA, and constants for notify-error / notify-success Lambdas that no longer exist. No live problem; the hazard is a reader concluding from the grant that the Lambda is invoked from here."
+symbols = ["sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.handle_customization_request"]
+evidence = "grep for SSM_PARAM_AFT_ACCOUNT_PROVISIONING_FRAMEWORK_LAMBDA, NOTIFY_ERROR, NOTIFY_SUCCESS over src/ and sources/ found only their definitions in constants.py; read lambda-account-request-action-trigger.tpl."
+
+[[findings]]
+id = "role-names-in-three-places"
+severity = "info"
+category = "duplicated logic"
+title = "AFT role and session names live in locals.tf, in SSM, and hard-coded in Python"
+detail = "True now: AuthClient reads the hub/spoke role names and session name from SSM (set from locals.tf), while ProvisionRoles hard-codes AWSAFTService / AWSAFTExecution and generate_aft_trust_policy hard-codes AWSAFTAdmin and the AWSAFT-Session assumed-role ARN (AFT_EXEC_ROLE repeats it again). No live problem: the locals are not user variables. The hazard is changing one place: the trust policy written into every new account would then no longer match the session AFT uses."
+symbols = ["sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles.generate_aft_trust_policy"]
+evidence = "Read ProvisionRoles, AuthClient, locals.tf (aft_execution_role_name, aft_administrator_role_name, aft_session_name) and main.tf (passed to aft-ssm-parameters)."
+check = {kind = "text_in", pattern = "assumed-role/AWSAFTAdmin/AWSAFT-Session"}
+
+[[findings]]
+id = "processor-portfolio-calls-every-run"
+severity = "info"
+category = "risk"
+title = "The processor re-associates the service role with the portfolio on every 5-minute run, even with an empty queue"
+detail = "True now: each run builds AccountRequest (two role assumptions, DescribeProductAsAdmin), lists all Service Catalog portfolios and calls AssociatePrincipalWithPortfolio before looking at the queue: 288 times a day. Trigger: none needed. Reach: steady background API traffic and CloudTrail entries in the CT management account; harmless functionally because the association is idempotent."
+symbols = ["aft_lambda.aft_account_request_framework.aft_account_request_processor:lambda_handler"]
+evidence = "Read the processor handler and AccountRequest.__init__ / associate_aft_service_role_with_account_factory / account_factory_portfolio_id."
+check = {kind = "calls", target = "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest.associate_aft_service_role_with_account_factory"}
+
+[[findings]]
+id = "pipeline-count-pages-full-history"
+severity = "info"
+category = "risk"
+title = "Counting running pipelines reads every execution of every account pipeline, every 30 seconds"
+detail = "True now: get_running_pipeline_count paginates the full ListPipelineExecutions history of each customization pipeline to find the newest one, and the state machine calls it after every 30 s wait while accounts are pending; execute_pipeline also lists all pipelines once per account. Trigger: many AFT accounts with long pipeline histories during a large customizations run. Reach: CodePipeline API throttling and longer loop iterations; correctness is unaffected (the high-retry config absorbs throttling)."
+symbols = ["sources.aft-lambda-layer.aft_common.codepipeline:get_running_pipeline_count"]
+evidence = "Read codepipeline:get_running_pipeline_count, pipeline_is_running, get_pipeline_for_account and the 'Wait on Pipeline Executions' state (Seconds 30)."
+check = {kind = "text_in", pattern = "paginator\\.paginate\\(pipelineName=name\\)"}
+
+[[layer_rules]]
+text = "The shared library never imports a Lambda handler: handlers depend on aft_common, never the other way round."
+from_layers = ["common-requests", "common-provisioning", "common-customizations", "common-aws", "common-utils"]
+forbid = ["aft_lambda."]
+
+[[layer_rules]]
+text = "The layer-builder Lambda never imports aft_common (it builds that layer, so the layer may not exist yet when it runs)."
+from = ["aft_lambda.aft_builder.codebuild_trigger"]
+forbid = ["sources.aft-lambda-layer.aft_common", "sources.aft-lambda-layer.aft_common.", "aft_common"]
+
+[[layer_rules]]
+text = "Handlers of one state machine or pipeline never import handlers of another; they share code only through aft_common."
+from_layers = ["handlers-request", "handlers-provisioning", "handlers-feature-options", "handlers-customizations"]
+forbid = ["aft_lambda."]
+
+[[layer_rules]]
+text = "Utilities are leaves: they import nothing else from aft_common."
+from_layers = ["common-utils"]
+forbid = ["sources.aft-lambda-layer.aft_common.auth", "sources.aft-lambda-layer.aft_common.ssm", "sources.aft-lambda-layer.aft_common.ddb", "sources.aft-lambda-layer.aft_common.sqs", "sources.aft-lambda-layer.aft_common.organizations", "sources.aft-lambda-layer.aft_common.service_catalog", "sources.aft-lambda-layer.aft_common.account_request_framework", "sources.aft-lambda-layer.aft_common.account_provisioning_framework", "sources.aft-lambda-layer.aft_common.customizations"]
+
+[[layer_rules]]
+text = "The AWS wrappers never import the request-record or customization logic (the one upward edge that does exist is service_catalog importing ProvisionRoles for a role-name constant)."
+from_layers = ["common-aws"]
+forbid = ["sources.aft-lambda-layer.aft_common.account_request_framework", "sources.aft-lambda-layer.aft_common.account_request_record_handler", "sources.aft-lambda-layer.aft_common.shared_account", "sources.aft-lambda-layer.aft_common.customizations"]
+
+[[layer_rules]]
+text = "The CodeBuild scripts are standalone: they never import aft_common or the Lambda handlers."
+from = ["sources.scripts.workspace_manager", "sources.scripts.terraform_client"]
+forbid = ["sources.aft-lambda-layer.aft_common.", "aft_lambda."]
+
+[[decisions]]
+decision = "What an aft-request change means (create, CT-parameter update, customization only, shared-account customization, removal)"
+by = "code"
+how = "AccountRequestRecordHandler.process_request branches on eventName, whether old/new images exist, whether control_tower_parameters changed, whether the email/name belong to a shared CT account, and whether the email already has a healthy Account Factory product."
+symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"
+
+[[decisions]]
+decision = "Which accounts AFT wants (and their OU, tags, customizations name, custom fields)"
+by = "people"
+how = "Customers commit aft-account-request Terraform modules; the account-request CodePipeline applies them and Terraform writes one aft-request item per account, keyed by AccountEmail. Python only reacts to the stream."
+symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"
+
+[[decisions]]
+decision = "Serialise account operations: requests go through a FIFO queue and are taken one per scheduled run"
+by = "people (config file)"
+how = "Terraform wires aft-request stream → action trigger → SQS aft-account-request.fifo, and an EventBridge rate(5 minutes) rule → processor, which receives MaxNumberOfMessages=1 per run. The ordering comes from this one-at-a-time polling; each message gets its own MessageGroupId."
+symbol = "aft_lambda.aft_account_request_framework.aft_account_request_processor:lambda_handler"
+
+[[decisions]]
+decision = "Whether the processor may start another account operation now"
+by = "code"
+how = "AccountRequest.provisioning_threshold_reached counts Control Tower enabled baselines in UNDER_CHANGE and compares to AFT_PROVISIONING_CONCURRENCY (Terraform var concurrent_account_factory_actions, default 5)."
+symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:AccountRequest.provisioning_threshold_reached"
+
+[[decisions]]
+decision = "Whether a queued request is valid"
+by = "code"
+how = "ADD: new_ct_request_is_valid rejects an AccountName or AccountEmail already used in Organizations. UPDATE: modify_ct_request_is_valid allows only ManagedOrganizationalUnit to change. An invalid message is deleted and reported as an error."
+symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:new_ct_request_is_valid"
+
+[[decisions]]
+decision = "Account creation and OU moves are done by Control Tower, not by AFT"
+by = "code"
+how = "create_new_account / update_existing_account call Service Catalog ProvisionProduct / UpdateProvisionedProduct on the Account Factory product in the CT management account; AFT continues only when Control Tower's lifecycle event comes back through EventBridge."
+symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:create_new_account"
+
+[[decisions]]
+decision = "Provisioning steps and their order run in Step Functions, one small Lambda per step"
+by = "people (config file)"
+how = "aft_account_provisioning_framework.asl.json: persist_metadata → create_role (with retry) → tag_account → account_metadata_ssm → aft_features (sync) → account provisioning customizations (sync, customer state machine) → create pipeline (CodeBuild aft-create-pipeline, if run_create_pipeline) → invoke customizations → notify. Every task Catch goes to notify_error."
+symbol = "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:lambda_handler"
+
+[[decisions]]
+decision = "How AFT reaches other accounts: hub-and-spoke role assumption"
+by = "code"
+how = "AuthClient assumes AWSAFTAdmin in the AFT management account and from there AWSAFTExecution / AWSAFTService in the target, CT management or log-archive account. The constructor refuses to run unless the caller is the AFT management account named in SSM."
+symbol = "sources.aft-lambda-layer.aft_common.auth:AuthClient.get_target_account_session"
+
+[[decisions]]
+decision = "How a brand-new account gets the AFT roles before AFT can reach it"
+by = "code"
+how = "ProvisionRoles goes in through the CT management account as AWSControlTowerExecution (the only role a new account trusts), creates AWSAFTService and AWSAFTExecution with AdministratorAccess trusted by AWSAFTAdmin, waits until they can be assumed and sleeps 65 s for IAM consistency."
+symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:ProvisionRoles.deploy_aws_aft_roles"
+
+[[decisions]]
+decision = "Resources are found by name in SSM, not wired into each Lambda"
+by = "people (config file)"
+how = "modules/aft-ssm-parameters writes /aft/resources/*, /aft/account/* and /aft/config/*; handlers read them with get_ssm_parameter_value (cached per container). Only the processor has an environment variable of its own."
+symbol = "sources.aft-lambda-layer.aft_common.ssm:get_ssm_parameter_value"
+
+[[decisions]]
+decision = "All Lambdas share one library, published as a Lambda layer built at apply time"
+by = "people (config file)"
+how = "Every aws_lambda_function sets layers = [var.aft_common_layer_arn]; modules/aft-lambda-layer builds it with CodeBuild, triggered synchronously by the codebuild_trigger Lambda through a Terraform aws_lambda_invocation data source."
+symbol = "aft_lambda.aft_builder.codebuild_trigger:lambda_handler"
+
+[[decisions]]
+decision = "Whether default VPCs are deleted, Enterprise Support requested, CloudTrail data events enabled"
+by = "people (config file)"
+how = "Root variables aft_feature_delete_default_vpcs_enabled, aft_feature_enterprise_support, aft_feature_cloudtrail_data_events → SSM /aft/config/feature/*; each feature Lambda compares the value to 'true'."
+symbol = "aft_lambda.aft_feature_options.aft_enable_cloudtrail:lambda_handler"
+
+[[decisions]]
+decision = "Which accounts a customizations run targets"
+by = "people"
+how = "Whoever starts aft-invoke-customizations passes include/exclude specs (all, core, ous, tags, accounts); identify-targets resolves them and keeps only accounts in aft-request-metadata (plus core accounts for include)."
+symbol = "sources.aft-lambda-layer.aft_common.customizations:get_included_accounts"
+
+[[decisions]]
+decision = "How many account pipelines run at once"
+by = "people (config file)"
+how = "Terraform var maximum_concurrent_customizations is rendered into the state machine (Map MaxConcurrency and the NumericLessThan check) and stored in SSM, where execute-pipeline reads it to size each batch."
+symbol = "aft_lambda.aft_customizations.aft_customizations_execute_pipeline:lambda_handler"
+
+[[decisions]]
+decision = "Whether an OU move re-runs customizations"
+by = "people (config file)"
+how = "Terraform var aft_customization_triggers (only 'account_move') → SSM /aft/config/customization-triggers; detect_customization_triggers adds the trigger on UpdateManagedAccount when the parent OU differs from the metadata row, unless the aft-request item has account_skip_customization_triggers = true."
+symbol = "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:detect_customization_triggers"
+
+[[decisions]]
+decision = "Whether a support case is opened for an account"
+by = "code"
+how = "ensure_enterprise_support_enrollment skips when the metadata flag is set, otherwise searches DescribeCases for the exact subject and creates a case only if none is found, then sets the flag."
+symbol = "sources.aft-lambda-layer.aft_common.premium_support:ensure_enterprise_support_enrollment"
+
+[[entities]]
+id = "account-request"
+name = "Account request (aft-request item)"
+summary = "One item in DynamoDB aft-request = one account AFT should manage, keyed by id = AccountEmail. It holds control_tower_parameters (AccountEmail, AccountName, ManagedOrganizationalUnit, SSO user fields), change_management_parameters, account_tags and custom_fields as JSON strings, and account_customizations_name. Terraform writes it; the stream (NEW_AND_OLD_IMAGES) carries every change to Python."
+  [[entities.events]]
+  stage = "born"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"
+  by = "customer's account-request pipeline (Terraform aws_dynamodb_table_item)"
+  text = "Terraform writes the item; Python first sees it as an INSERT stream record in the action trigger, which queues an ADD or, for an existing or shared account, starts customization."
+  [[entities.events]]
+  stage = "store"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:put_audit_record"
+  by = "aft-account-request-audit-trigger"
+  text = "Every INSERT / MODIFY / REMOVE image is copied into aft-request-audit with a timestamp."
+  [[entities.events]]
+  stage = "transform"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_sqs_message"
+  by = "aft-account-request-action-trigger"
+  text = "Reduced to {operation ADD | UPDATE, control_tower_parameters, old_control_tower_parameters} and sent to the FIFO queue."
+  [[entities.events]]
+  stage = "update"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.process_request"
+  by = "customer edits the request"
+  text = "MODIFY: a changed control_tower_parameters map queues an UPDATE (only the OU may differ); anything else starts the provisioning state machine as a customization."
+  [[entities.events]]
+  stage = "read"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:get_account_request_record"
+  by = "aft-invoke-aft-account-provisioning-framework, aft-customizations-identify-targets"
+  text = "Fetched by email after a Control Tower event or for a customizations run."
+  [[entities.events]]
+  stage = "transform"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_account_customization_payload"
+  by = "invoke-provisioning-framework, action trigger, identify-targets"
+  text = "account_tags is JSON-decoded and the record becomes account_request inside the customization payload."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_record_handler:AccountRequestRecordHandler.handle_remove"
+  by = "customer removes the request"
+  text = "REMOVE: the OldImage is sent to aft-cleanup-resources, which deletes the account's pipeline and metadata row; the AWS account stays."
+
+[[entities]]
+id = "account-request-message"
+name = "Account request queue message"
+summary = "A JSON message on SQS aft-account-request.fifo: operation (ADD or UPDATE), control_tower_parameters and, for UPDATE, old_control_tower_parameters."
+  [[entities.events]]
+  stage = "born"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_sqs_message"
+  by = "aft-account-request-action-trigger"
+  text = "Built from the stream images."
+  [[entities.events]]
+  stage = "store"
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:send_sqs_message"
+  by = "aft-account-request-action-trigger"
+  text = "Sent with a fresh MessageGroupId and MessageDeduplicationId."
+  [[entities.events]]
+  stage = "read"
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:receive_sqs_message"
+  by = "aft-account-request-processor (every 5 minutes)"
+  text = "At most one message per run, only when the CT concurrency threshold is not reached."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "sources.aft-lambda-layer.aft_common.sqs:delete_sqs_message"
+  by = "aft-account-request-processor"
+  text = "Deleted after the Service Catalog call or after an invalid request is detected; otherwise it moves to aft-account-request-dlq.fifo on the next receive."
+
+[[entities]]
+id = "control-tower-event"
+name = "Control Tower lifecycle event"
+summary = "An aws.controltower 'AWS Service Event via CloudTrail' event (CreateManagedAccount or UpdateManagedAccount) captured in the CT management account and forwarded to the AFT bus aft-events-from-ct-management; serviceEventDetails.<operation>Status.account.accountId names the account."
+  [[entities.events]]
+  stage = "born"
+  symbol = "aft_lambda.aft_account_request_framework.aft_controltower_event_logger:lambda_handler"
+  by = "Control Tower (via EventBridge rules aft-capture-ct-events → aft-controltower-event-logger)"
+  text = "Arrives at two Lambda targets of the same rule at once."
+  [[entities.events]]
+  stage = "store"
+  symbol = "aft_lambda.aft_account_request_framework.aft_controltower_event_logger:lambda_handler"
+  by = "aft-controltower-event-logger"
+  text = "Stored whole in aft-controltower-events (hash key id, range key time)."
+  [[entities.events]]
+  stage = "read"
+  symbol = "sources.aft-lambda-layer.aft_common.aft_utils:is_aft_supported_controltower_event"
+  by = "aft-invoke-aft-account-provisioning-framework"
+  text = "Recognised by source and eventName; the account id is pulled out, mapped to the email and so to the aft-request item."
+
+[[entities]]
+id = "account-metadata"
+name = "Account metadata (aft-request-metadata item)"
+summary = "One item per AFT-provisioned account, keyed by account id: email, name, creation time, status, account_level_tags, account_customizations_name, parent_ou, plus enterprise_support_case_created once a support case exists. It is the list of AFT-managed accounts that customizations use."
+  [[entities.events]]
+  stage = "store"
+  symbol = "sources.aft-lambda-layer.aft_common.account_provisioning_framework:persist_metadata"
+  by = "persist_metadata task (first step of every provisioning run)"
+  text = "Overwritten in full from Organizations account info and the request."
+  [[entities.events]]
+  stage = "update"
+  symbol = "sources.aft-lambda-layer.aft_common.premium_support:set_enrollment_flag_in_metadata"
+  by = "aft_enroll_support"
+  text = "Sets enterprise_support_case_created = 'true' (only if the row exists)."
+  [[entities.events]]
+  stage = "read"
+  symbol = "aft_lambda.aft_account_request_framework.aft_invoke_aft_account_provisioning_framework:detect_customization_triggers"
+  by = "invoke-provisioning-framework"
+  text = "parent_ou is compared with the new parent to detect an OU move (read before persist_metadata overwrites it)."
+  [[entities.events]]
+  stage = "read"
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:get_all_aft_account_ids"
+  by = "identify-targets"
+  text = "Scanned for the ids of all AFT accounts."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "aft_lambda.aft_account_request_framework.aft_cleanup_resources:lambda_handler"
+  by = "aft-cleanup-resources"
+  text = "Deleted when the account request is removed."
+
+[[entities]]
+id = "request-audit"
+name = "Request audit record (aft-request-audit item)"
+summary = "A copy of one aft-request image at one stream event, keyed by id (email) and timestamp, with ddb_event_name INSERT, MODIFY or REMOVE. Nothing in the Python reads it back."
+  [[entities.events]]
+  stage = "born"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:put_audit_record"
+  by = "aft-account-request-audit-trigger"
+  text = "Written for each stream record (OldImage for REMOVE, NewImage otherwise)."
+
+[[entities]]
+id = "customization-payload"
+name = "Customization payload (Step Functions input)"
+summary = "AftInvokeAccountCustomizationPayload: account_info.account (from Organizations), account_request, control_tower_event (kept for backwards compatibility), account_provisioning.run_create_pipeline, a fresh customization_request_id, and optional customization_triggers. It is the input of the provisioning state machine and of every task Lambda in it."
+  [[entities.events]]
+  stage = "born"
+  symbol = "sources.aft-lambda-layer.aft_common.account_request_framework:build_account_customization_payload"
+  by = "invoke-provisioning-framework, action trigger, identify-targets"
+  text = "Built per account with a new uuid4 customization_request_id."
+  [[entities.events]]
+  stage = "store"
+  symbol = "sources.aft-lambda-layer.aft_common.customizations:upload_target_account_info"
+  by = "identify-targets"
+  text = "A list of payloads is written to S3 sfn/<execution_id>/target_account_info.json for the Map state."
+  [[entities.events]]
+  stage = "read"
+  symbol = "aft_lambda.aft_account_provisioning_framework.aft_account_provisioning_framework_create_role:lambda_handler"
+  by = "provisioning and feature task Lambdas"
+  text = "Each task reads account_info.account.id and customization_request_id (used to tag every log line)."
+
+[[entities]]
+id = "customizations-audit"
+name = "Customizations audit record (aft-customizations-audit item)"
+summary = "One item per aft-invoke-customizations execution, keyed by execution_id and timestamp: target accounts, bypass steps, triggers, trigger_source and the linking customization_request_id."
+  [[entities.events]]
+  stage = "born"
+  symbol = "aft_lambda.aft_customizations.aft_customizations_audit_trigger:lambda_handler"
+  by = "aft-customizations-audit-trigger"
+  text = "Written best-effort; a failure only logs a warning."
+
+[[entities]]
+id = "custom-field-parameters"
+name = "Custom field parameters (SSM in the vended account)"
+summary = "/aft/account-request/custom-fields/<key> String parameters in each vended account, mirroring the request's custom_fields so the account's own Terraform can read them."
+  [[entities.events]]
+  stage = "store"
+  symbol = "sources.aft-lambda-layer.aft_common.ssm:put_ssm_parameters"
+  by = "account_metadata_ssm task"
+  text = "Each key written with Overwrite=True."
+  [[entities.events]]
+  stage = "delete"
+  symbol = "sources.aft-lambda-layer.aft_common.ssm:delete_ssm_parameters"
+  by = "account_metadata_ssm task"
+  text = "Keys under the path that are no longer in custom_fields are deleted."

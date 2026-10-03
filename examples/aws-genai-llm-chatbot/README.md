@@ -15,7 +15,7 @@ What this example shows: a full serverless stack: TypeScript CDK read for its wi
 | Entities · input paths · decisions | 7 · 4 · 11 |
 | Layers · layer rules | 10 · 6 |
 | Module notes | 155 |
-| Infrastructure (TypeScript CDK) | 93 resources · 181 wiring edges · 17 of 20 Lambdas linked to their Python handler |
+| Infrastructure (TypeScript CDK CDK) | 93 resources · 181 wiring edges · 17 of 20 Lambdas linked to their Python handler |
 | Findings | 29 — 0 high, 11 medium, 14 low, 4 info |
 
 Files: `code-flow-report.html` (the page), `narrative.toml` (everything Claude wrote: prose naming symbols only), `code_map.json` (extracted structure), `codeflow.toml` (settings).

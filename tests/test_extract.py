@@ -286,7 +286,7 @@ class CdkTypeScriptApp(unittest.TestCase):
         self.assertEqual(res, {("SQS", "OrdersQueue"): None, ("API Gateway", "Api"): None, ("DynamoDB", "Orders"): None,
                                ("Lambda", "CreateOrder"): "functions.orders.app:create_order",  # path.join(__dirname, "../functions/orders")
                                ("Lambda", "Worker"): "functions.orders.worker:handle"})        # imported as LambdaFunction
-        self.assertEqual(self.cm["infra"]["languages"], ["TypeScript"])
+        self.assertEqual(self.cm["infra"]["languages"], ["TypeScript CDK"])
 
     def test_wiring(self):
         self.assertEqual(infra_edges(self.cm), {
@@ -320,6 +320,170 @@ class CdkPythonApp(unittest.TestCase):
 
     def test_no_infra_without_cdk(self):
         self.assertEqual(code_map("flask_app")["infra"], {})
+
+
+class TerraformAws(unittest.TestCase):
+    """Terraform for AWS: connector resources become wiring; IAM policies on a function's role become grants."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("tf_aws_app")
+
+    def test_functions_link_through_archive_file_and_locals(self):
+        self.assertEqual({r["id"]: r.get("handler_symbol") for r in self.cm["infra"]["resources"] if r["service"] == "Lambda"},
+                         {"create-order": "orders.app:create_order", "worker": "orders.worker:handle",
+                          "image-fn": "jobs.handler:run"})  # container image: docker_image build → Dockerfile COPY + CMD
+        self.assertEqual(self.cm["infra"]["languages"], ["Terraform"])  # the commented-out function is not a resource
+
+    def test_wiring(self):
+        self.assertLessEqual({("API Gateway (HTTP) orders", "route", "POST /orders", "Lambda create-order"),
+                              ("SQS jobs", "trigger", "SQS", "Lambda worker"),
+                              ("EventBridge rule nightly", "target", "cron(0 2 * * ? *)", "Lambda worker"),
+                              ("Lambda create-order", "env", "TABLE_NAME", "DynamoDB orders"),
+                              ("Lambda create-order", "grant", "dynamodb:GetItem, dynamodb:PutItem", "DynamoDB orders"),
+                              ("Lambda worker", "grant", "sqs:SendMessage", "SQS jobs")}, infra_edges(self.cm))
+
+
+class TerraformModules(unittest.TestCase):
+    """Local modules: var.x followed to the caller's module input and module.m.out to the output; resource
+    "archive_file"; templatefile() for a Step Functions definition and a policy; same-named roles kept apart."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("tf_modules_app")
+
+    def test_functions_link_across_modules(self):
+        self.assertEqual({r["id"]: r.get("handler_symbol") for r in self.cm["infra"]["resources"] if r["service"] == "Lambda"},
+                         {"validate": "intake.validate:handler", "store": "intake.store:handler",
+                          "nightly": "reports.nightly:handler"})
+
+    def test_templatefile_wiring_stays_in_its_module(self):
+        edges = infra_edges(self.cm)
+        self.assertLessEqual({("Step Functions intake", "invoke", "Step Functions task", "Lambda validate"),
+                              ("Step Functions intake", "invoke", "Step Functions task", "Lambda store"),
+                              ("Lambda validate", "grant", "dynamodb:PutItem", "DynamoDB requests")}, edges)
+        # reports has its own aws_iam_role.lambda: the intake policy must not reach its function
+        self.assertFalse({e for e in edges if e[0] == "Lambda nightly" and e[1] == "grant"})
+
+    def test_same_map_whatever_the_hash_seed(self):
+        # `check` compares a fresh extraction with code_map.json: the edge order must not follow string hashing
+        import json, os, subprocess, sys
+        code = ("import json,sys; sys.path[:0]=sys.argv[1:3]; import _support; "
+                "print(json.dumps(_support.code_map('tf_modules_app')['infra']['edges']))")
+        here = os.path.dirname(os.path.abspath(__file__))
+        outs = {subprocess.run([sys.executable, "-c", code, here, os.path.join(here, "..", "skills", "code-flow-report", "scripts")],
+                               capture_output=True, text=True, env={**os.environ, "PYTHONHASHSEED": seed}, check=True).stdout
+                for seed in ("1", "2", "3")}
+        self.assertEqual(len(outs), 1)
+
+class DockerCompose(unittest.TestCase):
+    """Compose: each service is a resource; build + command (or the Dockerfile CMD) links it to its Python code."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("compose_app")
+
+    def test_services_link_to_their_python_entry(self):
+        res = {r["id"]: (r["service"], r.get("handler_symbol")) for r in self.cm["infra"]["resources"]}
+        self.assertEqual(res, {"api": ("Container", "backend.app.main:<module>"),   # the override's uvicorn command wins
+                               "worker": ("Container", "backend.app.worker:<module>"),
+                               "ingest": ("Container", "backend.app.jobs.ingest:<module>"),
+                               "db": ("PostgreSQL", None), "cache": ("Redis", None),
+                               # an image of this repo → root Dockerfile (CMD inherited by the last stage) → supervisord,
+                               # one resource per Python program; examples/compose.yaml repeats the stack and is skipped
+                               "allinone:api": ("Container", "backend.app.main:<module>"),
+                               "allinone:worker": ("Container", "backend.app.worker:<module>")})
+        self.assertEqual(self.cm["infra"]["languages"], ["Docker Compose"])
+
+    def test_wiring(self):
+        self.assertLessEqual({("Container api", "depends", "depends_on", "PostgreSQL db"),
+                              ("Container api", "env", "DATABASE_URL", "PostgreSQL db"),   # ${DB_PASSWORD:-…} read as its default
+                              ("Container api", "env", "REDIS_URL", "Redis cache"),
+                              ("Container worker", "depends", "depends_on", "Redis cache"),
+                              ("Container allinone:worker", "depends", "depends_on", "PostgreSQL db"),
+                              ("host port 8000", "route", "port 8000:8000", "Container api")}, infra_edges(self.cm))
+
+    def test_only_scripts_are_journey_entries(self):
+        import draft
+        entries = {s for s, k, t in draft.entry_points(self.cm) if k == "infra"}
+        self.assertIn("backend.app.jobs.ingest:<module>", entries)
+        self.assertNotIn("backend.app.main:<module>", entries)     # a server: its routes are the entries
+        self.assertNotIn("backend.app.worker:<module>", entries)   # a worker: its tasks are
+
+
+class Kubernetes(unittest.TestCase):
+    """Manifests and a Helm chart: Ingress → Service → workload by selector, env references, CronJob schedules."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("k8s_app")
+
+    def test_workloads_link_through_command_dockerfile_and_entrypoint_script(self):
+        res = {(r["service"], r["id"]): r.get("handler_symbol") for r in self.cm["infra"]["resources"] if r["category"] == "compute"}
+        self.assertEqual(res, {("K8s Deployment", "api"): "api.wsgi:create_app",           # image api → api/Dockerfile → entrypoint.sh
+                               ("K8s CronJob", "nightly-report"): "api.jobs.report:<module>",
+                               ("K8s Deployment", "web"): "ui.app:<module>",                  # Helm: name rendered from the chart
+                               ("K8s Deployment", "report-cli"): "api.jobs.report:build",       # a console script from pyproject
+                               ("K8s Deployment", "sidecar-cache"): None,     # its own non-Python command replaces the image's
+                               ("K8s Deployment (Model server)", "release-<name>-engine"): None})   # a range variable shown as <name>
+        self.assertEqual(self.cm["infra"]["languages"], ["Helm", "Kubernetes"])
+
+    def test_wiring(self):
+        self.assertLessEqual({("K8s Ingress public", "route", "example.com/v1", "K8s Service api"),
+                              ("K8s Service api", "route", "port 80", "K8s Deployment api"),
+                              ("K8s Service postgres", "route", "port 5432", "K8s StatefulSet (PostgreSQL) postgres"),
+                              ("K8s Deployment api", "env", "DB_HOST", "K8s Service postgres"),
+                              ("K8s Deployment api", "env", "FEATURE_FLAGS", "K8s ConfigMap settings"),
+                              ("K8s Deployment api", "env", "envFrom", "K8s Secret api-secrets"),
+                              ("K8s Deployment web", "env", "API_URL", "K8s Service api"),
+                              ("K8s CronJob nightly-report", "mount", "volume", "K8s volume claim reports"),
+                              ("Schedule", "trigger", "0 3 * * *", "K8s CronJob nightly-report")}, infra_edges(self.cm))
+
+    def test_trigger_text_climbs_from_the_schedule(self):
+        import draft
+        self.assertIn(("api.jobs.report:<module>", "Schedule (0 3 * * *) → K8s CronJob nightly-report"),
+                      {(s, t) for s, k, t in draft.entry_points(self.cm) if k == "infra"})
+
+class TerraformGcp(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("tf_gcp_app")
+
+    def test_cloud_functions_link_and_wire(self):
+        res = {r["id"]: r.get("handler_symbol") for r in self.cm["infra"]["resources"] if "Function" in r["service"]}
+        self.assertEqual(res, {"process": "function.main:process_job", "api": "function.main:handle_http"})
+        self.assertLessEqual({("Pub/Sub topic jobs", "trigger", "messagePublished", "Cloud Function (2nd gen) process"),
+                              ("HTTPS", "route", "HTTP trigger", "Cloud Function api"),
+                              ("Cloud Scheduler hourly", "target", "0 * * * *", "Pub/Sub topic jobs"),
+                              ("Cloud Function (2nd gen) process", "grant", "roles/storage.objectAdmin", "Cloud Storage src-bucket"),
+                              ("Cloud Function (2nd gen) process", "env", "OUTPUT_BUCKET", "Cloud Storage src-bucket")}, infra_edges(self.cm))
+
+    def test_trigger_text_climbs_to_the_schedule(self):
+        import draft
+        self.assertIn(("function.main:process_job",
+                       "Cloud Scheduler hourly (0 * * * *) → Pub/Sub topic jobs (messagePublished) → Cloud Function (2nd gen) process"),
+                      {(s, t) for s, k, t in draft.entry_points(self.cm) if k == "infra"})
+
+
+class TerraformAzure(unittest.TestCase):
+    """Azure: the Function App and its wiring come from Terraform, the triggers from the Python decorators."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("tf_azure_app")
+
+    def test_function_app_wiring(self):
+        self.assertEqual(infra_edges(self.cm), {
+            ("Function App orders-api", "env", "COSMOS_ENDPOINT", "Cosmos DB orders-db"),
+            ("Function App orders-api", "env", "JOBS_QUEUE", "Storage queue jobs"),
+            ("Function App orders-api", "grant", "Cosmos DB Built-in Data Contributor", "Cosmos DB orders-db")})
+
+    def test_decorated_functions_are_entries(self):
+        import draft
+        self.assertEqual({(s, t) for s, k, t in draft.entry_points(self.cm) if k == "infra"}, {
+            ("app.function_app:create_order", "Azure Functions: HTTP (route='orders', methods=['POST'])"),
+            ("app.function_app:process_job", "Azure Functions: Storage queue (queue_name='jobs')"),
+            ("app.function_app:sweep", "Azure Functions: Timer (schedule='0 */5 * * * *')")})
 
 
 class StreamlitApp(unittest.TestCase):

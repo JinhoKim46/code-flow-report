@@ -16,6 +16,13 @@ import os
 import re
 from pathlib import Path
 
+try:
+    from .infra_containers import COMPOSE_NAME, scan_containers
+    from .infra_tf import dockerfile_handler, scan_tf
+except ImportError:  # script import
+    from infra_containers import COMPOSE_NAME, scan_containers
+    from infra_tf import dockerfile_handler, scan_tf
+
 # construct class name (last part) → (service, category)
 CLASSES = {
     "Function": ("Lambda", "compute"), "SingletonFunction": ("Lambda", "compute"), "PythonFunction": ("Lambda", "compute"),
@@ -205,12 +212,18 @@ def _asset_path(expr: str, file_dir: Path, app_root: Path) -> Path | None:
 
 
 def scan(root: Path, cfg: dict, modules: dict, symbols: dict, exclude: set[str], walk_files) -> dict:
-    files = []
-    for f in walk_files(root, exclude | {"node_modules", "cdk.out", "site-packages"}):
+    files, tf_files, yaml_files, dockerfiles = [], [], [], []
+    for f in walk_files(root, exclude | {"node_modules", "cdk.out", "site-packages", ".terraform"}):
         if f.suffix == ".ts" and not f.name.endswith(".d.ts") and "test" not in f.name.lower():
             files.append(f)
         elif f.suffix == ".py":
             files.append(f)
+        elif f.suffix == ".tf":
+            tf_files.append(f)
+        elif f.suffix in (".yaml", ".yml"):
+            yaml_files.append(f)
+        elif f.name == "Dockerfile" or f.name.startswith("Dockerfile.") or f.name.endswith(".Dockerfile"):
+            dockerfiles.append(f)
     sources = {}
     for f in files:
         try:
@@ -219,7 +232,7 @@ def scan(root: Path, cfg: dict, modules: dict, symbols: dict, exclude: set[str],
             continue
         if f.suffix == ".ts" and ("aws-cdk-lib" in text or "@aws-cdk/" in text) or f.suffix == ".py" and "aws_cdk" in text:
             sources[f] = _strip_comments(text, f.suffix == ".py")
-    if not sources:
+    if not sources and not tf_files and not yaml_files:
         return {}
     app_root = next((p.parent for p in [root / "cdk.json", *root.glob("*/cdk.json")] if p.exists()), root)
     file_of_module = {info["file"]: m for m, info in modules.items()}
@@ -307,7 +320,22 @@ def scan(root: Path, cfg: dict, modules: dict, symbols: dict, exclude: set[str],
                 handler = _prop(args, "handler")
                 r["handler"] = (re.findall(r"[\"'`]([^\"'`]+)[\"'`]", handler or "") or [None])[0]
                 if "FROM_IMAGE" in (handler or "") or cls_name == "DockerImageFunction":
-                    r["handler"] = "container image"  # the handler is inside the image, not in this code
+                    r["handler"] = "container image"  # the handler is set by the image's Dockerfile (read below)
+                    code = _prop(args, "code") or ""
+                    ctx = _asset_path(re.split(r",\s*\{", code.split("fromImageAsset(")[-1].split("from_image_asset(")[-1])[0], f.parent, app_root) \
+                        if re.search(r"(?:fromImageAsset|from_image_asset)\(", code) else None
+                    if ctx:
+                        cmd = (re.findall(r"[\"'`]([^\"'`]+)[\"'`]", _prop(code, "cmd") or "") or [None])[0]
+                        py, fn = dockerfile_handler(ctx, None, cmd)
+                        if py:
+                            r["handler"] = f"{py.stem}.{fn}"
+                            try:
+                                mod_name = file_of_module.get(py.relative_to(root).as_posix())
+                            except ValueError:
+                                mod_name = None
+                            if mod_name and f"{mod_name}:{fn}" in symbols:
+                                r["handler_symbol"] = f"{mod_name}:{fn}"
+                                r["runtime"] = "python"
                 runtime = _prop(args, "runtime") or ""
                 r["runtime"] = "python" if "python" in runtime.lower() else ("node" if "node" in runtime.lower() else "")
                 code = _prop(args, "entry") if cls_name == "PythonFunction" else _prop(args, "code")
@@ -469,10 +497,33 @@ def scan(root: Path, cfg: dict, modules: dict, symbols: dict, exclude: set[str],
             j = resolve(ref, r["file"], 0, r["owner"])
             if j is not None:  # an env var that names a resource (TABLE_NAME → the table); index names etc. are left out
                 out_edges.append({"from": i, "to": j, "kind": "env", "label": key, "file": r["file"], "line": r["line"]})
-    lambdas = [r for r in resources if r["service"] == "Lambda"]
-    return {"resources": resources, "edges": out_edges, "files": sorted(f.relative_to(root).as_posix() for f in sources),
-            "languages": sorted({"TypeScript" if f.suffix == ".ts" else "Python" for f in sources}),
-            "lambdas": len(lambdas), "lambdas_linked": sum(1 for r in lambdas if r.get("handler_symbol"))}
+    languages = {"TypeScript CDK" if f.suffix == ".ts" else "Python CDK" for f in sources}
+    if tf_files:  # Terraform: its own resources and edges, appended with their indices shifted
+        tf_res, tf_edges = scan_tf(root, tf_files, modules, symbols)
+        if tf_res:
+            base = len(resources)
+            resources += tf_res
+            out_edges += [{**e, "from": e["from"] + base if isinstance(e["from"], int) else e["from"],
+                           "to": e["to"] + base if isinstance(e["to"], int) else e["to"]} for e in tf_edges]
+            languages.add("Terraform")
+    used = list(sources) + tf_files
+    if yaml_files:  # Docker Compose, Kubernetes manifests, Helm charts
+        c_res, c_edges, c_langs = scan_containers(root, yaml_files, dockerfiles, modules, symbols)
+        if c_res:
+            base = len(resources)
+            resources += c_res
+            out_edges += [{**e, "from": e["from"] + base if isinstance(e["from"], int) else e["from"],
+                           "to": e["to"] + base if isinstance(e["to"], int) else e["to"]} for e in c_edges]
+            languages |= c_langs
+            files_of = {r["file"] for r in c_res}
+            used += [f for f in yaml_files if f.relative_to(root).as_posix() in files_of]
+    if not resources:
+        return {}
+    functions = [r for r in resources if r["category"] == "compute" and "handler" in r]
+    return {"resources": resources, "edges": out_edges,
+            "files": sorted(f.relative_to(root).as_posix() for f in used),
+            "languages": sorted(languages),
+            "lambdas": len(functions), "lambdas_linked": sum(1 for r in functions if r.get("handler_symbol"))}
 
 
 def describe(infra: dict, i) -> str:
@@ -487,8 +538,8 @@ def triggers(infra: dict) -> list[tuple[str, str]]:
     """(handler symbol, trigger text) for each Lambda whose Python handler is known: what invokes it, from the wiring."""
     out = []
     for i, r in enumerate(infra.get("resources", [])):
-        if not r.get("handler_symbol"):
-            continue
+        if not r.get("handler_symbol") or r.get("entry") is False:
+            continue   # a server or worker container: its routes and tasks are the entries, not its start-up code
         kinds = ("trigger", "notify", "subscribe", "target", "datasource", "route", "invoke")
         inbound = [e for e in infra["edges"] if e["to"] == i and (e["kind"] in kinds or e["label"] in ("grantInvoke", "grant_invoke"))]
         inbound = [e for k, e in enumerate(inbound) if (e["from"], e["label"]) not in {(x["from"], x["label"]) for x in inbound[:k]}]
@@ -499,7 +550,7 @@ def triggers(infra: dict) -> list[tuple[str, str]]:
 
         how = "; ".join(f"{upstream(e)}{describe(infra, e['from'])} ({'invokes it' if e['kind'] == 'grant' else e['label']})"
                         for e in inbound[:3])
-        out.append((r["handler_symbol"], f"{how} → Lambda {r['id']}" if how else f"Lambda {r['id']}"))
+        out.append((r["handler_symbol"], f"{how} → {r['service']} {r['id']}" if how else f"{r['service']} {r['id']}"))
     return out
 
 
@@ -512,7 +563,7 @@ def section(infra: dict, lang: str) -> dict:
         inbound = [f"← {describe(infra, e['from'])} ({e['label']})" for e in infra["edges"] if e["to"] == i and e["kind"] != "env"]
         outbound = [f"→ {describe(infra, e['to'])} ({e['label']})" for e in infra["edges"] if e["from"] == i]
         wiring = "; ".join((inbound + outbound)[:6]) + (" …" if len(inbound + outbound) > 6 else "") or "–"
-        runs = {"sym": r["handler_symbol"], "line": 0} if r.get("handler_symbol") else (r.get("handler") or "–")
+        runs = {"sym": r["handler_symbol"], "line": 0} if r.get("handler_symbol") else (r.get("handler") or r.get("runs") or "–")
         rows.append([f"{r['service']} · {r['id']}", f"{r['file']}:{r['line']}", wiring, runs])
     cols = {"en": ["Resource", "Defined in", "Wiring (← invoked by · → may use)", "Runs"],
             "ko": ["리소스", "정의 위치", "연결 (← 호출하는 쪽 · → 사용하는 것)", "실행 코드"]}

@@ -15896,7 +15896,7 @@
    "lib/user-interface/public-website.ts"
   ],
   "languages": [
-   "TypeScript"
+   "TypeScript CDK"
   ],
   "lambdas": 20,
   "lambdas_linked": 17

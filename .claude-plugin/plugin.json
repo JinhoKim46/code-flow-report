@@ -1,6 +1,6 @@
 {
   "name": "code-flow-report",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Interactive, self-checking report of how a Python codebase actually works: layers, user journeys as call chains, external boundaries, data lifecycle and findings — extracted from the source, explained in a narrative that fails its own check when the code changes.",
   "author": { "name": "Jinho Kim", "url": "https://github.com/JinhoKim46" },
   "homepage": "https://github.com/JinhoKim46/code-flow-report",

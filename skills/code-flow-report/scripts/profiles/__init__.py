@@ -29,9 +29,9 @@ To add a stack: drop a module in this package that defines those names and list 
 """
 from __future__ import annotations
 
-from . import jobs, llm, ui
+from . import cloudfn, jobs, llm, ui
 
-ALL = [llm, jobs, ui]
+ALL = [llm, jobs, ui, cloudfn]
 
 
 def active(imported: set[str], cfg: dict) -> list:

@@ -1,0 +1,13 @@
+{{- range $spec := .Values.engines }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ .Release.Name }}-{{ $spec.name }}-engine"
+spec:
+  template:
+    spec:
+      containers:
+        - name: engine
+          image: "vllm/vllm-openai:latest"
+---
+{{- end }}

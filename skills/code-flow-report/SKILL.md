@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py *) Bash(pyth
 license: MIT
 compatibility: Claude Code with Python 3.11+ on PATH as python3. Standard library only; the generated page works offline.
 metadata:
-  version: 0.6.0
+  version: 0.7.0
   repository: https://github.com/JinhoKim46/code-flow-report
 ---
 
@@ -49,7 +49,7 @@ CF candidates          # every entry point ranked as a journey candidate (* = al
 CF todo                # what is left to write
 ```
 
-`draft` fills layers, journey call chains, boundary cards, stack-profile cards, input-flow candidates and data lifecycles from the code and leaves `TODO:` wherever prose is needed. Then judge the journeys against `candidates`: the set should cover the flows a newcomer most needs — for an app: sign-in, the main create/submit action, the main read screen, the main background job; for a library: its main public calls (e.g. `Agent().run()`), past virtual calls into the subclasses that do the work; for a pipeline: its stages in order; for a serverless app (the map line says "infrastructure … CDK"): the main request path, the main event-driven path (queue, schedule, upload), and one workflow, each crossing Lambdas as the infrastructure wires them. Swap out a journey that is an admin screen, a one-off script, or only the tail of another journey, and drop the drafted one with `drop = true` (copy the replacement's chain with `CF query <entry> --depth 3`). Add any step a chain is missing (a validation call, a permission check) and drop plumbing steps that add nothing. When two cards explain the same function, keep the more specific one.
+`draft` fills layers, journey call chains, boundary cards, stack-profile cards, input-flow candidates and data lifecycles from the code and leaves `TODO:` wherever prose is needed. Then judge the journeys against `candidates`: the set should cover the flows a newcomer most needs — for an app: sign-in, the main create/submit action, the main read screen, the main background job; for a library: its main public calls (e.g. `Agent().run()`), past virtual calls into the subclasses that do the work; for a pipeline: its stages in order; for a serverless or containerised app (the map line says "infrastructure (… CDK / Terraform / Docker Compose / Kubernetes)"): the main request path, the main event-driven path (queue, schedule, upload), and one workflow, each crossing functions or services as the infrastructure wires them (a call to another service over HTTP is named in the step text, then the callee's route continues the chain). Swap out a journey that is an admin screen, a one-off script, or only the tail of another journey, and drop the drafted one with `drop = true` (copy the replacement's chain with `CF query <entry> --depth 3`). Add any step a chain is missing (a validation call, a permission check) and drop plumbing steps that add nothing. When two cards explain the same function, keep the more specific one.
 
 ## 4. Write the narrative
 

@@ -41,7 +41,7 @@ class FullRun(unittest.TestCase):
         cls.out = cls.repo / "docs" / "code-flow"
 
     def test_init_vendors_everything_needed_to_rebuild(self):
-        for name in ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "template.html", "profiles/__init__.py", "profiles/llm.py"]:
+        for name in ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "infra_tf.py", "infra_containers.py", "template.html", "profiles/__init__.py", "profiles/llm.py"]:
             with self.subTest(name):
                 self.assertTrue((self.out / "tools" / name).exists())
         self.assertEqual(tomllib.loads((self.out / "codeflow.toml").read_text())["paths"]["root"], "../..")

@@ -40,7 +40,7 @@ import infra as infra_scanner  # noqa: E402
 from common import CONFIG_NAME, Paths, count_todo, load_map, load_narrative  # noqa: E402
 
 SAMPLE_DIRS = {"examples", "example", "samples", "demos", "demo", "benchmarks", "benchmark", "notebooks", "cookbook", "docs_src"}
-VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py"]
+VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "infra_tf.py", "infra_containers.py"]
 
 
 # --------------------------------------------------------------------------- init
@@ -155,8 +155,8 @@ def print_summary(cm: dict) -> None:
         print("stack profiles on: " + ", ".join(f"{k} ({v} records)" for k, v in s["profiles"].items()))
     if s.get("infra_resources"):
         infra = cm.get("infra", {})
-        print(f"infrastructure ({', '.join(infra.get('languages', []))} CDK): {s['infra_resources']} resources · "
-              f"{len(infra.get('edges', []))} wiring edges · Lambda handlers linked to Python {s['infra_lambdas_linked']}/{s['infra_lambdas']}")
+        print(f"infrastructure ({', '.join(infra.get('languages', []))}): {s['infra_resources']} resources · "
+              f"{len(infra.get('edges', []))} wiring edges · functions linked to their Python handler {s['infra_lambdas_linked']}/{s['infra_lambdas']}")
     print("most frequent unresolved: " + ", ".join(f"{n}×{c}" for n, c in s["top_unresolved_names"][:8]))
 
 

@@ -1,0 +1,7 @@
+{
+  "StartAt": "Validate",
+  "States": {
+    "Validate": {"Type": "Task", "Resource": "${validate_arn}", "Next": "Store"},
+    "Store": {"Type": "Task", "Resource": "${ store_arn }", "End": true}
+  }
+}

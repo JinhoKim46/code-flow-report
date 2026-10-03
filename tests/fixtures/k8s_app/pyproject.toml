@@ -1,0 +1,6 @@
+[project]
+name = "example"
+version = "0.1.0"
+
+[project.scripts]
+report-cli = "api.jobs.report:build"

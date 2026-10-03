@@ -1,0 +1,46 @@
+x-env: &common-env
+  LOG_LEVEL: info
+
+services:
+  api:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://app:${DB_PASSWORD:-changeme}@db:5432/app
+      REDIS_URL: redis://cache:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  worker:
+    build: ./backend
+    command: celery -A app.worker worker --loglevel=info
+    environment:
+      - REDIS_URL=redis://cache:6379/0
+    depends_on: [cache]
+
+  ingest:
+    build: ./backend
+    command: ["python", "-m", "app.jobs.ingest"]
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  cache:
+    image: redis:7-alpine
+
+  allinone:
+    image: example/compose_app:latest
+    depends_on: [db]
+
+volumes:
+  pgdata:

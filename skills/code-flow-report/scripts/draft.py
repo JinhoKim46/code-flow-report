@@ -214,7 +214,7 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
     for name, recs in sorted(cm.get("profiles", {}).items()):
         p = by_name.get(name)
         if p and hasattr(p, "triggers"):
-            out += [(sym, "ui", trig) for sym, trig in p.triggers(recs, cm) if sym in cm["symbols"]]
+            out += [(sym, getattr(p, "ENTRY_KIND", "ui"), trig) for sym, trig in p.triggers(recs, cm) if sym in cm["symbols"]]
     seen, uniq = set(), []
     for e in out:
         if e[0] not in seen:
@@ -224,7 +224,7 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
 
 
 ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)", "api": "library user",
-         "infra": "AWS (invokes the Lambda)"}
+         "infra": "cloud platform (invokes the function)"}
 
 # a library's journeys start where its users call it: the entry methods of the classes it exports
 API_METHODS = ("run", "__call__", "invoke", "ainvoke", "execute", "stream", "chat", "generate", "predict", "fit", "transform",
@@ -365,7 +365,8 @@ def propose_roles(cm: dict, n: int) -> list[dict]:
 
 
 def infra_roles(cm: dict) -> list[dict]:
-    """One card per Lambda whose Python handler is known: what invokes it, what it may touch, what tells it where."""
+    """One card per function or container whose Python code is known: what invokes it, what it may touch, what
+    tells it where."""
     infra = cm.get("infra") or {}
     roles = []
     for i, r in enumerate(infra.get("resources", [])):
@@ -373,15 +374,19 @@ def infra_roles(cm: dict) -> list[dict]:
             continue
         edges = infra["edges"]
         inbound = [f"{infra_scanner.describe(infra, e['from'])} ({e['label']})" for e in edges if e["to"] == i and e["kind"] != "env"]
-        grants = [f"{infra_scanner.describe(infra, e['to'])} ({e['label']})" for e in edges if e["from"] == i and e["kind"] == "grant"]
+        grants = [f"{infra_scanner.describe(infra, e['to'])} ({e['label']})" for e in edges
+                  if e["from"] == i and e["kind"] in ("grant", "depends", "mount")]
         env = [f"{e['label']} → {infra_scanner.describe(infra, e['to'])}" for e in edges if e["from"] == i and e["kind"] == "env"]
-        roles.append({"id": "lambda-" + _slug(r["id"] + "-" + "-".join(r["file"].split("/")[-2:]).rsplit(".", 1)[0]), "kind": "infra",
-                      "name": f"Lambda {r['id']}", "symbols": [r["handler_symbol"]],
-                      "purpose": "TODO: what this function is for, in one sentence",
-                      "message": [f"invoked by: {x}" for x in inbound] or ["TODO: what invokes it (no trigger found in the CDK code)"],
+        prefix = "lambda" if r["service"] == "Lambda" else _slug(r["service"])
+        fn = not r["cls"].startswith(("compose:", "k8s:"))   # a function (Lambda, Cloud Function) or a container
+        roles.append({"id": prefix + "-" + _slug(r["id"] + "-" + "-".join(r["file"].split("/")[-2:]).rsplit(".", 1)[0]), "kind": "infra",
+                      "name": f"{r['service']} {r['id']}", "symbols": [r["handler_symbol"]],
+                      "purpose": f"TODO: what this {'function' if fn else 'service'} is for, in one sentence",
+                      "message": [f"invoked by: {x}" for x in inbound] or ["TODO: what invokes it (no trigger found in the infrastructure code)"],
                       "config": f"defined in {r['file']}" + (f" · environment: {'; '.join(env)}" if env else ""),
                       "output": "TODO: what it returns or writes",
-                      "validation": "TODO: retries, timeouts, dead-letter handling",
+                      "validation": "TODO: retries, timeouts, dead-letter handling" if fn else
+                                    "TODO: restarts, health checks, what happens when a dependency is down",
                       "logging": "TODO: where a failure is noticed",
                       "result_use": ("may use: " + "; ".join(grants)) if grants else "TODO: what it may touch (no grants found)"})
     return roles
@@ -441,7 +446,7 @@ def draft(cm: dict, cfg: dict, depth: str = "quick") -> dict:
     layers = auto_layers(cm["modules"])
     for l in layers:
         l["owns"] = "TODO: what this layer owns"
-    return {
+    return _unique_ids({
         "meta": {"title": cfg["project"].get("name") or "Code flow",
                  "lede": "TODO: two sentences — what this system does and how the main parts connect",
                  "audience": cfg["project"].get("audience") or ("Python 은 알지만 이 코드는 처음 보는 사람" if cfg["project"].get("language") == "ko" else "someone who knows Python but not this code")},
@@ -454,7 +459,23 @@ def draft(cm: dict, cfg: dict, depth: str = "quick") -> dict:
         "entities": propose_entities(cm, lim["entities"]),
         "decisions": [],
         "findings": [],
-    }
+    })
+
+
+def _unique_ids(narrative: dict) -> dict:
+    """Slugs are cut at 48 characters, so two long names can draft the same id; a merge keeps only one of
+    them. Suffix repeats within a section (`-2`, `-3`) so every drafted entry can be replaced or dropped."""
+    for section, entries in narrative.items():
+        if not isinstance(entries, list):
+            continue
+        seen = {}
+        for e in entries:
+            if isinstance(e, dict) and e.get("id"):
+                n = seen.get(e["id"], 0) + 1
+                seen[e["id"]] = n
+                if n > 1:
+                    e["id"] = f"{e['id']}-{n}"
+    return narrative
 
 
 HEADER = """# Narrative for the code-flow report — the only hand-written input.
