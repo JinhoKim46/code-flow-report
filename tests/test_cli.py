@@ -77,6 +77,26 @@ class FullRun(unittest.TestCase):
         self.assertIn("insert ['orders']", out)
 
 
+class Merge(unittest.TestCase):
+    def test_check_writes_nothing_and_a_second_merge_adds_nothing(self):
+        repo = setup("flask_app")
+        narrative = repo / "docs" / "code-flow" / "narrative.toml"
+        before = tomllib.loads(narrative.read_text(encoding="utf-8"))
+        part = repo / "docs" / "code-flow" / ".parts" / "x.toml"
+        part.parent.mkdir(exist_ok=True)
+        dropped = before["roles"][0]["id"]
+        part.write_text('[[layer_rules]]\ntext = "Orders never import views."\nfrom = ["app.orders"]\nforbid = ["app.views"]\n\n'
+                        f'[[roles]]\nid = "{dropped}"\ndrop = true\n', encoding="utf-8")
+        text = narrative.read_text(encoding="utf-8")
+        self.assertEqual(run(repo, "merge", "--check", str(part))[0], 0)
+        self.assertEqual(narrative.read_text(encoding="utf-8"), text)  # --check only validates
+        for _ in range(2):
+            self.assertEqual(run(repo, "merge", str(part))[0], 0)
+        after = tomllib.loads(narrative.read_text(encoding="utf-8"))
+        self.assertEqual(len(after["layer_rules"]), len(before.get("layer_rules", [])) + 1)  # an id-less entry is not appended twice
+        self.assertNotIn(dropped, [r["id"] for r in after["roles"]])
+
+
 class Staleness(unittest.TestCase):
     def test_code_change_makes_check_fail(self):
         repo = setup("flask_app")

@@ -193,5 +193,37 @@ class Determinism(unittest.TestCase):
                 self.assertEqual(extract.render(code_map(fx)), extract.render(code_map(fx)))
 
 
+class StreamlitApp(unittest.TestCase):
+    """A script-style UI: widgets are the entry points; SQLModel writes go through a @contextmanager session."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("streamlit_app")
+
+    def test_contextmanager_session_resolves(self):
+        # `with session_scope(e) as s:` binds the Session that `-> Iterator[Session]` yields
+        self.assertEqual(self.cm["summary"]["unresolved"], 0)
+
+    def test_orm_session_calls_name_the_exact_table(self):
+        by = {(e["symbol"], op): e[op] for e in self.cm["sql"] for op in ("insert", "update", "delete", "read") if e.get(op)}
+        self.assertEqual(by, {("notes.store:save_note", "insert"): ["note"],
+                              ("notes.store:delete_note", "delete"): ["note"],  # not tag: only `row` is deleted
+                              ("notes.store:delete_note", "read"): ["tag"]})
+
+    def test_third_party_packages_per_module_for_layer_rules(self):
+        self.assertEqual(self.cm["modules"]["app.views.notes"]["packages"], ["streamlit"])
+        self.assertNotIn("streamlit", self.cm["modules"]["notes.store"]["packages"])
+
+    def test_pydantic_secret_is_not_aws(self):
+        self.assertEqual(self.cm["external"], [])
+
+    def test_widgets_become_journey_entries(self):
+        import draft
+        self.assertEqual({(s, k) for s, k, _ in draft.entry_points(self.cm)},
+                         {("notes.store:save_note", "ui"), ("app.views.notes:delete_form", "ui")})
+        self.assertIn({"kind": "page", "symbol": "app.main:<module>", "line": 3, "page": "views/notes.py"},
+                      self.cm["profiles"]["ui"])
+
+
 if __name__ == "__main__":
     unittest.main()

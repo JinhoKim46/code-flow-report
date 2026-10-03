@@ -90,7 +90,7 @@ def check_rules(code_map: dict, narrative: dict, mod_layer: dict) -> list[dict]:
             info = code_map["modules"].get(src)
             if not info:
                 continue
-            for tgt in info["imports"] + info["lazy_imports"]:
+            for tgt in info["imports"] + info["lazy_imports"] + info.get("packages", []):
                 if any(tgt == f.rstrip(".") or (f.endswith(".") and tgt.startswith(f)) or tgt == f for f in r["forbid"]):
                     violations.append([src, tgt])
         rules.append({"text": r["text"], "sources": len(sources), "violations": violations})

@@ -47,7 +47,7 @@ Re-checked against the import graph (module-level and function-level imports) on
 [[layer_rules]]
 text = "The domain layer never imports the web layer."
 from_layers = ["domain"]          # and/or from = ["pkg.mod", ...]
-forbid = ["shop.views", "shop.api."]   # exact module, or a prefix ending in "."
+forbid = ["shop.views", "shop.api."]   # exact module, or a prefix ending in "."; a third-party package name works too ("streamlit")
 ```
 
 ## [[journeys]]

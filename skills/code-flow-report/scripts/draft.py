@@ -113,8 +113,9 @@ class Graph:
             self.sinks[e["symbol"]].add("external")
         for g in cm["gateways"]:
             self.sinks[g["symbol"]].add("gateway")
-        for recs in cm.get("profiles", {}).values():
-            for r in recs:
+        sinking = {p.NAME for p in profile_registry.ALL if getattr(p, "SINK", True)}
+        for name, recs in cm.get("profiles", {}).items():
+            for r in recs if name in sinking else ():
                 self.sinks[r["symbol"]].add("profile")
         # hubs: helpers called from very many places (connect, log, json helpers). Walking into them
         # floods a journey with plumbing, so a journey keeps a hub as one step at most and never descends.
@@ -180,12 +181,20 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
         out.append((k, "route", " · ".join(f"{m} {u}" for m, u in r["urls"][:2])))
     for m, info in cm["modules"].items():
         if info.get("cli") and f"{m}:main" in cm["symbols"]:
-            out.append((f"{m}:main", "cli", f"python -m {m}"))
+            # `python -m a.b` needs `a` to be a package; a script folder without __init__.py is run by path
+            parent = m.rsplit(".", 1)[0] if "." in m else None
+            run = f"python -m {m}" if parent is None or parent in cm["modules"] else f"python {info['file']}"
+            out.append((f"{m}:main", "cli", run))
     for r in cm.get("profiles", {}).get("jobs", []):
         out.append((r["job"], "job", r.get("how", "")))
     for k, s in cm["symbols"].items():
         if any(d.split(".")[-1] in ("task", "shared_task", "actor", "job") for d in s.get("decorators", [])):
             out.append((k, "job", "@" + s["decorators"][0]))
+    by_name = {p.NAME: p for p in profile_registry.ALL}
+    for name, recs in sorted(cm.get("profiles", {}).items()):
+        p = by_name.get(name)
+        if p and hasattr(p, "triggers"):
+            out += [(sym, "ui", trig) for sym, trig in p.triggers(recs, cm) if sym in cm["symbols"]]
     seen, uniq = set(), []
     for e in out:
         if e[0] not in seen:
@@ -194,7 +203,7 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
     return uniq
 
 
-ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker"}
+ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)"}
 
 
 SIDE_WORDS = re.compile(r"(admin|backfill|migrat|seed|dump|debug|test|fixture|audit|sweep|export|import_|verify|revalidat)", re.I)

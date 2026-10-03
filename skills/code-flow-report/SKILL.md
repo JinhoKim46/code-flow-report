@@ -56,7 +56,7 @@ CF todo                # what is left to write
 Replace every `TODO:`; delete a TODO'd item instead if it is not worth explaining. Field reference: `references/narrative-schema.md`.
 
 - **quick**: write it yourself. Read README / main entry points first, then only the functions on each journey (`CF query <symbol>` shows a function's callers, callees, SQL and boundaries without reading whole files).
-- **standard / deep**: split the work across parallel general-purpose agents, one per row below, each given `references/writing-brief.md` verbatim plus its assignment. Each writes **one fragment file** `docs/code-flow/.parts/<name>.toml` and never edits `narrative.toml`. Then `CF merge` folds the fragments in (entries replace drafted ones with the same `id`).
+- **standard / deep**: split the work across parallel general-purpose agents, one per row below, each given `references/writing-brief.md` verbatim plus its assignment. Each writes **one fragment file** `docs/code-flow/.parts/<name>.toml` and never edits `narrative.toml`. Writers check their fragment with `CF merge --check <file>` (writes nothing); once all are done, you run `CF merge` once to fold them in (entries replace drafted ones with the same `id`).
 
 | Writer | Assignment |
 |---|---|

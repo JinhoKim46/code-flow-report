@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-10
+
+Found by running the skill on a Streamlit + SQLModel app and on ten trending public repos.
+
+- New `ui` stack profile (Streamlit, Gradio, NiceGUI): widgets and callbacks are entry points, so a script-style app gets journeys instead of none, plus a "UI triggers" table. Profiles can now add `on_module(ctx, tree)`, `triggers(records, code_map)` and `SINK = False`.
+- ORM session writes count: `s.add(M(...))`, `s.delete(row)`, `s.merge`, `s.exec(select(M))` on a SQLAlchemy / SQLModel `Session` become table writes and reads, naming the exact model when the code says it (constructed, typed, or assigned from `select(M)` / `s.get(M, …)`). Journeys now end where the data lands.
+- `with f() as s` binds the yielded type of a `@contextmanager` (`-> Iterator[Session]` / `Generator[...]`): +3.7 points resolved on a SQLModel app.
+- An unresolved `x.get_secret_value()` is AWS Secrets Manager only in a module that imports boto3 (pydantic's `SecretStr` has the same method).
+- Layer rules can forbid third-party packages (`forbid = ["streamlit"]`); the code map lists each module's top-level `packages`.
+- `init` leaves `examples/`, `samples/`, `benchmarks/`, `notebooks/` … out of the scan when the repo has other code.
+- `merge --check` validates a fragment without writing: parallel writers no longer overwrite each other's `narrative.toml`. A fragment entry `{ id = "...", drop = true }` removes a wrong drafted entry.
+
 ## 0.4.0 — 2026-10
 
 - Module notes are now written, not copied: `[module_notes."pkg.mod"]` has `purpose` (why it exists), `does` (2–5 capabilities), `flow` (who calls it → what it goes through → where it writes) and an optional `note`. The module panel shows them as labelled rows, the index shows purpose and does, tooltips the purpose; search covers all four.

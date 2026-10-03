@@ -10,12 +10,14 @@ Language: write all prose in **{LANGUAGE}**. Reader: **{AUDIENCE}**. Plain, conc
 python3 docs/code-flow/tools/codeflow.py query <symbol-or-name> [--depth 2]   # callers, callees, SQL, boundaries, routes
 python3 docs/code-flow/tools/codeflow.py find <text>                          # symbol names containing text
 python3 docs/code-flow/tools/codeflow.py todo                                 # what is still TODO
-python3 docs/code-flow/tools/codeflow.py merge docs/code-flow/.parts/<your-name>.toml   # dry check of your fragment
+python3 docs/code-flow/tools/codeflow.py merge --check docs/code-flow/.parts/<your-name>.toml   # validate your fragment (writes nothing)
 ```
 
 The drafted `narrative.toml` already holds call chains for the journeys — start from it, then read each step's function. Read only what you need: the functions on your chains and the files they live in. Do not sweep the whole repository.
 
 ## Rules
+
+0. A drafted entry that is wrong (a false detection, a duplicate) is removed by writing `{ id = "<its id>", drop = true }` — as `[[roles]]` / `[[journeys]]` … with just `id` and `drop = true`.
 
 1. **Every fact comes from code you read.** Docs may be stale; where a doc disagrees with the code, the code wins — record it as a finding citing both (doc sentence + function).
 2. **Symbols, not line numbers**: `pkg.mod:function`, `pkg.mod:Class.method`, `pkg.mod:outer.inner`. Use `find` when unsure of the exact name.
@@ -29,6 +31,6 @@ The drafted `narrative.toml` already holds call chains for the journeys — star
 
 ## Done when
 
-- `codeflow.py merge docs/code-flow/.parts/<your-name>.toml` reports **0 problems** for your fragment (it also merges it — that is fine).
+- `codeflow.py merge --check docs/code-flow/.parts/<your-name>.toml` reports **0 problems** for your fragment. Never run `merge` without `--check`: other writers are working at the same time, and the dispatcher merges all fragments once you are all done.
 - No `TODO` remains in your entries.
 - Your final message lists: the file you wrote, counts per section, and anything you are unsure of. Do not paste the narrative back.

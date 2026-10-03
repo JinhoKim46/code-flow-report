@@ -5,6 +5,7 @@ The core extractor is stack-agnostic. A **profile** adds detail for one stack an
 | Profile | Switched on by importing | Adds |
 |---|---|---|
 | `llm` | openai, anthropic, litellm, langchain*, google (genai), ollama, mistralai, cohere, groq, together, vertexai | "Model calls" table — provider, model and settings as written at the call site, message roles in order, tools, output schema; the same detail on the boundary card of the calling function; one drafted `kind = "model"` card per calling function |
+| `ui` | streamlit, gradio, nicegui | "UI triggers" table — `st.Page` registrations, every button / chat box / upload / form submit that runs code, and `on_click=` / Gradio `.click(fn)` callbacks. A widget inside a function makes that function a journey entry; a top-level `if st.button(...):` block makes the functions it calls entries. Its records are triggers, not sinks |
 | `jobs` | celery, rq, dramatiq, huey, apscheduler, schedule, arq, prefect, airflow, dagster, luigi | "Background jobs" table — task decorators, schedule registrations, enqueue calls (`.delay`, `.apply_async`, `.enqueue`) with who triggers them; tasks become journey entry points; drafted background cards |
 
 ## Writing a profile

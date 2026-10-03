@@ -86,6 +86,13 @@ BUILTIN_CALL_RETURNS = {"str": "str", "repr": "str", "format": "str", "bytes": "
                         "len": "int", "sum": None}
 LITERALS = {ast.List: "list", ast.ListComp: "list", ast.Dict: "dict", ast.DictComp: "dict", ast.Set: "set", ast.SetComp: "set",
             ast.Tuple: "tuple", ast.JoinedStr: "str"}
+# ORM session calls: the table is not in the call, so it is taken from the model classes the same function names
+ORM_SESSION_TYPES = {"Session", "AsyncSession", "scoped_session", "sessionmaker"}
+ORM_SESSION_OPS = {"add": "insert", "add_all": "insert", "merge": "update", "delete": "delete", "bulk_save_objects": "insert",
+                   "bulk_insert_mappings": "insert", "bulk_update_mappings": "update",
+                   "exec": "read", "execute": "read", "get": "read", "query": "read", "scalars": "read", "scalar": "read"}
+YIELDING = {"Iterator", "Generator", "AsyncIterator", "AsyncGenerator", "ContextManager", "AbstractContextManager",
+            "AsyncContextManager", "AbstractAsyncContextManager"}
 
 SQL_SHAPE = re.compile(r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WITH)\b", re.IGNORECASE)
 SQL_WRITE = {
@@ -458,6 +465,10 @@ class Calls(ast.NodeVisitor):
         self.external, self.sql, self.gateway_calls = [], [], []
         self.templates: dict[str, set[str]] = defaultdict(set)
         self.route_prefix_hints: list[tuple[str, str]] = []
+        self.orm_ops: list[list] = []
+        # an unresolved `x.get_secret_value()` is AWS only in a module that imports boto3 (pydantic's SecretStr has it too)
+        self.uses_aws = any(str(t).split(".")[0] in ("boto3", "botocore", "aioboto3", "aiobotocore")
+                            for t in (imports.values() if isinstance(imports, dict) else imports))  # [symbol, line, op] for Session.add / delete / exec …
         self.django_routes: list[tuple[str, str]] = []
         self.unresolved_names = Counter()
         self.param_votes: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
@@ -616,6 +627,9 @@ class Calls(ast.NodeVisitor):
                 return ("builtin", "list")
             if head in ("dict", "Dict", "Mapping"):
                 return ("builtin", "dict")
+            if head in YIELDING:  # a @contextmanager's `Iterator[Session]`: `with f() as s` binds the Session
+                first = ann.slice.elts[0] if isinstance(ann.slice, ast.Tuple) else ann.slice
+                return self.annotation_type(first)
             return None
         if isinstance(ann, ast.Name) and ann.id in BUILTIN_TYPES:
             return ("builtin", ann.id)
@@ -719,6 +733,9 @@ class Calls(ast.NodeVisitor):
             t = self.value_type(node.value)
             if t:
                 self.local_types[-1][node.targets[0].id] = t
+            m = self._queried_class(node.value)
+            if m:
+                self.local_types[-1]["orm:" + node.targets[0].id] = ("internal", m)
             # Blueprint("x", __name__, url_prefix="/p") / APIRouter(prefix="/p")
             if isinstance(node.value, ast.Call):
                 fn = dotted(node.value.func) or ""
@@ -780,6 +797,32 @@ class Calls(ast.NodeVisitor):
             return out
         return None
 
+    def _queried_class(self, expr):
+        """The class in `select(M)…` / `s.get(M, id)` / `s.query(M)…` inside an expression, if any."""
+        for n in ast.walk(expr):
+            if isinstance(n, ast.Call) and n.args and (dotted(n.func) or "").split(".")[-1] in ("select", "get", "query"):
+                r = self.resolve_expr(n.args[0])
+                if r and r[0] == "internal" and self.res.symbols[r[1]]["kind"] == "class":
+                    return r[1]
+        return None
+
+    def _orm_target(self, node, meth):
+        """The model class an ORM session call acts on, when the code says it: `s.add(M(...))`, a variable typed or
+        assigned from `select(M)` / `s.get(M, …)`, or the queried class itself. None → the function's models."""
+        if not node.args:
+            return None
+        arg = node.args[0]
+        if meth in ("exec", "execute", "get", "query", "scalars", "scalar"):
+            return self._queried_class(arg) if meth != "get" else self._queried_class(node)
+        if isinstance(arg, ast.Name):
+            for frame in reversed(self.local_types):
+                if "orm:" + arg.id in frame:
+                    return frame["orm:" + arg.id][1]
+        t = self.value_type(arg)
+        if t and t[0] == "internal" and self.res.symbols.get(t[1], {}).get("kind") == "class":
+            return t[1]
+        return None
+
     def _kw(self, node, name):
         for kw in node.keywords:
             if kw.arg == name:
@@ -797,7 +840,8 @@ class Calls(ast.NodeVisitor):
             self.unresolved_names[name] += 1
             if isinstance(node.func, ast.Attribute) and not name.startswith("__"):
                 self.unresolved_attr_calls.append([caller, name, node.lineno])
-            if isinstance(node.func, ast.Attribute) and node.func.attr in SERVICE_METHODS:
+            if (isinstance(node.func, ast.Attribute) and node.func.attr in SERVICE_METHODS
+                    and (not SERVICE_METHODS[node.func.attr].startswith("AWS") or self.uses_aws)):
                 self.external.append({"symbol": caller, "line": node.lineno, "service": SERVICE_METHODS[node.func.attr],
                                       "call": chain or node.func.attr, "inferred": True})
         else:
@@ -809,6 +853,9 @@ class Calls(ast.NodeVisitor):
                 self.calls.append([caller, target, node.lineno])
                 self._vote(target, node)
             elif kind == "external":
+                head, _, meth = target.rpartition(".")
+                if meth in ORM_SESSION_OPS and head.split(".")[-1].rstrip("()") in ORM_SESSION_TYPES:
+                    self.orm_ops.append([caller, node.lineno, ORM_SESSION_OPS[meth], self._orm_target(node, meth)])
                 for prefix, service in EXTERNAL_SERVICES:
                     if target == prefix or target.startswith(prefix + ".") or target.startswith(prefix + "()"):
                         if service in ("PostgreSQL", "SQLite", "MySQL", "SQLAlchemy") and "()." in target:
@@ -1042,14 +1089,18 @@ def build(root: Path, cfg: dict) -> dict:
         mod_strings[mod] = strings
 
     # route to stack profiles by what the repo really imports (external top-level names only)
+    own_tops = {m.split(".")[0] for m in modules}
     imported = set()
-    for tree in trees.values():
+    for mod, tree in trees.items():
+        pkgs = set()
         for n in ast.walk(tree):
             if isinstance(n, ast.Import):
-                imported.update(a.name.split(".")[0] for a in n.names)
+                pkgs.update(a.name.split(".")[0] for a in n.names)
             elif isinstance(n, ast.ImportFrom) and not n.level and n.module:
-                imported.add(n.module.split(".")[0])
-    imported -= {m.split(".")[0] for m in modules}
+                pkgs.add(n.module.split(".")[0])
+        modules[mod]["packages"] = sorted(pkgs - own_tops)  # third-party and stdlib top-level names, for layer rules
+        imported |= pkgs
+    imported -= own_tops
     active_profiles = profile_registry.active(imported, cfg)
     profile_records: dict[str, list] = defaultdict(list)
 
@@ -1118,6 +1169,7 @@ def build(root: Path, cfg: dict) -> dict:
     def main_pass():
         profile_records.clear()  # this pass may run twice; keep only the last pass's records
         calls, refs, constructs, external, sql, gateways = [], [], [], [], [], []
+        orm_ops = []
         templates, own_prefix, mount_prefix, django = {}, {}, {}, []
         totals, unresolved_names = Counter(), Counter()
         votes, unresolved_attr = defaultdict(lambda: defaultdict(list)), []
@@ -1128,11 +1180,15 @@ def build(root: Path, cfg: dict) -> dict:
             modules[mod]["lazy_imports"] = sorted({i["target"] for i in imp_list if i["target"] != mod and i["lazy"]} - eager)
             c = Calls(mod, rels[mod], imports, res, tables, mod_strings[mod], cfg, active_profiles)
             c.visit(trees[mod])
+            for prof in active_profiles:
+                if hasattr(prof, "on_module"):
+                    c.profile_records[prof.NAME] += prof.on_module(c, trees[mod])
             calls += c.calls
             refs += c.refs
             constructs += c.constructs
             external += c.external
             sql += c.sql
+            orm_ops += c.orm_ops
             gateways += c.gateway_calls
             django += c.django_routes
             for name, recs in c.profile_records.items():
@@ -1150,6 +1206,31 @@ def build(root: Path, cfg: dict) -> dict:
             modules[mod]["call_sites"] = c.counts["call_sites"]
             modules[mod]["unresolved"] = c.counts["unresolved"]
 
+        # ORM session calls (s.add(row), s.delete(row), s.exec(select(Model))): the call does not name the table,
+        # so it is taken from the model classes the same function references or constructs
+        model_refs, model_new = defaultdict(set), defaultdict(set)
+        for x, y, _ in refs + constructs:
+            if y in models:
+                model_refs[x].add(models[y])
+        for x, y, _ in constructs:
+            if y in models:
+                model_new[x].add(models[y])
+        by_fn = defaultdict(lambda: defaultdict(set))
+        first_line = {}
+        for sym, line, op, cls in orm_ops:
+            named = ({models[cls]} if cls in models else None) or (model_new.get(sym) if op == "insert" else None) \
+                or model_refs.get(sym)
+            if named:
+                by_fn[sym][op] |= named
+                first_line[sym] = min(first_line.get(sym, line), line)
+        for sym, ops in sorted(by_fn.items()):
+            if ops.keys() - {"read"}:
+                written = set().union(*(v for k, v in ops.items() if k != "read"))
+                ops["read"] = ops.get("read", set()) - written  # the written models are not also "read" here
+                if not ops["read"]:
+                    del ops["read"]
+            sql.append({"symbol": sym, "line": first_line[sym], "via": "ORM session",
+                        **{op: sorted(v) for op, v in sorted(ops.items())}})
         return (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
                 unresolved_names, votes, unresolved_attr)
 

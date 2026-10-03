@@ -18,14 +18,20 @@ is switched on only when the repo actually uses that stack ("routing"):
                 shown on any boundary card whose symbols include that symbol
     draft_roles(records, code_map) -> [role dict, ...]         (optional)
                 role cards the draft step proposes for this stack
+    on_module(ctx, tree) -> [record, ...]                      (optional)
+                called once per module after its calls are visited, for shapes one call cannot show
+    triggers(records, code_map) -> [(symbol, trigger text), ...]   (optional)
+                extra journey entry points (e.g. UI widgets), offered by `draft` and `candidates`
+    SINK = False                                               (optional, default True)
+                the records mark where work starts, so the draft does not treat them as a sink
 
 To add a stack: drop a module in this package that defines those names and list it in ALL.
 """
 from __future__ import annotations
 
-from . import jobs, llm
+from . import jobs, llm, ui
 
-ALL = [llm, jobs]
+ALL = [llm, jobs, ui]
 
 
 def active(imported: set[str], cfg: dict) -> list:

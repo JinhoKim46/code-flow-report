@@ -407,6 +407,80 @@ FIXTURES = {
                 pass
         ''',
     },
+    "streamlit_app": {
+        "app/main.py": """
+            import streamlit as st
+
+            st.navigation([st.Page("views/notes.py", title="Notes")]).run()
+        """,
+        "app/views/notes.py": """
+            import streamlit as st
+
+            from notes.store import delete_note, save_note
+            from notes.db import make_engine
+
+            engine = make_engine()
+            text = st.text_area("Note")
+            if st.button("Save note"):
+                save_note(engine, text)
+                st.toast("Saved")
+
+
+            def delete_form(note_id: int):
+                if st.button("Delete"):
+                    delete_note(engine, note_id)
+        """,
+        "src/notes/__init__.py": "",
+        "src/notes/db.py": """
+            from contextlib import contextmanager
+            from typing import Iterator
+
+            from pydantic import SecretStr
+            from sqlmodel import Field, Session, SQLModel, create_engine
+
+
+            class Note(SQLModel, table=True):
+                id: int | None = Field(default=None, primary_key=True)
+                text: str
+
+
+            class Tag(SQLModel, table=True):
+                id: int | None = Field(default=None, primary_key=True)
+                note_id: int
+
+
+            def make_engine(key: SecretStr | None = None):
+                token = key.get_secret_value() if key else ""
+                return create_engine("sqlite://", connect_args={"token": token})
+
+
+            @contextmanager
+            def session_scope(engine) -> Iterator[Session]:
+                with Session(engine) as session:
+                    yield session
+                    session.commit()
+        """,
+        "src/notes/store.py": """
+            from sqlmodel import select
+
+            from notes.db import Note, Tag, session_scope
+
+
+            def save_note(engine, text: str) -> None:
+                with session_scope(engine) as s:
+                    s.add(Note(text=text))
+
+
+            def delete_note(engine, note_id: int) -> bool:
+                with session_scope(engine) as s:
+                    row = s.exec(select(Note).where(Note.id == note_id)).first()
+                    tags = s.exec(select(Tag).where(Tag.note_id == note_id)).all()
+                    if row is None:
+                        return False
+                    s.delete(row)
+                    return bool(tags)
+        """,
+    },
 }
 
 

@@ -38,6 +38,7 @@ import draft as drafter  # noqa: E402
 import extract  # noqa: E402
 from common import CONFIG_NAME, Paths, count_todo, load_map, load_narrative  # noqa: E402
 
+SAMPLE_DIRS = {"examples", "example", "samples", "demos", "demo", "benchmarks", "benchmark", "notebooks", "cookbook", "docs_src"}
 VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py"]
 
 
@@ -54,6 +55,10 @@ def detect_config(root: Path, lang: str, name: str | None, audience: str = "") -
             include.append(child.name)
         elif child.suffix == ".py":
             include.append(child.name)
+    # usage samples are not the code being explained: leave them out when there is other code to scan
+    samples = [x for x in include if x.lower() in SAMPLE_DIRS]
+    if len(samples) < len(include):
+        include = [x for x in include if x not in samples]
     strip = ["src"] if (root / "src").is_dir() and any((root / "src").glob("*/__init__.py")) else []
     schema = [g for g in ["**/*.sql"] if any(root.glob(g))]
     # first-parameter names used often enough to be a convention worth typing
@@ -358,20 +363,37 @@ def cmd_status(a) -> int:
     return 0
 
 
-def _merge_list(base: list, extra: list, key: str = "id") -> list:
+def _entry_key(x):
+    """What makes two entries the same one: the id, else the text/title (layer rules have no id), else the whole entry.
+    Without a fallback, merging the same fragment twice would append its id-less entries twice."""
+    if not isinstance(x, dict):
+        return json.dumps(x, sort_keys=True)
+    for k in ("id", "text", "title"):
+        if x.get(k):
+            return f"{k}:{x[k]}"
+    return json.dumps(x, sort_keys=True, ensure_ascii=False)
+
+
+def _merge_list(base: list, extra: list) -> list:
     out = list(base)
-    index = {x.get(key): i for i, x in enumerate(out) if isinstance(x, dict) and x.get(key)}
+    index = {_entry_key(x): i for i, x in enumerate(out)}
     for item in extra:
-        k = item.get(key) if isinstance(item, dict) else None
-        if k and k in index:
-            out[index[k]] = item
+        k = _entry_key(item)
+        if k in index:
+            out[index[k]] = None if isinstance(item, dict) and item.get("drop") else item
+        elif isinstance(item, dict) and item.get("drop"):
+            continue
         else:
+            index[k] = len(out)
             out.append(item)
-    return out
+    return [x for x in out if x is not None]
 
 
 def cmd_merge(a) -> int:
-    """Fold TOML fragments (one per parallel writer) into narrative.toml, replacing entries by id."""
+    """Fold TOML fragments (one per parallel writer) into narrative.toml, replacing entries by id.
+
+    --check validates the merged result without writing it: parallel writers use it on their own fragment,
+    because two writers merging at the same time would each overwrite the other's narrative.toml."""
     import tomllib
     from common import narrative_problems
     paths = Paths.find()
@@ -387,7 +409,8 @@ def cmd_merge(a) -> int:
             else:
                 doc[k] = v
         print(f"merged {part.name}: " + ", ".join(f"{k} {len(v) if isinstance(v, list) else 1}" for k, v in frag.items()))
-    paths.narrative.write_text(drafter.to_toml(doc, drafter.HEADER), encoding="utf-8")
+    if not a.check:
+        paths.narrative.write_text(drafter.to_toml(doc, drafter.HEADER), encoding="utf-8")
     problems = narrative_problems(doc, load_map(paths))
     for p in problems:
         print("  -", p)
@@ -466,7 +489,8 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_init)
     p = sub.add_parser("status"); p.add_argument("--root", default="."); p.add_argument("--out", default="docs/code-flow"); p.set_defaults(fn=cmd_status)
     sub.add_parser("map").set_defaults(fn=cmd_map)
-    p = sub.add_parser("merge"); p.add_argument("parts", nargs="*"); p.set_defaults(fn=cmd_merge)
+    p = sub.add_parser("merge"); p.add_argument("parts", nargs="*"); p.add_argument("--check", action="store_true")
+    p.set_defaults(fn=cmd_merge)
     p = sub.add_parser("verify"); p.add_argument("--edges", type=int, default=5); p.add_argument("--seed", type=int, default=1); p.set_defaults(fn=cmd_verify)
     p = sub.add_parser("draft"); p.add_argument("--depth", default="quick", choices=list(drafter.DEPTH)); p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_draft)
