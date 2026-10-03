@@ -319,6 +319,84 @@ FIXTURES = {
                 id: int
         ''',
     },
+    "types_lib": {
+        "tl/__init__.py": "",
+        "tl/store.py": '''
+            from dataclasses import dataclass
+            from typing import Optional
+
+
+            class Store:
+                def save(self):
+                    return 1
+
+                def only_here_xyz(self):
+                    return 2
+
+
+            class Child(Store):
+                def save(self):
+                    return super().save()
+
+
+            @dataclass
+            class Box:
+                store: Store
+
+
+            def make() -> Store:
+                return Store()
+
+
+            def build():
+                return Store()
+
+
+            def maybe(s: Optional[Store]):
+                return s.save()
+
+
+            def quoted(s: "Store"):
+                return s.save()
+        ''',
+        "tl/use.py": '''
+            import csv
+
+            from tl.store import Box, Store, build, make
+
+
+            def returns():
+                a = make()
+                b = build()
+                return a.save() + b.save()
+
+
+            def field(box: Box):
+                return box.store.save()
+
+
+            def takes(x):
+                return x.save()
+
+
+            def caller():
+                return takes(Store())
+
+
+            def values(data=None):
+                d = data or {}
+                return d.get("k"), ", ".join(["a", "b"]), "x".upper().strip()
+
+
+            def rows(f):
+                for row in csv.reader(f):
+                    row.count("a")
+
+
+            def guess(obj):
+                return obj.only_here_xyz()
+        ''',
+    },
     "broken": {
         "good.py": '''
             def ok():

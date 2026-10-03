@@ -1,5 +1,5 @@
 {
- "schema": 1,
+ "schema": 2,
  "scope": [
   "shop"
  ],
@@ -13,11 +13,14 @@
   "route_functions": 2,
   "call_sites": 65,
   "resolved_internal": 15,
-  "resolved_external": 27,
-  "resolved_builtin": 5,
+  "resolved_external": 33,
+  "resolved_builtin": 7,
   "resolved_by_convention": 0,
-  "unresolved": 18,
-  "resolved_ratio": 0.7231,
+  "unresolved": 10,
+  "resolved_ratio": 0.8462,
+  "graph_coverage": 0.8276,
+  "inferred_edges": 0,
+  "unresolved_value_like": 0,
   "internal_edges": 15,
   "reference_edges": 6,
   "sql_sites": 7,
@@ -33,13 +36,9 @@
    "jobs": 1
   },
   "top_unresolved_names": [
-   ["execute", 6],
-   ["fetchall", 2],
-   ["cursor", 2],
-   ["join", 1],
+   ["execute", 4],
+   ["fetchall", 1],
    ["work", 1],
-   ["get", 1],
-   ["append", 1],
    ["executemany", 1],
    ["isoformat", 1],
    ["view", 1],
@@ -76,7 +75,7 @@
    "imports": [],
    "lazy_imports": [],
    "call_sites": 6,
-   "unresolved": 5
+   "unresolved": 2
   },
   "shop.db": {
    "file": "shop/db.py",
@@ -86,7 +85,7 @@
    "imports": [],
    "lazy_imports": [],
    "call_sites": 8,
-   "unresolved": 3
+   "unresolved": 1
   },
   "shop.mail": {
    "file": "shop/mail.py",
@@ -108,7 +107,7 @@
    ],
    "lazy_imports": [],
    "call_sites": 14,
-   "unresolved": 6
+   "unresolved": 4
   },
   "shop.payments": {
    "file": "shop/payments.py",
@@ -156,7 +155,7 @@
    ],
    "lazy_imports": [],
    "call_sites": 20,
-   "unresolved": 3
+   "unresolved": 2
   }
  },
  "symbols": {
@@ -438,6 +437,7 @@
   ["shop.orders:validate", "shop.orders:OrderError", 18],
   ["shop.orders:validate", "shop.orders:OrderError", 21]
  ],
+ "inferred_calls": [],
  "sql": [
   {
    "symbol": "shop.catalog:list_products",

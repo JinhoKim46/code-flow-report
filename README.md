@@ -79,13 +79,13 @@ All through one script (`python3 docs/code-flow/tools/codeflow.py <command>` aft
 
 On three real repositories, with zero configuration (details in [`docs/validation-2026-10.md`](docs/validation-2026-10.md)):
 
-| Repository | Kind | Size | Map time | Calls resolved |
-|---|---|---|---|---|
-| a private Flask app + batch loader + CDK | web app | 126 files · 53k lines | 0.8 s | 81.0 % |
-| fastapi/full-stack-fastapi-template | API + ORM | 27 files · 1.7k lines | 0.1 s | 94.5 % |
-| httpie/cli | class-heavy CLI library | 86 files · 10.6k lines | 0.2 s | 66.5 % |
+| Repository | Kind | Size | Map time | Function calls resolved (graph coverage) | All call sites resolved |
+|---|---|---|---|---|---|
+| a private Flask app + batch loader + CDK | web app | 126 files · 53k lines | 1.7 s | **96.2 %** | 91.5 % |
+| fastapi/full-stack-fastapi-template | API + ORM | 27 files · 1.7k lines | 0.1 s | **97.2 %** | 97.0 % |
+| httpie/cli | class-heavy CLI library | 86 files · 10.6k lines | 0.4 s | **83.3 %** | 82.7 % |
 
-The unresolved remainder is mostly methods on objects whose type is not visible without running the code (`dict.get`, `list.append`, untyped parameters). The page shows the exact figure and the most frequent unresolved names.
+*Graph coverage* is the share of function calls whose target is known; builtins and calls that only look like methods on plain values (`row.get`, `items.append` on an untyped variable) are left out of it, and their count is shown next to it. Types come from literals, assignments, `with … as`, annotations (`Optional[...]`, strings, dataclass/pydantic fields), return types (annotated or `return Foo()`), attributes set in `__init__`, imported module-level objects, inherited and `super()` methods, and parameter types seen identically at every call site. A method name that exists in exactly one class of the repo is drawn as a dotted **inferred** edge — never counted as resolved. The page shows both figures and the most frequent unresolved names.
 
 ## Limits
 
@@ -100,7 +100,7 @@ A stack profile is one Python file: the import names that switch it on, a call-s
 ## Development
 
 ```
-python3 -m unittest discover -s tests -t tests     # 43 tests on fixture repos under tests/fixtures/
+python3 -m unittest discover -s tests -t tests     # 47 tests on fixture repos under tests/fixtures/
 python3 tests/make_fixtures.py                      # regenerate the fixtures
 python3 examples/make_demo.py                       # regenerate the example app
 claude plugin validate . --strict

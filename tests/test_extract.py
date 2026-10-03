@@ -143,6 +143,42 @@ class ObjectInference(unittest.TestCase):
         self.assertEqual(self.cm["orm_models"], {"oo.models:Hero": "hero"})
 
 
+class TypeInference(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("types_lib")
+        cls.e = edges(cls.cm)
+
+    def test_rule_by_rule(self):
+        cases = [
+            ("return annotation", ("tl.use:returns", "tl.store:Store.save")),
+            ("dataclass field", ("tl.use:field", "tl.store:Store.save")),
+            ("Optional[...] annotation", ("tl.store:maybe", "tl.store:Store.save")),
+            ("string annotation", ("tl.store:quoted", "tl.store:Store.save")),
+            ("type seen at every call site", ("tl.use:takes", "tl.store:Store.save")),
+            ("super()", ("tl.store:Child.save", "tl.store:Store.save")),
+        ]
+        for name, edge in cases:
+            with self.subTest(name):
+                self.assertIn(edge, self.e)
+
+    def test_value_methods_are_builtin_not_unresolved(self):
+        names = dict(self.cm["summary"]["top_unresolved_names"])
+        for n in ("get", "join", "upper", "strip", "count"):
+            with self.subTest(n):
+                self.assertNotIn(n, names)
+
+    def test_unique_method_name_is_inferred_not_resolved(self):
+        self.assertIn(("tl.use:guess", "tl.store:Store.only_here_xyz"), {(a, b) for a, b, _ in self.cm["inferred_calls"]})
+        self.assertNotIn(("tl.use:guess", "tl.store:Store.only_here_xyz"), self.e)
+        self.assertEqual(self.cm["summary"]["inferred_edges"], 1)
+
+    def test_coverage_figures(self):
+        s = self.cm["summary"]
+        self.assertEqual(s["unresolved"], 1)  # only the inferred one stays unresolved
+        self.assertGreaterEqual(s["graph_coverage"], s["resolved_ratio"] - 0.2)
+
+
 class Broken(unittest.TestCase):
     def test_a_syntax_error_is_recorded_not_fatal(self):
         cm = code_map("broken")

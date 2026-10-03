@@ -70,6 +70,23 @@ SERVICE_METHODS = {
     "get_secret_value": "AWS Secrets Manager", "publish": "Publish (SNS/queue)",
     "send_each": "FCM push", "send_each_for_multicast": "FCM push", "sendmail": "SMTP email",
 }
+# Value types: what a literal / builtin call produces, and what a builtin method returns.
+BUILTIN_TYPES = {"str": str, "bytes": bytes, "list": list, "dict": dict, "set": set, "tuple": tuple, "frozenset": frozenset,
+                 "int": int, "float": float}
+BUILTIN_METHODS = {name: {m for m in dir(t) if not m.startswith("_")} for name, t in BUILTIN_TYPES.items()}
+VALUE_METHOD_NAMES = set().union(*BUILTIN_METHODS.values())
+_STR_TO_STR = {"capitalize", "casefold", "center", "expandtabs", "format", "format_map", "join", "ljust", "lower", "lstrip",
+               "removeprefix", "removesuffix", "replace", "rjust", "rstrip", "strip", "swapcase", "title", "translate", "upper", "zfill"}
+BUILTIN_RETURNS = {**{f"str.{m}": "str" for m in _STR_TO_STR}, "str.split": "list", "str.rsplit": "list", "str.splitlines": "list",
+                   "str.partition": "tuple", "str.rpartition": "tuple", "str.encode": "bytes", "bytes.decode": "str",
+                   "dict.copy": "dict", "list.copy": "list", "set.copy": "set", "set.union": "set", "set.intersection": "set",
+                   "set.difference": "set", "frozenset.union": "frozenset"}
+BUILTIN_CALL_RETURNS = {"str": "str", "repr": "str", "format": "str", "bytes": "bytes", "list": "list", "sorted": "list",
+                        "dict": "dict", "set": "set", "frozenset": "frozenset", "tuple": "tuple", "int": "int", "float": "float",
+                        "len": "int", "sum": None}
+LITERALS = {ast.List: "list", ast.ListComp: "list", ast.Dict: "dict", ast.DictComp: "dict", ast.Set: "set", ast.SetComp: "set",
+            ast.Tuple: "tuple", ast.JoinedStr: "str"}
+
 SQL_SHAPE = re.compile(r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|WITH)\b", re.IGNORECASE)
 SQL_WRITE = {
     "insert": re.compile(r"\bINSERT\s+INTO\s+([A-Za-z_][\w.]*)", re.IGNORECASE),
@@ -260,6 +277,8 @@ class Resolver:
         self.all_imports: dict[str, dict] = {}
         self.module_var_types: dict[str, dict[str, tuple[str, str]]] = {}   # mod → name → (kind, target)
         self.class_attr_types: dict[str, dict[str, tuple[str, str]]] = {}   # class key → attr → (kind, target)
+        self.return_types: dict[str, tuple[str, str]] = {}                  # function key → type of what it returns
+        self.inferred_params: dict[str, dict[str, tuple[str, str]]] = {}    # function key → param → type seen at every call site
         self.by_suffix: dict[str, list[str]] = defaultdict(list)
         for m in modules:
             parts = m.split(".")
@@ -298,6 +317,31 @@ class Resolver:
             elif kind == "external":
                 return ("external", f"{target}{'.' + rest if rest else ''}().{method}")
         return None
+
+    def method_of_bases(self, class_key: str, method: str):
+        """`super().method` — look in the bases only (an external base resolves to the library)."""
+        sym = self.symbols.get(class_key)
+        if not sym:
+            return None
+        mod = class_key.split(":", 1)[0]
+        for base in sym.get("bases", []):
+            head, _, rest = base.partition(".")
+            local = f"{mod}:{base}"
+            if local in self.symbols and self.symbols[local]["kind"] == "class":
+                r = self.method_of(local, method)
+            else:
+                kind, target = self.all_imports.get(mod, {}).get(head, (None, None))
+                if kind == "symbol" and not rest:
+                    r = self.method_of(target, method)
+                elif kind == "module" and rest:
+                    r = self.method_of(f"{target}:{rest}", method)
+                elif kind == "external":
+                    r = ("external", f"{target}{'.' + rest if rest else ''}().{method}")
+                else:
+                    r = None
+            if r:
+                return r
+        return ("builtin", f"object.{method}") if method in ("__init__", "__new__", "__init_subclass__") and not sym.get("bases") else None
 
     def internal_module(self, name: str, importer: str) -> str | None:
         """Map an imported name to a module in the scanned tree, or None.
@@ -416,6 +460,8 @@ class Calls(ast.NodeVisitor):
         self.route_prefix_hints: list[tuple[str, str]] = []
         self.django_routes: list[tuple[str, str]] = []
         self.unresolved_names = Counter()
+        self.param_votes: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        self.unresolved_attr_calls: list[list] = []
         self.counts = Counter()
         self.docstring_nodes: set[int] = set()
 
@@ -450,15 +496,14 @@ class Calls(ast.NodeVisitor):
             self.visit(dflt)
         self.stack.append(node.name)
         frame = {}
+        inferred = self.res.inferred_params.get(self.here(), {})
         for a in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
             if a.arg in self.param_types:
                 frame[a.arg] = ("convention", self.param_types[a.arg])
-            elif a.annotation is not None:
-                ann = self.resolve_expr(a.annotation)
-                if ann and ann[0] == "internal" and self.res.symbols[ann[1]]["kind"] == "class":
-                    frame[a.arg] = ann
-                elif ann and ann[0] == "external" and ann[1].split(".")[-1][:1].isupper():
-                    frame[a.arg] = ("external", ann[1] + "()")  # e.g. parser: argparse.ArgumentParser
+            elif a.annotation is not None and self.annotation_type(a.annotation):
+                frame[a.arg] = self.annotation_type(a.annotation)
+            elif a.arg in inferred:
+                frame[a.arg] = inferred[a.arg]
         self.local_types.append(frame)
         for x in node.body:
             self.visit(x)
@@ -518,9 +563,67 @@ class Calls(ast.NodeVisitor):
                 return ("internal", target)
             if target in self.returns:
                 return ("external", self.returns[target])
-            return None
+            return self.res.return_types.get(target)
         if kind in ("external", "convention"):
             return (kind, target + "()")
+        if kind == "builtin":
+            t = BUILTIN_RETURNS.get(target) if "." in target else BUILTIN_CALL_RETURNS.get(target)
+            return ("builtin", t) if t else None
+        return None
+
+    def value_type(self, node):
+        """Type of any expression we can tell statically: literals, typed names, calls."""
+        if isinstance(node, ast.Constant):
+            return ("builtin", type(node.value).__name__) if type(node.value).__name__ in BUILTIN_TYPES else None
+        for k, t in LITERALS.items():
+            if isinstance(node, k):
+                return ("builtin", t)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+            left = self.value_type(node.left)
+            if left and left[0] == "builtin" and left[1] in ("str", "list", "tuple", "bytes"):
+                return left
+        if isinstance(node, ast.Name):
+            return self.type_of(node.id) or self.typed_import(node.id)
+        if isinstance(node, ast.Call):
+            return self.type_of_call(node)
+        if isinstance(node, (ast.BoolOp, ast.IfExp)):
+            options = node.values if isinstance(node, ast.BoolOp) else [node.body, node.orelse]
+            types = {t for t in (self.value_type(o) for o in options) if t}
+            return types.pop() if len(types) == 1 else None
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and self.class_stack:
+            return self.res.class_attr_types.get(f"{self.mod}:{self.class_stack[-1]}", {}).get(node.attr)
+        if isinstance(node, ast.Attribute):
+            r = self.resolve_expr(node)  # e.g. request.form → the library object flask.request.form
+            if r and r[0] in ("external", "convention"):
+                return r
+        return None
+
+    def annotation_type(self, ann):
+        """`Foo`, `"Foo"`, `Optional[Foo]`, `Foo | None`, `list[Foo]` (→ list), library classes."""
+        if isinstance(ann, ast.Constant) and isinstance(ann.value, str):
+            try:
+                ann = ast.parse(ann.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(ann, ast.BinOp) and isinstance(ann.op, ast.BitOr):
+            parts = [x for x in (ann.left, ann.right) if not (isinstance(x, ast.Constant) and x.value is None)]
+            return self.annotation_type(parts[0]) if len(parts) == 1 else None
+        if isinstance(ann, ast.Subscript):
+            head = (dotted(ann.value) or "").split(".")[-1]
+            if head == "Optional":
+                return self.annotation_type(ann.slice)
+            if head in ("list", "List", "Sequence", "Iterable"):
+                return ("builtin", "list")
+            if head in ("dict", "Dict", "Mapping"):
+                return ("builtin", "dict")
+            return None
+        if isinstance(ann, ast.Name) and ann.id in BUILTIN_TYPES:
+            return ("builtin", ann.id)
+        r = self.resolve_expr(ann)
+        if r and r[0] == "internal" and self.res.symbols[r[1]]["kind"] == "class":
+            return r
+        if r and r[0] == "external" and r[1].split(".")[-1][:1].isupper():
+            return ("external", r[1] + "()")
         return None
 
     def resolve_expr(self, node):
@@ -529,7 +632,12 @@ class Calls(ast.NodeVisitor):
         if isinstance(node, ast.Attribute):
             chain = dotted(node)
             if chain is None:
-                t = self.type_of_call(node.value)
+                if (isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "super"
+                        and self.class_stack):
+                    return self.res.method_of_bases(f"{self.mod}:{self.class_stack[-1]}", node.attr)
+                t = self.value_type(node.value)
+                if t and t[0] == "builtin":
+                    return ("builtin", f"{t[1]}.{node.attr}") if node.attr in BUILTIN_METHODS.get(t[1], ()) else None
                 if t and t[0] in ("external", "convention"):
                     return (t[0], f"{t[1]}.{node.attr}")
                 if t and t[0] == "internal" and f"{t[1]}.{node.attr}" in self.res.symbols:
@@ -543,6 +651,8 @@ class Calls(ast.NodeVisitor):
                     tk, tt = typed_attr
                     if tk == "internal" and len(rest) == 2:
                         return self.res.method_of(tt, rest[1])
+                    if tk == "builtin" and len(rest) == 2:
+                        return ("builtin", f"{tt}.{rest[1]}") if rest[1] in BUILTIN_METHODS.get(tt, ()) else None
                     if tk in ("external", "convention"):
                         return (tk, f"{tt}.{'.'.join(rest[1:])}")
                 return None
@@ -553,8 +663,19 @@ class Calls(ast.NodeVisitor):
                 typed = self.typed_import(head)
             if typed:
                 tkind, ttarget = typed
+                if tkind == "builtin":
+                    return ("builtin", f"{ttarget}.{rest[0]}") if len(rest) == 1 and rest[0] in BUILTIN_METHODS.get(ttarget, ()) else None
                 if tkind == "internal" and len(rest) == 1:
                     return self.res.method_of(ttarget, rest[0])
+                if tkind == "internal" and len(rest) == 2:
+                    attr_t = self.res.class_attr_types.get(ttarget, {}).get(rest[0])
+                    if attr_t and attr_t[0] == "internal":
+                        return self.res.method_of(attr_t[1], rest[1])
+                    if attr_t and attr_t[0] in ("external", "convention"):
+                        return (attr_t[0], f"{attr_t[1]}.{rest[1]}")
+                    if attr_t and attr_t[0] == "builtin" and rest[1] in BUILTIN_METHODS.get(attr_t[1], ()):
+                        return ("builtin", f"{attr_t[1]}.{rest[1]}")
+                    return None
                 if tkind in ("external", "convention"):
                     return (tkind, f"{ttarget}.{'.'.join(rest)}")
             base = self.resolve_name(head)
@@ -595,7 +716,7 @@ class Calls(ast.NodeVisitor):
     # -- visits
     def visit_Assign(self, node):
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            t = self.type_of_call(node.value)
+            t = self.value_type(node.value)
             if t:
                 self.local_types[-1][node.targets[0].id] = t
             # Blueprint("x", __name__, url_prefix="/p") / APIRouter(prefix="/p")
@@ -610,8 +731,8 @@ class Calls(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
-        if isinstance(node.target, ast.Name) and node.value is not None:
-            t = self.type_of_call(node.value)
+        if isinstance(node.target, ast.Name):
+            t = self.annotation_type(node.annotation) or (self.value_type(node.value) if node.value is not None else None)
             if t:
                 self.local_types[-1][node.target.id] = t
         self.generic_visit(node)
@@ -625,6 +746,17 @@ class Calls(ast.NodeVisitor):
         self.generic_visit(node)
 
     visit_AsyncWith = visit_With
+
+    def visit_For(self, node):
+        if isinstance(node.target, ast.Name):
+            it = self.value_type(node.iter)
+            if it and it[0] in ("external", "convention"):
+                self.local_types[-1][node.target.id] = (it[0], it[1] + "[]")   # an element of a library iterable
+            elif it and it[0] == "builtin" and it[1] == "str":
+                self.local_types[-1][node.target.id] = ("builtin", "str")
+        self.generic_visit(node)
+
+    visit_AsyncFor = visit_For
 
     def const_text(self, node) -> str | None:
         """A string expression built only from literals and module-level string constants."""
@@ -663,6 +795,8 @@ class Calls(ast.NodeVisitor):
             self.counts["unresolved"] += 1
             name = node.func.attr if isinstance(node.func, ast.Attribute) else (chain or "<expr>")
             self.unresolved_names[name] += 1
+            if isinstance(node.func, ast.Attribute) and not name.startswith("__"):
+                self.unresolved_attr_calls.append([caller, name, node.lineno])
             if isinstance(node.func, ast.Attribute) and node.func.attr in SERVICE_METHODS:
                 self.external.append({"symbol": caller, "line": node.lineno, "service": SERVICE_METHODS[node.func.attr],
                                       "call": chain or node.func.attr, "inferred": True})
@@ -673,6 +807,7 @@ class Calls(ast.NodeVisitor):
                 if self.res.symbols[target]["kind"] == "class":
                     self.constructs.append([caller, target, node.lineno])
                 self.calls.append([caller, target, node.lineno])
+                self._vote(target, node)
             elif kind == "external":
                 for prefix, service in EXTERNAL_SERVICES:
                     if target == prefix or target.startswith(prefix + ".") or target.startswith(prefix + "()"):
@@ -721,6 +856,25 @@ class Calls(ast.NodeVisitor):
             if p is not None and vr and vr[0] == "internal":
                 self.django_routes.append((vr[1], "/" + p.lstrip("^")))
         self.generic_visit(node)
+
+    def _vote(self, target, node):
+        """Record the argument types this call passes, for call-site parameter inference."""
+        sym = self.res.symbols[target]
+        if sym["kind"] == "class":
+            target = f"{target}.__init__"
+            sym = self.res.symbols.get(target)
+            if not sym:
+                return
+        params = [p for p in sym.get("params", []) if not p.startswith("*")]
+        if sym["kind"] == "method" and params and params[0] in ("self", "cls"):
+            params = params[1:]
+        for i, arg in enumerate(node.args):
+            if isinstance(arg, ast.Starred) or i >= len(params):
+                break
+            self.param_votes[target][params[i]].append(self.value_type(arg))
+        for kw in node.keywords:
+            if kw.arg and kw.arg in params:
+                self.param_votes[target][kw.arg].append(self.value_type(kw.value))
 
     def _ref(self, node):
         if isinstance(getattr(node, "ctx", None), ast.Load):
@@ -903,56 +1057,122 @@ def build(root: Path, cfg: dict) -> dict:
     tables = known_tables(root, cfg) | set(models.values())
     tables_by_mod = {m: import_table(trees[m], m, res, is_pkg[m]) for m in sorted(trees)}
     res.all_imports = {m: t[0] for m, t in tables_by_mod.items()}
-    for m in sorted(trees):
-        probe = Calls(m, rels[m], tables_by_mod[m][0], res, tables, mod_strings[m], cfg)
-        mv = {}
-        for n in trees[m].body:
-            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
-                t = probe.type_of_call(n.value)
-                if t:
-                    mv[n.targets[0].id] = t
-        res.module_var_types[m] = mv
-        for cls in [n for n in ast.walk(trees[m]) if isinstance(n, ast.ClassDef)]:
-            key = next((k for k, sd in symbols.items() if k.startswith(m + ":") and sd["kind"] == "class" and sd["line"] == cls.lineno), None)
-            if not key:
-                continue
-            attrs = {}
-            for n in ast.walk(cls):
-                if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Attribute) \
-                        and isinstance(n.targets[0].value, ast.Name) and n.targets[0].value.id == "self":
-                    t = probe.type_of_call(n.value)
-                    if t:
-                        attrs.setdefault(n.targets[0].attr, t)
-            if attrs:
-                res.class_attr_types[key] = attrs
+    def class_key(m, cls):
+        return next((k for k, sd in symbols.items() if k.startswith(m + ":") and sd["kind"] == "class" and sd["line"] == cls.lineno), None)
 
-    calls, refs, constructs, external, sql, gateways = [], [], [], [], [], []
-    templates, own_prefix, mount_prefix, django = {}, {}, {}, []
-    totals, unresolved_names = Counter(), Counter()
-    for mod in sorted(trees):
-        imports, imp_list = tables_by_mod[mod]
-        eager = {i["target"] for i in imp_list if i["target"] != mod and not i["lazy"]}
-        modules[mod]["imports"] = sorted(eager)
-        modules[mod]["lazy_imports"] = sorted({i["target"] for i in imp_list if i["target"] != mod and i["lazy"]} - eager)
-        c = Calls(mod, rels[mod], imports, res, tables, mod_strings[mod], cfg, active_profiles)
-        c.visit(trees[mod])
-        calls += c.calls
-        refs += c.refs
-        constructs += c.constructs
-        external += c.external
-        sql += c.sql
-        gateways += c.gateway_calls
-        django += c.django_routes
-        for name, recs in c.profile_records.items():
-            profile_records[name] += recs
-        for kind, name, p in c.route_prefix_hints:
-            (own_prefix if kind == "own" else mount_prefix)[name] = p
-        for k, v in c.templates.items():
-            templates[k] = sorted(v)
-        totals.update(c.counts)
-        unresolved_names.update(c.unresolved_names)
-        modules[mod]["call_sites"] = c.counts["call_sites"]
-        modules[mod]["unresolved"] = c.counts["unresolved"]
+    def prepass():
+        """Types that later calls depend on, in an order where each round can use the last."""
+        for m in sorted(trees):
+            probe = Calls(m, rels[m], tables_by_mod[m][0], res, tables, mod_strings[m], cfg)
+            mv = {}
+            for n in trees[m].body:
+                if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+                    t = probe.value_type(n.value)
+                    if t:
+                        mv[n.targets[0].id] = t
+                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                    t = probe.annotation_type(n.annotation)
+                    if t:
+                        mv[n.target.id] = t
+            res.module_var_types[m] = mv
+            for cls in [n for n in ast.walk(trees[m]) if isinstance(n, ast.ClassDef)]:
+                key = class_key(m, cls)
+                if not key:
+                    continue
+                attrs = dict(res.class_attr_types.get(key, {}))
+                for n in cls.body:  # dataclass / pydantic / annotated class fields
+                    if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                        t = probe.annotation_type(n.annotation)
+                        if t:
+                            attrs.setdefault(n.target.id, t)
+                for n in ast.walk(cls):
+                    target = value = ann = None
+                    if isinstance(n, ast.Assign) and len(n.targets) == 1:
+                        target, value = n.targets[0], n.value
+                    elif isinstance(n, ast.AnnAssign):
+                        target, value, ann = n.target, n.value, n.annotation
+                    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                        t = (probe.annotation_type(ann) if ann is not None else None) or (probe.value_type(value) if value is not None else None)
+                        if t:
+                            attrs.setdefault(target.attr, t)
+                if attrs:
+                    res.class_attr_types[key] = attrs
+            # return types: the annotation, else what every `return` agrees on
+            for fn in [n for n in ast.walk(trees[m]) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                key = next((k for k, sd in symbols.items() if k.startswith(m + ":") and sd["kind"] in ("function", "method", "nested")
+                            and sd["line"] == fn.lineno and k.rsplit(".", 1)[-1].split(":")[-1] == fn.name), None)
+                if not key or key in res.return_types:
+                    continue
+                t = probe.annotation_type(fn.returns) if fn.returns is not None else None
+                if not t:
+                    rets = [r.value for r in ast.walk(fn) if isinstance(r, ast.Return) and r.value is not None]
+                    types = {probe.value_type(v) for v in rets}
+                    if rets and len(types) == 1 and None not in types:
+                        t = types.pop()
+                if t:
+                    res.return_types[key] = t
+
+    prepass()
+    prepass()  # a second round lets types found in the first flow into the second
+
+    def main_pass():
+        profile_records.clear()  # this pass may run twice; keep only the last pass's records
+        calls, refs, constructs, external, sql, gateways = [], [], [], [], [], []
+        templates, own_prefix, mount_prefix, django = {}, {}, {}, []
+        totals, unresolved_names = Counter(), Counter()
+        votes, unresolved_attr = defaultdict(lambda: defaultdict(list)), []
+        for mod in sorted(trees):
+            imports, imp_list = tables_by_mod[mod]
+            eager = {i["target"] for i in imp_list if i["target"] != mod and not i["lazy"]}
+            modules[mod]["imports"] = sorted(eager)
+            modules[mod]["lazy_imports"] = sorted({i["target"] for i in imp_list if i["target"] != mod and i["lazy"]} - eager)
+            c = Calls(mod, rels[mod], imports, res, tables, mod_strings[mod], cfg, active_profiles)
+            c.visit(trees[mod])
+            calls += c.calls
+            refs += c.refs
+            constructs += c.constructs
+            external += c.external
+            sql += c.sql
+            gateways += c.gateway_calls
+            django += c.django_routes
+            for name, recs in c.profile_records.items():
+                profile_records[name] += recs
+            for kind, name, p in c.route_prefix_hints:
+                (own_prefix if kind == "own" else mount_prefix)[name] = p
+            for k, v in c.templates.items():
+                templates[k] = sorted(v)
+            totals.update(c.counts)
+            unresolved_names.update(c.unresolved_names)
+            for fk, params in c.param_votes.items():
+                for pn, ts in params.items():
+                    votes[fk][pn] += ts
+            unresolved_attr += c.unresolved_attr_calls
+            modules[mod]["call_sites"] = c.counts["call_sites"]
+            modules[mod]["unresolved"] = c.counts["unresolved"]
+
+        return (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
+                unresolved_names, votes, unresolved_attr)
+
+    (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
+     unresolved_names, votes, unresolved_attr) = main_pass()
+    # parameters that receive the same known type at every call site get that type, then one more pass
+    for fk, params in votes.items():
+        for pn, ts in params.items():
+            if ts and None not in ts and len(set(ts)) == 1:
+                res.inferred_params.setdefault(fk, {})[pn] = ts[0]
+    if res.inferred_params:
+        prepass()
+        (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
+         unresolved_names, votes, unresolved_attr) = main_pass()
+
+    # a method name defined by exactly one class in the repo: an inferred (not resolved) edge
+    by_name = defaultdict(list)
+    for k, sd in symbols.items():
+        if sd["kind"] == "method":
+            by_name[k.rsplit(".", 1)[-1]].append(k)
+    inferred = sorted({(a, by_name[n][0], ln) for a, n, ln in unresolved_attr
+                       if len(by_name.get(n, ())) == 1 and n not in VALUE_METHOD_NAMES and a != by_name[n][0]})
+    inferred = [list(x) for x in inferred]
 
     def uniq(rows):
         return [list(r) for r in sorted({tuple(r) for r in rows})]
@@ -1003,6 +1223,8 @@ def build(root: Path, cfg: dict) -> dict:
            if len(v) > 1 and n not in entry_names | {"parse_args", "connect", "_connect", "run"} and not n.startswith("__")}
 
     resolved = totals["internal"] + totals["external"] + totals["builtin"] + totals["convention"]
+    relevant = totals["call_sites"] - totals["builtin"]
+    value_like = sum(c for n, c in unresolved_names.items() if n in VALUE_METHOD_NAMES and n not in by_name)
     summary = {
         "files": len(modules), "lines": sum(m["lines"] for m in modules.values()),
         "functions": sum(1 for s in symbols.values() if s["kind"] in ("function", "nested")),
@@ -1013,6 +1235,10 @@ def build(root: Path, cfg: dict) -> dict:
         "resolved_external": totals["external"], "resolved_builtin": totals["builtin"],
         "resolved_by_convention": totals["convention"], "unresolved": totals["unresolved"],
         "resolved_ratio": round(resolved / totals["call_sites"], 4) if totals["call_sites"] else 0,
+        # of the calls that are not builtin functions or methods on builtin values, how many have a known target
+        "graph_coverage": round((totals["internal"] + totals["external"] + totals["convention"]) / (relevant - value_like), 4)
+        if relevant - value_like > 0 else 0,
+        "inferred_edges": len(inferred), "unresolved_value_like": value_like,
         "internal_edges": len(calls), "reference_edges": len(refs), "sql_sites": len(sql),
         "gateway_sites": len(gateways), "external_sites": len(external),
         "tables": len(tables), "orm_models": len(models), "import_cycles": len(cycles),
@@ -1021,7 +1247,7 @@ def build(root: Path, cfg: dict) -> dict:
         "top_unresolved_names": [[n, c] for n, c in unresolved_names.most_common(15)],
     }
     return {
-        "schema": 1,
+        "schema": 2,
         "scope": cfg["scan"].get("include") or ["."],
         "summary": summary,
         "tables": sorted(tables),
@@ -1030,7 +1256,7 @@ def build(root: Path, cfg: dict) -> dict:
         "modules": dict(sorted(modules.items())),
         "symbols": dict(sorted(symbols.items())),
         "routes": dict(sorted(routes.items())),
-        "calls": calls, "refs": refs, "constructs": constructs,
+        "calls": calls, "refs": refs, "constructs": constructs, "inferred_calls": inferred,
         "sql": sorted(sql, key=lambda e: (e["symbol"], e["line"])),
         "gateways": sorted(gateways, key=lambda e: (e["symbol"], e["line"])),
         "external": sorted(external, key=lambda e: (e["symbol"], e["line"], e["call"])),

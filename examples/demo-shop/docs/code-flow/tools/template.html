@@ -194,6 +194,7 @@ dl.kv dd { margin: 0; min-width: 0; }
 .ego .e { fill: none; stroke-opacity: 0.55; stroke-width: 1.2; }
 .ego .e.in { stroke: var(--amber); } .ego .e.out { stroke: var(--accent); }
 .ego .e.ref { stroke-dasharray: 4 3; }
+.ego .e.inf { stroke-dasharray: 1.5 3; stroke-width: 1.6; }
 .ego .colhead { font-family: var(--font-mono); font-size: 10.5px; fill: var(--muted); }
 .sig { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; overflow-wrap: anywhere; word-break: break-all; }
 
@@ -374,7 +375,8 @@ const STR = {
     nav_arch: "Structure", nav_journeys: "Journeys", nav_roles: "Boundaries", nav_flows: "Input flow", nav_graph: "Call graph",
     nav_data: "Data", nav_decisions: "Who decides", nav_findings: "Findings", nav_modules: "Modules",
     theme_dark: "Dark", theme_light: "Light", audience: "Reader: ", search: "Search everything: functions, modules, URLs, tables, journeys, findings",
-    stats: ["Python files", "lines", "functions & methods", "HTTP routes", "tables & models", "internal call edges", "call sites resolved", "journeys"],
+    stats: ["Python files", "lines", "functions & methods", "HTTP routes", "tables & models", "internal call edges", "function calls resolved", "journeys"],
+    inferred_edge: "inferred",
     problems: "The narrative no longer matches the code", todo_banner: (n) => `${n} explanations are still marked TODO — the structure around them is complete.`,
     howto_h: "How to read this", howto_p: "Every file:line is a link to the source; click a function name anywhere to open it in the call graph.",
     howto: [["1. Structure", "Modules by layer. Click one to see its functions, who it calls and who calls it; everything else fades back. Layer rules are re-checked against the import graph on every build."],
@@ -396,8 +398,8 @@ const STR = {
     ext_h: "External call sites found in the code", ext_cols: ["Service", "Call", "Function", "Where"], inferred: " (by method name)",
     card: { detected: "Detected in code", input: "Input", message: "What is sent", config: "Configured in", output: "What comes back", validation: "Validation & failure", logging: "Recorded in", cost: "Cost & limits", result_use: "What code does with it" },
     flows_h: "How untrusted input travels", flows_p: "Whatever arrives from outside — user text, uploads, imported files, API payloads, messages from other systems — and where it is parsed, escaped or checked before it reaches storage, output or another system. Red-edged boxes are the guards.",
-    graph_h: "Call graph explorer", graph_p: "Pick a function: callers (amber, left) and callees (teal, right), two hops each way. Hover a box to fade everything not connected to it. Dashed edges are references (a function passed as a value), not calls.",
-    fn_search: "Function name (e.g. create_user)", refs_toggle: "include reference edges", pick_fn: "Search above, or click any function name on the page.",
+    graph_h: "Call graph explorer", graph_p: "Pick a function: callers (amber, left) and callees (teal, right), two hops each way. Hover a box to fade everything not connected to it. Dashed edges are references (a function passed as a value); dotted edges are inferred (the method name exists in only one class, the receiver's type was not visible).",
+    fn_search: "Function name (e.g. create_user)", refs_toggle: "include reference and inferred edges", pick_fn: "Search above, or click any function name on the page.",
     kinds: { function: "function", method: "method", nested: "nested function", class: "class" }, ref: "reference", callers: "Callers", callees: "Callees",
     ego_heads: ["callers of callers", "callers", "selected", "callees", "callees of callees"], more: (n) => `+${n} more`,
     data_h: "Data lifecycle", data_p: "Where each main entity is born, transformed, stored and read. The stages are the narrative; the line under them is pulled from the SQL and ORM usage.",
@@ -412,7 +414,7 @@ const STR = {
     mod_h: "Module index", mod_p: "Every module with its docstring, size, functions, internal imports and how many of its calls were resolved.", mod_search: "Module, docstring or function", mod_count: (a, b) => `${a} / ${b} modules`,
     mod_cols: ["Module", "Layer", "Purpose (docstring)", "Lines", "Functions", "Resolved", "Internal imports"],
     kind_labels: { "journey": "journey", "role": "boundary", "entity": "data", "finding": "finding", "table": "table", "module": "module", "flow": "input flow", "decision": "decision", "fn": "function" },
-    regen_h: "Regenerate", regen_cov: (S) => `${S.call_sites.toLocaleString()} call sites: internal ${S.resolved_internal.toLocaleString()} · library ${S.resolved_external.toLocaleString()} · builtin ${S.resolved_builtin.toLocaleString()} · by naming convention ${S.resolved_by_convention.toLocaleString()} · unresolved ${S.unresolved.toLocaleString()}.`,
+    regen_h: "Regenerate", regen_cov: (S) => `${S.call_sites.toLocaleString()} call sites: internal ${S.resolved_internal.toLocaleString()} · library ${S.resolved_external.toLocaleString()} · builtin ${S.resolved_builtin.toLocaleString()} · by naming convention ${S.resolved_by_convention.toLocaleString()} · unresolved ${S.unresolved.toLocaleString()} (${S.unresolved_value_like.toLocaleString()} of them look like value methods) → ${(S.resolved_ratio * 100).toFixed(1)}% of all call sites, ${(S.graph_coverage * 100).toFixed(1)}% of function calls. ${S.inferred_edges.toLocaleString()} inferred edges.`,
     regen_blind: "Not visible to static analysis: dynamic dispatch (getattr, callback tables), calls inside templates, framework hook registration, SQL assembled at runtime, and code in other languages.",
     regen_gen: "This file is generated. Edit the narrative or the template under tools/ and rebuild — never this HTML.",
   },
@@ -420,7 +422,8 @@ const STR = {
     nav_arch: "구조", nav_journeys: "여정", nav_roles: "경계", nav_flows: "입력 흐름", nav_graph: "호출 그래프",
     nav_data: "데이터", nav_decisions: "결정 주체", nav_findings: "발견 사항", nav_modules: "모듈",
     theme_dark: "어둡게", theme_light: "밝게", audience: "독자: ", search: "전체 검색: 함수 · 모듈 · URL · 표 · 여정 · 발견 사항",
-    stats: ["Python 파일", "줄", "함수 · 메서드", "HTTP 라우트", "표 · 모델", "내부 호출 간선", "호출 지점 해석률", "여정"],
+    stats: ["Python 파일", "줄", "함수 · 메서드", "HTTP 라우트", "표 · 모델", "내부 호출 간선", "함수 호출 해석률", "여정"],
+    inferred_edge: "추정",
     problems: "서술이 코드와 맞지 않습니다", todo_banner: (n) => `설명 ${n}개가 아직 TODO 입니다 — 그 주변의 구조는 모두 채워져 있습니다.`,
     howto_h: "읽는 법", howto_p: "모든 파일:줄 은 소스로 가는 링크이고, 함수 이름을 누르면 호출 그래프에서 열린다.",
     howto: [["1. 구조", "계층별 모듈 지도. 모듈을 누르면 그 모듈의 함수, 누구를 부르고 누가 부르는지가 나오고 나머지는 흐려진다. 계층 규칙은 빌드할 때마다 import 그래프로 다시 확인한다."],
@@ -442,8 +445,8 @@ const STR = {
     ext_h: "코드에서 찾은 외부 호출 지점", ext_cols: ["서비스", "호출", "함수", "위치"], inferred: " (메서드 이름으로 추정)",
     card: { detected: "코드에서 찾은 것", input: "입력", message: "보내는 것", config: "설정 위치", output: "돌아오는 것", validation: "검증 · 실패", logging: "기록 위치", cost: "비용 · 한도", result_use: "결과의 쓰임" },
     flows_h: "믿을 수 없는 입력의 흐름", flows_p: "바깥에서 들어오는 것 — 사용자 글 · 업로드 · 가져온 파일 · API 페이로드 · 다른 시스템의 메시지 — 이 저장소 · 출력 · 다른 시스템에 닿기 전에 어디서 해석되고 걸러지는지. 빨간 테두리가 검사다.",
-    graph_h: "호출 그래프 탐색", graph_p: "함수를 고르면 부르는 쪽(주황, 왼쪽)과 불리는 쪽(청록, 오른쪽)이 두 단계씩 나온다. 상자에 마우스를 올리면 연결되지 않은 것이 흐려진다. 점선은 호출이 아니라 참조다.",
-    fn_search: "함수 이름 (예: create_user)", refs_toggle: "참조 간선 포함", pick_fn: "위에서 함수를 찾거나, 페이지 어디서든 함수 이름을 누르세요.",
+    graph_h: "호출 그래프 탐색", graph_p: "함수를 고르면 부르는 쪽(주황, 왼쪽)과 불리는 쪽(청록, 오른쪽)이 두 단계씩 나온다. 상자에 마우스를 올리면 연결되지 않은 것이 흐려진다. 긴 점선은 참조(함수를 값으로 넘김), 짧은 점선은 추정(메서드 이름이 한 클래스에만 있지만 받는 객체의 타입은 보이지 않음)이다.",
+    fn_search: "함수 이름 (예: create_user)", refs_toggle: "참조 · 추정 간선 포함", pick_fn: "위에서 함수를 찾거나, 페이지 어디서든 함수 이름을 누르세요.",
     kinds: { function: "함수", method: "메서드", nested: "중첩 함수", class: "클래스" }, ref: "참조", callers: "부르는 쪽", callees: "부르는 것",
     ego_heads: ["부르는 쪽의 부르는 쪽", "부르는 쪽", "선택", "부르는 것", "부르는 것이 부르는 것"], more: (n) => `+${n}개 더`,
     data_h: "데이터의 일생", data_p: "주요 데이터가 어디서 태어나고, 바뀌고, 저장되고, 누가 읽는지. 단계는 서술이고, 그 아래 줄은 SQL 과 ORM 사용에서 자동으로 뽑았다.",
@@ -458,7 +461,7 @@ const STR = {
     mod_h: "모듈 색인", mod_p: "모든 모듈과 docstring, 크기, 함수, 내부 import, 호출 해석률.", mod_search: "모듈 · 설명 · 함수 이름", mod_count: (a, b) => `${a} / ${b} 모듈`,
     mod_cols: ["모듈", "계층", "설명 (docstring)", "줄", "함수", "해석률", "내부 import"],
     kind_labels: { "journey": "여정", "role": "경계", "entity": "데이터", "finding": "발견 사항", "table": "표", "module": "모듈", "flow": "입력 흐름", "decision": "결정", "fn": "함수" },
-    regen_h: "다시 만들기", regen_cov: (S) => `호출 지점 ${S.call_sites.toLocaleString()}개: 내부 ${S.resolved_internal.toLocaleString()} · 라이브러리 ${S.resolved_external.toLocaleString()} · 내장 ${S.resolved_builtin.toLocaleString()} · 이름 관례 ${S.resolved_by_convention.toLocaleString()} · 해석 못 함 ${S.unresolved.toLocaleString()}.`,
+    regen_h: "다시 만들기", regen_cov: (S) => `호출 지점 ${S.call_sites.toLocaleString()}개: 내부 ${S.resolved_internal.toLocaleString()} · 라이브러리 ${S.resolved_external.toLocaleString()} · 내장 ${S.resolved_builtin.toLocaleString()} · 이름 관례 ${S.resolved_by_convention.toLocaleString()} · 해석 못 함 ${S.unresolved.toLocaleString()}(그중 값 메서드처럼 보이는 것 ${S.unresolved_value_like.toLocaleString()}) → 전체의 ${(S.resolved_ratio * 100).toFixed(1)}%, 함수 호출의 ${(S.graph_coverage * 100).toFixed(1)}%. 추정 간선 ${S.inferred_edges.toLocaleString()}개.`,
     regen_blind: "정적 분석이 보지 못하는 것: 동적 디스패치(getattr · 콜백 사전), 템플릿 안의 호출, 프레임워크 훅 등록, 실행 중에 조립되는 SQL, 다른 언어의 코드.",
     regen_gen: "이 파일은 생성물이다. tools/ 아래의 서술이나 템플릿을 고치고 다시 만든다 — 이 HTML 을 고치지 않는다.",
   },
@@ -504,8 +507,8 @@ for (const [a, b, line, kind] of D.edges) {
   const ka = D.keys[a], kb = D.keys[b];
   if (!OUT.has(ka)) OUT.set(ka, []);
   if (!IN.has(kb)) IN.set(kb, []);
-  OUT.get(ka).push({ k: kb, line, ref: kind === 1 });
-  IN.get(kb).push({ k: ka, line, ref: kind === 1 });
+  OUT.get(ka).push({ k: kb, line, ref: kind === 1, inf: kind === 2 });
+  IN.get(kb).push({ k: ka, line, ref: kind === 1, inf: kind === 2 });
 }
 const LAYER = new Map(D.layers.map((l, i) => [l.id, { ...l, i }]));
 const layerColor = (id) => `var(--l${(LAYER.has(id) ? LAYER.get(id).i : 9) % 10})`;
@@ -551,7 +554,7 @@ function effectiveDark() {
   fill(document.getElementById("title"), m.title || "Code flow");
   fill(document.getElementById("lede"), txt(m.lede) || "");
   document.title = m.title || "Code flow";
-  const values = [S.files, S.lines.toLocaleString(), (S.functions + S.methods).toLocaleString(), S.routes, S.tables, S.internal_edges.toLocaleString(), (S.resolved_ratio * 100).toFixed(1) + "%", D.journeys.length];
+  const values = [S.files, S.lines.toLocaleString(), (S.functions + S.methods).toLocaleString(), S.routes, S.tables, S.internal_edges.toLocaleString(), (S.graph_coverage * 100).toFixed(1) + "%", D.journeys.length];
   fill(document.getElementById("stats"), values.map((v, i) => h("div", { class: "stat" }, h("b", {}, v), h("span", {}, L.stats[i]))));
   document.getElementById("gsearch").placeholder = L.search;
   document.getElementById("fn-search").placeholder = L.fn_search;
@@ -819,7 +822,7 @@ function openInGraph(key) { if (!IDX.has(key)) { if (D.modules[key]) selectModul
 function neighbors(key, dir) {
   const list = (dir === "in" ? IN : OUT).get(key) || [];
   const seen = new Map();
-  for (const e of list) { if (!G.refs && e.ref) continue; if (e.k === key) continue; if (!seen.has(e.k)) seen.set(e.k, e); }
+  for (const e of list) { if (!G.refs && (e.ref || e.inf)) continue; if (e.k === key) continue; if (!seen.has(e.k)) seen.set(e.k, e); }
   return [...seen.values()];
 }
 function tableChips(key) {
@@ -838,7 +841,7 @@ function renderGraph() {
   const ins = neighbors(key, "in"), outs = neighbors(key, "out");
   const gws = Object.entries(D.gateways).filter(([, v]) => v.some(([k]) => k === key)).map(([a]) => a);
   const ext = D.external.filter((e) => e.symbol === key);
-  const li = (e) => h("li", {}, symLink(e.k, shortMod(e.k)), e.ref ? h("span", { class: "badge" }, L.ref) : null, h("span", { class: "loc" }, ":" + e.line));
+  const li = (e) => h("li", {}, symLink(e.k, shortMod(e.k)), e.ref ? h("span", { class: "badge" }, L.ref) : null, e.inf ? h("span", { class: "badge amber" }, L.inferred_edge) : null, h("span", { class: "loc" }, ":" + e.line));
   fill(panel,
     h("div", {}, h("h3", {}, sy.q), h("div", { class: "sig" }, `${sy.m}:${sy.q}(${(sy.p || []).join(", ")})`), locLink(sy.f, sy.l),
       h("p", {}, sy.d || h("span", { class: "note" }, L.no_doc)),
@@ -878,9 +881,10 @@ function renderGraph() {
     edgeG.append(p);
     edges.push({ a: ka, b: kb, el: p });
   };
-  const isRef = (a, b) => ((OUT.get(a) || []).find((e) => e.k === b) || {}).ref;
-  for (const k of cols[1]) { link("1|" + k, "2|" + key, "in" + (isRef(k, key) ? " ref" : "")); for (const e of neighbors(k, "in")) if (pos.has("0|" + e.k)) link("0|" + e.k, "1|" + k, "in" + (e.ref ? " ref" : "")); }
-  for (const k of cols[3]) { link("2|" + key, "3|" + k, "out" + (isRef(key, k) ? " ref" : "")); for (const e of neighbors(k, "out")) if (pos.has("4|" + e.k)) link("3|" + k, "4|" + e.k, "out" + (e.ref ? " ref" : "")); }
+  const style = (e) => (e && e.inf ? " inf" : e && e.ref ? " ref" : "");
+  const edgeOf = (a, b) => (OUT.get(a) || []).find((e) => e.k === b);
+  for (const k of cols[1]) { link("1|" + k, "2|" + key, "in" + style(edgeOf(k, key))); for (const e of neighbors(k, "in")) if (pos.has("0|" + e.k)) link("0|" + e.k, "1|" + k, "in" + style(e)); }
+  for (const k of cols[3]) { link("2|" + key, "3|" + k, "out" + style(edgeOf(key, k))); for (const e of neighbors(k, "out")) if (pos.has("4|" + e.k)) link("3|" + k, "4|" + e.k, "out" + style(e)); }
   const nodes = new Map();
   cols.forEach((c, ci) => c.forEach((k) => {
     const id = ci + "|" + k, p = pos.get(id), sk = SYM(k);

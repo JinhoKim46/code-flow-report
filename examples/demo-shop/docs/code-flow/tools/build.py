@@ -147,10 +147,10 @@ def generated_findings(code_map: dict, narrative: dict, lang: str) -> list[dict]
                     "detail": "; ".join(f"{a}: {b}" for a, b in code_map["parse_errors"][:20]), "symbols": [], "evidence": "ast.parse failures."})
     s = code_map["summary"]
     out.append({"id": "gen-coverage", "severity": "info", "category": "coverage", "generated": True,
-                "title": (f"호출 지점 {s['call_sites']:,}개 중 {s['unresolved']:,}개({1 - s['resolved_ratio']:.1%})는 받는 쪽을 정적으로 알 수 없다" if ko else
-                          f"{s['unresolved']:,} of {s['call_sites']:,} call sites ({1 - s['resolved_ratio']:.1%}) have no statically known target"),
-                "detail": ("대부분 dict · list · str 메서드다. 동적 디스패치는 간선으로 나타나지 않는다. 가장 많은 것: " if ko else
-                           "Mostly dict/list/str methods. Dynamic dispatch does not appear as edges. Most frequent: ") +
+                "title": (f"함수 호출의 {s['graph_coverage']:.1%} 는 받는 쪽을 안다 (전체 호출 지점 기준 {s['resolved_ratio']:.1%})" if ko else
+                          f"{s['graph_coverage']:.1%} of function calls have a known target ({s['resolved_ratio']:.1%} of all call sites)"),
+                "detail": ((f"그래프 범위는 내장 함수와 값 메서드처럼 보이는 호출({s['unresolved_value_like']:,}개)을 뺀 값이다. 메서드 이름이 저장소 안 한 클래스에만 있는 호출 {s['inferred_edges']:,}개는 '추정' 간선(점선)으로 따로 그렸다. 동적 디스패치는 간선으로 나타나지 않는다. 해석 못 한 것 중 가장 많은 것: ") if ko else
+                           (f"Graph coverage leaves out builtins and calls that look like value methods ({s['unresolved_value_like']:,}). {s['inferred_edges']:,} calls whose method name exists in exactly one class are drawn as dashed 'inferred' edges, not counted as resolved. Dynamic dispatch does not appear as edges. Most frequent unresolved: ")) +
                           ", ".join(f"{n}×{c}" for n, c in s["top_unresolved_names"][:8]),
                 "symbols": [], "evidence": "code_map.json summary."})
     return out
@@ -170,6 +170,8 @@ def enrich(code_map: dict, key: str) -> dict:
 
 def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, list[str]]:
     cfg = paths.config
+    if code_map.get("schema", 1) < 2:
+        return {}, ["code_map.json is from an older version of the tools — run `codeflow.py map` (or `build`) to regenerate it"]
     lang = cfg["project"].get("language", "en")
     problems = narrative_problems(narrative, code_map)
     layers, mod_layer, lp = assign_layers(code_map, narrative)
@@ -192,6 +194,7 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
         syms.append(rec)
     edges = [[index[a], index[b], ln, 0] for a, b, ln in code_map["calls"] if a in index and b in index]
     edges += [[index[a], index[b], ln, 1] for a, b, ln in code_map["refs"] if a in index and b in index]
+    edges += [[index[a], index[b], ln, 2] for a, b, ln in code_map.get("inferred_calls", []) if a in index and b in index]
 
     tables = {t: {"insert": set(), "update": set(), "delete": set(), "read": set(), "uses": set()} for t in code_map["tables"]}
     sym_tables = defaultdict(lambda: defaultdict(set))

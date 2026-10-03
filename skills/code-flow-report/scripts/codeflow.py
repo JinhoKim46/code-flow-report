@@ -134,6 +134,9 @@ def print_summary(cm: dict) -> None:
     print(f"call sites {s['call_sites']:,}: internal {s['resolved_internal']:,} · library {s['resolved_external']:,} · builtin "
           f"{s['resolved_builtin']:,} · by convention {s['resolved_by_convention']:,} · unresolved {s['unresolved']:,} "
           f"→ resolved {s['resolved_ratio']:.1%}")
+    print(f"graph coverage {s['graph_coverage']:.1%} (function calls with a known target — builtins and value-method-looking calls excluded) · "
+          f"inferred edges {s['inferred_edges']:,} (unique method name, shown dashed) · "
+          f"unresolved that look like value methods {s['unresolved_value_like']:,}")
     print(f"internal edges {s['internal_edges']:,} · reference edges {s['reference_edges']:,} · import cycles {s['import_cycles']} "
           f"(avoided by lazy import {s['lazy_import_cycles']}) · parse errors {s['parse_errors']}")
     if s.get("profiles"):

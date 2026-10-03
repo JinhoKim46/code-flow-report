@@ -4,7 +4,7 @@ How the skill was checked before release. Every number below was measured on the
 
 ## 1. Test suite
 
-`python3 -m unittest discover -s tests -t tests` → **43 tests, OK** (≈5 s, no network, no packages). Seven fixture repos under `tests/fixtures/`, all invented:
+`python3 -m unittest discover -s tests -t tests` → **47 tests, OK** (≈5 s, no network, no packages). Seven fixture repos under `tests/fixtures/`, all invented:
 
 | Fixture | Pins down |
 |---|---|
@@ -38,6 +38,18 @@ What the runs changed in the code (each now has a fixture test):
 - Draft journeys descended into plumbing helpers (`connect`, `log`) and ranked admin screens and one-off scripts above core flows; now hubs are not descended into, write paths go first, and journeys are ranked by how central the tables they write are (the private app's candidates changed from "change password, backfill script" to "submit feedback, call-centre intake, edit/delete contract, file a work log").
 
 Known limit seen: one file in the FastAPI template uses Python 3.14 syntax (`except A, B:`) and is skipped on 3.12, listed as a finding.
+
+## 2b. Call resolution in 0.2.0
+
+The unresolved calls were classified first (receiver is a literal / name matches a function of the repo / builtin-type method name / unknown object / bare name). On the 53k-line app, three quarters of them were value methods (`row.get`, `items.append`); on httpie, half were calls whose name matches a method of the repo on objects of unknown type — real missed edges. The fixes in the changelog target both; each rule has a case in `tests/fixtures/types_lib`.
+
+| Repository | 0.1.0 all call sites | 0.2.0 all call sites | 0.2.0 graph coverage | Internal edges 0.1.0 → 0.2.0 | Inferred edges |
+|---|---|---|---|---|---|
+| private Flask app (53k lines) | 81.0 % | 91.5 % | 96.2 % | 3,689 → 3,694 | 8 |
+| fastapi/full-stack-fastapi-template | 94.5 % | 97.0 % | 97.2 % | 73 → 73 | 0 |
+| httpie/cli | 66.5 % | 82.7 % | 83.3 % | 541 → 621 | 40 |
+
+What still cannot be seen statically: parameters whose callers pass different or unknown types, objects returned by libraries without annotations, and callbacks invoked through a variable (`work(cur)`).
 
 ## 3. Accuracy spot checks
 

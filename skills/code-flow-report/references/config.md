@@ -23,6 +23,9 @@
 
 Reading the `map` summary:
 
-- **resolved** = (internal + library + builtin + by-convention) / all call sites. 75–90 % is normal; most of the rest are `dict.get`, `list.append`, `str.join`.
+- **graph coverage** = calls with a known target (internal + library + by-convention) / calls that are not builtins and do not merely look like value methods. This is the figure that says how much of the call graph is visible; 85–97 % is typical. Below ~75 % look at "most frequent unresolved".
+- **resolved** = (internal + library + builtin + by-convention) / all call sites — the same, without leaving anything out.
+- **inferred edges**: a method called on an object of unknown type whose name exists in exactly one class of the repo. Drawn dotted, never counted as resolved.
+- **unresolved that look like value methods**: unresolved calls named like a `dict`/`list`/`str` method (`get`, `append`, `strip`) that no class of the repo defines.
 - **by convention** counts calls resolved only through `param_types` — reported separately so the ratio stays honest.
 - **parse errors** are files `ast` could not read (syntax for a newer/older Python, templates with `.py` names); they are skipped, listed as a finding, and never stop the run.

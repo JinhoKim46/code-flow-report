@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py *) Bash(pyth
 license: MIT
 compatibility: Claude Code with Python 3.11+ on PATH as python3. Standard library only; the generated page works offline.
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   repository: https://github.com/JinhoKim46/code-flow-report
 ---
 
