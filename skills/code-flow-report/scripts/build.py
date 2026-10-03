@@ -225,7 +225,8 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
         syms.append(rec)
     edges = [[index[a], index[b], ln, 0] for a, b, ln in code_map["calls"] if a in index and b in index]
     edges += [[index[a], index[b], ln, 1] for a, b, ln in code_map["refs"] if a in index and b in index]
-    edges += [[index[a], index[b], ln, 2] for a, b, ln in code_map.get("inferred_calls", []) if a in index and b in index]
+    edges += [[index[a], index[b], ln, 2] for a, b, ln in code_map.get("inferred_calls", []) + code_map.get("override_calls", [])
+              if a in index and b in index]
 
     tables = {t: {"insert": set(), "update": set(), "delete": set(), "read": set(), "uses": set()} for t in code_map["tables"]}
     sym_tables = defaultdict(lambda: defaultdict(set))

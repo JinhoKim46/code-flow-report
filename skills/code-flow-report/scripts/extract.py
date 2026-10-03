@@ -853,7 +853,7 @@ class Calls(ast.NodeVisitor):
                         if kw.arg in ("url_prefix", "prefix"):
                             p = self.const_text(kw.value)
                             if p is not None:
-                                self.route_prefix_hints.append(("own", node.targets[0].id, p))
+                                self.route_prefix_hints.append(("own", f"{self.mod}:{node.targets[0].id}", p))
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
@@ -930,6 +930,22 @@ class Calls(ast.NodeVisitor):
         t = self.value_type(arg)
         if t and t[0] == "internal" and self.res.symbols.get(t[1], {}).get("kind") == "class":
             return t[1]
+        return None
+
+    def _router_key(self, expr):
+        """Which module's router/blueprint variable this is: every router file may call its variable `router`."""
+        if isinstance(expr, ast.Name):
+            kind, target = self.imports.get(expr.id, (None, None))
+            if kind == "symbol" and ":" in target:
+                return target                      # from api.routers.auth import router
+            if kind == "modattr":
+                m, _, n = target.rpartition(".")
+                return f"{m}:{n}"                  # a module-level variable imported by name
+            return f"{self.mod}:{expr.id}"         # defined in this module
+        if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
+            kind, target = self.imports.get(expr.value.id, (None, None))
+            if kind == "module":
+                return f"{target}:{expr.attr}"     # auth.router
         return None
 
     def _kw(self, node, name):
@@ -1019,11 +1035,12 @@ class Calls(ast.NodeVisitor):
             self.gateway_calls.append({"symbol": caller, "line": node.lineno, "gateway": fname,
                                        "action": action if action is not None else "<dynamic>"})
         # app.register_blueprint(bp, url_prefix=…) / app.include_router(r, prefix=…)
-        if fname in ("register_blueprint", "include_router") and node.args and isinstance(node.args[0], ast.Name):
+        if fname in ("register_blueprint", "include_router") and node.args:
             pv = self._kw(node, "url_prefix") or self._kw(node, "prefix")
             p = self.const_text(pv) if pv is not None else None
-            if p is not None:
-                self.route_prefix_hints.append(("mount", node.args[0].id, p))
+            key = self._router_key(node.args[0])
+            if p is not None and key:
+                self.route_prefix_hints.append(("mount", key, p))
         # Django path("x/", view)
         if fname in ("path", "re_path") and len(node.args) >= 2:
             p = literal_str(node.args[0])
@@ -1137,11 +1154,11 @@ def routes_for(symbols: dict, trees: dict, prefixes: dict[str, str]) -> dict:
                 if key is None:
                     continue
                 bp = d.func.value.id
-                r = out.setdefault(key, {"blueprint": bp, "routes": set()})
+                r = out.setdefault(key, {"blueprint": bp, "bp_key": f"{mod}:{bp}", "routes": set()})
                 for m in methods:
                     r["routes"].add((m, path))
     for v in out.values():
-        prefix = prefixes.get(v["blueprint"], "")
+        prefix = prefixes.get(v.pop("bp_key"), prefixes.get(v["blueprint"], ""))  # this module's router first
         v["routes"] = [list(x) for x in sorted(v["routes"])]
         v["urls"] = [[m, (prefix.rstrip("/") + "/" + p.lstrip("/")) if prefix else p] for m, p in v["routes"]]
     return out
@@ -1251,6 +1268,23 @@ def build(root: Path, cfg: dict) -> dict:
                 break
     res.models = models
     tables = known_tables(root, cfg) | set(models.values())
+    # a package's __init__ that re-exports (`from .agents import *` / `from .agents import CodeAgent`) makes those
+    # names its public API: star-imported modules without __all__ export their public top-level classes and functions
+    for m in [m for m in sorted(trees) if is_pkg[m]]:
+        for n in trees[m].body:
+            if not isinstance(n, ast.ImportFrom):
+                continue
+            target = ".".join(m.split(".")[: len(m.split(".")) - n.level + 1] + ([n.module] if n.module else [])) if n.level \
+                else res.internal_module(n.module or "", m)
+            if target not in modules or target == m:
+                continue
+            if any(a.name == "*" for a in n.names):
+                if not modules[target]["exports"]:
+                    modules[target]["exports"] = sorted(k.split(":", 1)[1] for k, sd in symbols.items()
+                                                        if k.startswith(target + ":") and "." not in k.split(":", 1)[1]
+                                                        and sd["kind"] in ("class", "function") and not k.split(":", 1)[1].startswith("_"))
+            else:
+                modules[target]["exports"] = sorted(set(modules[target]["exports"]) | {a.name for a in n.names if f"{target}:{a.name}" in symbols})
     def class_key(m, cls):
         return next((k for k, sd in symbols.items() if k.startswith(m + ":") and sd["kind"] == "class" and sd["line"] == cls.lineno), None)
 
@@ -1419,6 +1453,31 @@ def build(root: Path, cfg: dict) -> dict:
                        if len(by_name.get(n, ())) == 1 and n not in VALUE_METHOD_NAMES and a != by_name[n][0]})
     inferred = [list(x) for x in inferred]
 
+    # virtual calls: `self._step()` resolves to the base's (often abstract) method, but at run time a subclass's
+    # override runs. Edges to every override keep a journey going past the base class (drawn dashed, not counted)
+    children = defaultdict(set)
+    for k, sd in symbols.items():
+        if sd["kind"] == "class":
+            for b in res.base_keys(k):
+                children[b].add(k)
+
+    def descendants(cls, seen=None):
+        seen = seen if seen is not None else set()
+        for c in children.get(cls, ()):
+            if c not in seen:
+                seen.add(c)
+                descendants(c, seen)
+        return seen
+
+    overrides = set()
+    for a, b, ln in calls:
+        if symbols.get(b, {}).get("kind") != "method":
+            continue
+        cls, meth = b.rsplit(".", 1)
+        found = sorted(f"{d}.{meth}" for d in descendants(cls) if f"{d}.{meth}" in symbols)
+        overrides |= {(a, o, ln) for o in found[:12] if o != a}
+    overrides = [list(x) for x in sorted(overrides)]
+
     def uniq(rows):
         return [list(r) for r in sorted({tuple(r) for r in rows})]
 
@@ -1503,7 +1562,7 @@ def build(root: Path, cfg: dict) -> dict:
         # of the calls that are not builtin functions or methods on builtin values, how many have a known target
         "graph_coverage": round((totals["internal"] + totals["external"] + totals["convention"]) / (relevant - value_like), 4)
         if relevant - value_like > 0 else 0,
-        "inferred_edges": len(inferred), "unresolved_value_like": value_like,
+        "inferred_edges": len(inferred), "override_edges": len(overrides), "unresolved_value_like": value_like,
         "internal_edges": len(calls), "reference_edges": len(refs), "sql_sites": len(sql),
         "gateway_sites": len(gateways), "external_sites": len(external),
         "tables": len(tables), "orm_models": len(models), "import_cycles": len(cycles),
@@ -1521,7 +1580,7 @@ def build(root: Path, cfg: dict) -> dict:
         "modules": dict(sorted(modules.items())),
         "symbols": dict(sorted(symbols.items())),
         "routes": dict(sorted(routes.items())),
-        "calls": calls, "refs": refs, "constructs": constructs, "inferred_calls": inferred, "binds": sorted(binds_found),
+        "calls": calls, "refs": refs, "constructs": constructs, "inferred_calls": inferred, "override_calls": overrides, "binds": sorted(binds_found),
         "sql": sorted(sql, key=lambda e: (e["symbol"], e["line"])),
         "gateways": sorted(gateways, key=lambda e: (e["symbol"], e["line"])),
         "external": sorted(external, key=lambda e: (e["symbol"], e["line"], e["call"])),

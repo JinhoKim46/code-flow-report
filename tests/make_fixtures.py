@@ -113,10 +113,22 @@ FIXTURES = {
         "svc/main.py": '''
             from fastapi import FastAPI
 
+            from svc import admin
             from svc.routes import router
 
             app = FastAPI()
             app.include_router(router, prefix="/api")
+            app.include_router(admin.router, prefix="/api")
+        ''',
+        "svc/admin.py": '''
+            from fastapi import APIRouter
+
+            router = APIRouter(prefix="/admin")
+
+
+            @router.get("/stats")
+            def stats():
+                return {}
         ''',
         "svc/routes.py": '''
             from fastapi import APIRouter
@@ -512,7 +524,7 @@ FIXTURES = {
         "schema/0001.surql": """
             DEFINE TABLE IF NOT EXISTS note SCHEMAFULL;
         """,
-        "src/lib/__init__.py": "",
+        "src/lib/__init__.py": "from .chain import ask\n",
         "src/lib/models.py": """
             from openai import OpenAI
 

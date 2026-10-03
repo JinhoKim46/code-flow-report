@@ -67,6 +67,8 @@ class FastApiLlm(unittest.TestCase):
 
     def test_router_prefix_is_mount_then_declared(self):
         self.assertEqual(self.cm["routes"]["svc.routes:ask"]["urls"], [["POST", "/api/v1/ask"]])
+        # a second file also calls its router `router`: each keeps its own prefix
+        self.assertEqual(self.cm["routes"]["svc.admin:stats"]["urls"], [["GET", "/api/admin/stats"]])
 
     def test_llm_profile_routes_on_and_reads_the_call(self):
         self.assertEqual(list(self.cm["profiles"]), ["llm"])
@@ -244,7 +246,15 @@ class LibPkg(unittest.TestCase):
         self.assertEqual({(s, k, t) for s, k, t in draft.entry_points(self.cm)},
                          {("scripts.seed:<module>", "cli", "python scripts/seed.py"),  # top-level script code is a symbol
                           ("lib.cli:run", "cli", "libtool"),                              # [project.scripts]
-                          ("lib.agents:Base.run", "api", "Agent().run()")})                # __all__ class, method via its base
+                          ("lib.agents:Base.run", "api", "Agent().run()"),                 # __all__ class, method via its base
+                          ("lib.chain:ask", "api", "ask()")})                              # re-exported by lib/__init__.py
+
+    def test_virtual_call_reaches_the_override(self):
+        # Base.run calls self.step(): the base's step only raises, Agent.step is what runs
+        self.assertIn(["lib.agents:Base.run", "lib.agents:Agent.step", 11], self.cm["override_calls"])
+        import draft
+        g = draft.Graph(self.cm)
+        self.assertIn("lib.agents:Agent.step", g.chain("lib.agents:Base.run"))
 
     def test_active_record_models_on_a_surrealql_schema(self):
         self.assertEqual(self.cm["tables"], ["note"])  # DEFINE TABLE; ApiModel(Model) is this repo's Model, not a table

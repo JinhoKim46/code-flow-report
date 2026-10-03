@@ -96,7 +96,7 @@ class Graph:
     def __init__(self, cm: dict):
         self.cm = cm
         self.out = defaultdict(list)
-        for a, b, line in cm["calls"]:
+        for a, b, line in cm["calls"] + cm.get("override_calls", []):  # an override really runs: follow it
             self.out[a].append((line, b))
         for a, b, line in cm["refs"]:
             if cm["symbols"].get(b, {}).get("kind") in ("function", "nested", "method"):
@@ -158,8 +158,11 @@ class Graph:
             steps.append(k)
             callees = [b for _, b in self.out.get(k, []) if b not in seen and b in self.cm["symbols"]]
             if depth == 0:
-                # the handler's own steps (validation, lookups) belong to the story even without a sink
+                # the handler's own steps (validation, lookups) belong to the story even without a sink — but only a
+                # few of them, or a long entry method spends the whole chain on setup before the real work starts
                 kids = [b for b in callees if b not in self.hubs or self.sinks.get(b)]
+                quiet = [b for b in kids if not self.reaches(b, 4)][3:]
+                kids = [b for b in kids if b not in quiet]
             else:
                 kids = [b for b in callees if self.reaches(b, 4)]
             writers = [b for b in kids if self.reaches(b, 4) & {"write", "gateway", "external", "profile"}]
