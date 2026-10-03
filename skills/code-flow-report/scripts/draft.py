@@ -385,7 +385,7 @@ HEADER = """# Narrative for the code-flow report — the only hand-written input
 #
 # Proposed by `codeflow.py draft`. Replace every "TODO: …" (the report shows how many are left).
 # Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
-# A finding with check = "no_callers" fails the build once its first symbol gains a caller.
+# A finding with a `check` retires itself: once the code no longer shows it, it moves to the page's Fixed list.
 # Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
 # [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
 """

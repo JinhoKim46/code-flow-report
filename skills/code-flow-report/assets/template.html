@@ -227,6 +227,7 @@ tr.sel td { background: var(--accent-soft); }
 
 /* 발견 사항 */
 .findings { display: grid; gap: 10px; }
+.fixed-list { margin-top: 6px; } .fixed-list summary { cursor: pointer; color: var(--muted); } .fixed-list li { margin: 4px 0; }
 .finding { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 8px; padding: 10px 14px; display: grid; gap: 6px; }
 .finding.sev-high { border-left-color: var(--bad); } .finding.sev-medium { border-left-color: var(--amber); } .finding.sev-low { border-left-color: var(--l0); } .finding.sev-info { border-left-color: var(--muted); }
 .finding .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
@@ -379,6 +380,7 @@ const STR = {
   en: {
     nav_arch: "Structure", nav_journeys: "Journeys", nav_roles: "Boundaries", nav_flows: "Input flow", nav_graph: "Call graph",
     nav_data: "Data", nav_decisions: "Who decides", nav_findings: "Findings", nav_modules: "Modules",
+    fixed_title: (n) => `Fixed since written (${n}) — the code no longer shows these; each finding checks itself on every build`,
     theme_dark: "Dark", theme_light: "Light", audience: "Reader: ", search: "Search everything: functions, modules, URLs, tables, journeys, findings",
     stats: ["Python files", "lines", "functions & methods", "HTTP routes", "tables & models", "internal call edges", "function calls resolved", "journeys"],
     inferred_edge: "inferred",
@@ -426,6 +428,7 @@ const STR = {
   ko: {
     nav_arch: "구조", nav_journeys: "여정", nav_roles: "경계", nav_flows: "입력 흐름", nav_graph: "호출 그래프",
     nav_data: "데이터", nav_decisions: "결정 주체", nav_findings: "발견 사항", nav_modules: "모듈",
+    fixed_title: (n) => `작성 후 고쳐진 것 (${n}) — 코드에 더는 보이지 않는다. 발견 사항은 빌드마다 스스로 확인한다`,
     theme_dark: "어둡게", theme_light: "밝게", audience: "독자: ", search: "전체 검색: 함수 · 모듈 · URL · 표 · 여정 · 발견 사항",
     stats: ["Python 파일", "줄", "함수 · 메서드", "HTTP 라우트", "표 · 모델", "내부 호출 간선", "함수 호출 해석률", "여정"],
     inferred_edge: "추정",
@@ -994,20 +997,23 @@ function showTable(t) {
 // ---------------------------------------------------------------- findings
 (function findings() {
   const SEV = ["high", "medium", "low", "info"];
-  const cats = [...new Set(D.findings.map((f) => f.category))];
+  const open = D.findings.filter((f) => f.status !== "fixed"), fixed = D.findings.filter((f) => f.status === "fixed");
+  const cats = [...new Set(open.map((f) => f.category))];
   const state = { sev: new Set(SEV), cat: null };
   const draw = () => {
     fill(document.getElementById("find-filter"),
-      SEV.map((sv) => h("button", { type: "button", class: "chip" + (state.sev.has(sv) ? " on" : ""), onclick: () => { state.sev.has(sv) ? state.sev.delete(sv) : state.sev.add(sv); draw(); } }, `${L.sev[sv]} ${D.findings.filter((f) => f.severity === sv).length}`)),
+      SEV.map((sv) => h("button", { type: "button", class: "chip" + (state.sev.has(sv) ? " on" : ""), onclick: () => { state.sev.has(sv) ? state.sev.delete(sv) : state.sev.add(sv); draw(); } }, `${L.sev[sv]} ${open.filter((f) => f.severity === sv).length}`)),
       h("span", { class: "note" }, "·"),
       h("button", { type: "button", class: "chip" + (state.cat ? "" : " on"), onclick: () => { state.cat = null; draw(); } }, L.all_kinds),
       cats.map((c) => h("button", { type: "button", class: "chip" + (state.cat === c ? " on" : ""), onclick: () => { state.cat = c; draw(); } }, c)));
-    const rows = D.findings.filter((f) => state.sev.has(f.severity) && (!state.cat || f.category === state.cat)).sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity));
+    const rows = open.filter((f) => state.sev.has(f.severity) && (!state.cat || f.category === state.cat)).sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity));
     fill(document.getElementById("finding-list"), rows.length ? rows.map((f) => h("article", { class: "finding sev-" + f.severity, id: "finding-" + f.id },
       h("div", { class: "top" }, h("span", { class: "badge " + ({ high: "bad", medium: "amber", low: "accent" }[f.severity] || "") }, L.sev[f.severity] || f.severity), h("span", { class: "badge" }, f.category), f.generated ? h("span", { class: "badge" }, L.generated) : null, h("h3", {}, f.title)),
       h("p", {}, txt(f.detail)),
       (f._locs || []).length ? h("div", { class: "chips" }, f._locs.map((l) => h("span", {}, symLink(l.symbol, shortMod(l.symbol)), " ", locLink(l.file, l.line)))) : null,
-      f.evidence ? h("p", { class: "note" }, L.verified + f.evidence) : null)) : h("p", { class: "note" }, L.none_match));
+      f.evidence ? h("p", { class: "note" }, L.verified + f.evidence) : null)) : h("p", { class: "note" }, L.none_match),
+      fixed.length ? h("details", { class: "fixed-list" }, h("summary", {}, L.fixed_title(fixed.length)),
+        h("ul", {}, fixed.map((f) => h("li", { id: "finding-" + f.id }, h("strong", {}, f.title), " — ", h("span", { class: "note" }, f.fixed_reason))))) : null);
   };
   draw();
 })();

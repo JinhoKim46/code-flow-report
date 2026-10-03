@@ -71,7 +71,7 @@ Always add, whatever the depth, **`[module_notes]` for every module — written 
   - `does` — what it does, as 2–5 capabilities, not a function list;
   - `flow` — who calls it and when → what it goes through → where it writes (name the real modules, tables, services);
   - `note` (optional) — a rule, trap or deliberate exception worth knowing.
-  Concrete and short; never copy the docstring's first sentence, never pad ("This module is responsible for various…"). The draft leaves all of them as TODO on purpose. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Mark a dead-code finding with `check = "no_callers"` so it re-checks itself.
+  Concrete and short; never copy the docstring's first sentence, never pad ("This module is responsible for various…"). The draft leaves all of them as TODO on purpose. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Give each finding the code can re-check a `check` (`no_callers`, `symbol_exists`, `text_in`, `calls`, `not_calls`) so it retires itself to the "Fixed" list once the code changes.
 
 ## 5. Build and self-check
 

@@ -101,8 +101,11 @@ FIXTURES = {
                 return orders.run_write("order_create", dict(request.form), work)
         ''',
         "tests/test_views.py": '''
-            def test_nothing():
-                assert True
+            from app.orders import totals
+
+
+            def test_totals():
+                assert totals is not None
         ''',
     },
     "fastapi_llm": {
@@ -406,6 +409,96 @@ FIXTURES = {
             def broken(:
                 pass
         ''',
+    },
+    "llm_app": {
+        "src/ai/__init__.py": "",
+        "src/ai/client.py": """
+            from openai import OpenAI
+
+
+            class LLMClient:
+                def __init__(self, sdk: OpenAI | None = None):
+                    self.sdk = sdk or OpenAI()
+
+                def chat(self, role: str, messages: list, model: str | None = None) -> str:
+                    return self.sdk.chat.completions.create(model=model, messages=messages)
+
+                def chat_json(self, role: str, messages: list, schema, model: str | None = None):
+                    return schema.model_validate_json(self.chat(role, messages, model=model))
+        """,
+        "src/ai/deps.py": """
+            from dataclasses import dataclass
+            from typing import Callable
+
+            from ai.client import LLMClient
+
+
+            @dataclass
+            class Deps:
+                make_llm: Callable[[int], LLMClient]
+        """,
+        "src/ai/wiring.py": """
+            from ai.client import LLMClient
+            from ai.deps import Deps
+
+
+            def build_deps() -> Deps:
+                def make_llm(user_id: int) -> LLMClient:
+                    return LLMClient()
+
+                return Deps(make_llm=make_llm)
+        """,
+        "src/ai/judge.py": """
+            from pydantic import BaseModel
+
+            from ai.deps import Deps
+
+
+            class Verdict(BaseModel):
+                score: int
+
+
+            def judge_messages(text: str) -> list:
+                return [{"role": "user", "content": text}]
+
+
+            def run_judge(deps: Deps, text: str) -> Verdict:
+                llm = deps.make_llm(1)
+                return llm.chat_json("judge", judge_messages(text), Verdict, model="demo-judge", temperature=0)
+        """,
+        "src/ai/guard.py": """
+            from ai.client import LLMClient
+
+
+            class Guard:
+                def __init__(self, llm: LLMClient | None = None):
+                    self.llm = llm
+
+                def check(self, text: str) -> str:
+                    return self.llm.chat("guard", [{"role": "user", "content": text}])
+        """,
+        "src/ai/decide.py": """
+            import httpx
+
+
+            def decide(payload: dict) -> dict:
+                return httpx.post("https://openrouter.ai/api/v1/decisions", json=payload).json()
+        """,
+        "scripts/helpers.py": """
+            def ping() -> str:
+                return "pong"
+        """,
+        "scripts/run.py": """
+            import helpers
+
+
+            def main():
+                return helpers.ping()
+
+
+            if __name__ == "__main__":
+                main()
+        """,
     },
     "streamlit_app": {
         "app/main.py": """

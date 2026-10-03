@@ -49,7 +49,12 @@ class FlaskApp(unittest.TestCase):
         self.assertEqual(self.cm["profiles"], {})
 
     def test_dead_candidates(self):
-        self.assertEqual(self.cm["dead_candidates"], ["app.orders:totals", "app.orders:unused_helper"])
+        self.assertEqual(self.cm["dead_candidates"], ["app.orders:unused_helper"])
+
+    def test_tests_are_read_for_callers_only(self):
+        self.assertEqual(self.cm["test_only"], ["app.orders:totals"])  # only tests/test_views.py refers to it
+        self.assertEqual(self.cm["test_files"], 1)
+        self.assertFalse(any(a.startswith("tests.") for a, _, _ in self.cm["calls"] + self.cm["refs"]))
 
     def test_convention_typed_calls_are_counted_separately(self):
         self.assertGreater(self.cm["summary"]["resolved_by_convention"], 0)
@@ -193,6 +198,40 @@ class Determinism(unittest.TestCase):
                 self.assertEqual(extract.render(code_map(fx)), extract.render(code_map(fx)))
 
 
+class LlmApp(unittest.TestCase):
+    """The repo's own model client: roles live where the app calls its wrapper, reached through injected deps."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("llm_app")
+        cls.llm = {(r.get("kind", "sdk"), r["symbol"]): r for r in cls.cm["profiles"]["llm"]}
+
+    def test_calls_to_the_wrapper_are_the_model_roles(self):
+        self.assertEqual(set(self.llm), {("sdk", "ai.client:LLMClient.chat"), ("sdk", "ai.decide:decide"),
+                                         ("gateway", "ai.judge:run_judge"), ("gateway", "ai.guard:Guard.check")})
+        judge = self.llm[("gateway", "ai.judge:run_judge")]
+        self.assertEqual((judge["label"], judge["call"], judge["output_schema"], judge["messages"]),
+                         ("judge", "LLMClient.chat_json", "Verdict", "ai.judge:judge_messages"))
+        self.assertEqual(judge["settings"], {"model": "'demo-judge'", "temperature": "0"})
+        self.assertEqual(self.llm[("sdk", "ai.decide:decide")]["provider"], "OpenRouter")  # HTTP to a model host
+
+    def test_injected_callable_binds_to_the_function_passed_in(self):
+        self.assertEqual([b[:2] for b in self.cm["binds"]], [["ai.deps:Deps.make_llm", "ai.wiring:build_deps.make_llm"]])
+        self.assertIn(("ai.judge:run_judge", "ai.wiring:build_deps.make_llm"), edges(self.cm))
+
+    def test_attribute_typed_from_the_init_parameter(self):
+        self.assertIn(("ai.guard:Guard.check", "ai.client:LLMClient.chat"), edges(self.cm))  # self.llm = llm: LLMClient
+
+    def test_bare_import_from_a_script_folder(self):
+        self.assertIn(("scripts.run:main", "scripts.helpers:ping"), edges(self.cm))
+
+    def test_draft_makes_one_card_per_role_plus_the_gateway(self):
+        import draft
+        cards = {r["id"]: r for r in draft.propose_roles(self.cm, 6) if r["kind"] == "model"}
+        self.assertEqual(set(cards), {"model-judge", "model-guard", "model-gateway"})
+        self.assertTrue(cards["model-judge"]["output"].startswith("Verdict"))
+
+
 class StreamlitApp(unittest.TestCase):
     """A script-style UI: widgets are the entry points; SQLModel writes go through a @contextmanager session."""
 
@@ -208,7 +247,7 @@ class StreamlitApp(unittest.TestCase):
         by = {(e["symbol"], op): e[op] for e in self.cm["sql"] for op in ("insert", "update", "delete", "read") if e.get(op)}
         self.assertEqual(by, {("notes.store:save_note", "insert"): ["note"],
                               ("notes.store:delete_note", "delete"): ["note"],  # not tag: only `row` is deleted
-                              ("notes.store:delete_note", "read"): ["tag"]})
+                              ("notes.store:delete_note", "read"): ["note", "tag"]})  # read, then deleted: both
 
     def test_third_party_packages_per_module_for_layer_rules(self):
         self.assertEqual(self.cm["modules"]["app.views.notes"]["packages"], ["streamlit"])

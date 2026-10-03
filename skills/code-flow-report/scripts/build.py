@@ -3,7 +3,7 @@
 The build fails (returns problems) when:
 * the narrative names a symbol, module or table the code no longer has
 * layers are declared and a module belongs to none of them (a new module the narrative doesn't know)
-* a finding marked `check = "no_callers"` now has callers (the finding is no longer true)
+* (a finding with a `check` that the code no longer shows is not a problem: it moves to the page's Fixed list)
 """
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from pathlib import Path
 
 try:
     from . import profiles as profile_registry
-    from .common import Paths, count_todo, narrative_problems
+    from .common import Paths, check_problem, count_todo, narrative_problems
 except ImportError:  # script import
     import profiles as profile_registry
-    from common import Paths, count_todo, narrative_problems
+    from common import Paths, check_problem, count_todo, narrative_problems
 
 TEMPLATE = Path(__file__).resolve().parent / "template.html"
 if not TEMPLATE.exists():  # inside the skill: scripts/ next to assets/
@@ -105,14 +105,39 @@ def incoming(code_map: dict) -> dict[str, set[str]]:
     return inc
 
 
-def finding_problems(narrative: dict, inc: dict) -> list[str]:
-    out = []
-    for f in narrative.get("findings", []):
-        if f.get("check") == "no_callers" and f.get("symbols"):
-            callers = sorted(inc.get(f["symbols"][0], ()))
-            if callers:
-                out.append(f"finding {f['id']}: {f['symbols'][0]} now has callers ({', '.join(callers[:3])}) — update or remove the finding")
-    return out
+def finding_fixed(f: dict, code_map: dict, inc: dict, root) -> str | None:
+    """Why the code no longer shows what this finding describes (it retires itself), or None while it still holds.
+
+    check = "no_callers"                         holds while symbols[0] has no caller
+    check = "symbol_exists"                      holds while symbols[0] exists
+    check = { kind = "text_in", pattern = "re" } holds while the regex matches symbols[0]'s source
+    check = { kind = "calls", target = "m:f" }   holds while symbols[0] calls target
+    check = { kind = "not_calls", target = … }   holds while symbols[0] does not call target"""
+    if f.get("status") == "fixed":
+        return f.get("fixed_in") or "marked fixed"
+    check = f.get("check")
+    if not check or not f.get("symbols") or check_problem(check):
+        return None  # a malformed check is reported by narrative_problems
+    kind = check if isinstance(check, str) else check.get("kind")
+    sym = f["symbols"][0]
+    s = code_map["symbols"].get(sym)
+    if s is None:
+        return f"{sym} no longer exists"
+    if kind == "no_callers":
+        callers = sorted(inc.get(sym, ()))
+        return f"{sym} now has callers ({', '.join(c.split(':', 1)[1] for c in callers[:3])})" if callers else None
+    if kind == "text_in":
+        try:
+            lines = (root / s["file"]).read_text(encoding="utf-8").splitlines()[s["line"] - 1: s["end"]]
+        except OSError:
+            return None
+        return None if re.search(check["pattern"], "\n".join(lines)) else f"{sym} no longer contains /{check['pattern']}/"
+    callees = {b for a, b, _ in code_map["calls"] if a == sym or a.startswith(sym + ".")}
+    if kind == "calls":
+        return None if check["target"] in callees else f"{sym} no longer calls {check['target'].split(':', 1)[1]}"
+    if kind == "not_calls":
+        return f"{sym} now calls {check['target'].split(':', 1)[1]}" if check["target"] in callees else None
+    return None
 
 
 def generated_findings(code_map: dict, narrative: dict, lang: str) -> list[dict]:
@@ -130,10 +155,17 @@ def generated_findings(code_map: dict, narrative: dict, lang: str) -> list[dict]
     dead = [s for s in code_map["dead_candidates"] if s not in named]
     if dead:
         out.append({"id": "gen-dead", "severity": "info", "category": "dead code", "generated": True,
-                    "title": (f"내부 호출 · 참조 · 라우트 · 데코레이터가 없는 최상위 함수 {len(dead)}개" if ko else f"{len(dead)} top-level functions with no internal caller, reference, route or decorator"),
-                    "detail": ("정적 분석의 후보일 뿐이다. 템플릿 · getattr · 외부 진입점 · 테스트 전용 도우미도 걸린다. 지우기 전에 grep 으로 확인하라." if ko else
-                               "Candidates only: functions called from templates, via getattr, by an external entry point or only by tests also land here. grep before deleting."),
-                    "symbols": dead, "evidence": "code_map.json dead_candidates."})
+                    "title": (f"아무도 부르지 않는 함수 · 메서드 {len(dead)}개 (테스트 포함)" if ko else f"{len(dead)} function(s) nothing calls, tests included"),
+                    "detail": ("내부 호출 · 참조 · 라우트 · 데코레이터가 없고 테스트도 부르지 않는다. 정적 분석의 후보일 뿐이다: 템플릿 · getattr · 외부 진입점에서 불리는 함수도 걸린다. 지우기 전에 grep 으로 확인하라." if ko else
+                               "No internal caller, reference, route or decorator, and no test calls them. Candidates only: functions called from templates, via getattr or by an external entry point also land here. grep before deleting."),
+                    "symbols": dead, "evidence": "code_map.json dead_candidates (tests read for callers)."})
+    test_only = [s for s in code_map.get("test_only", []) if s not in named]
+    if test_only:
+        out.append({"id": "gen-test-only", "severity": "info", "category": "dead code", "generated": True,
+                    "title": (f"테스트만 부르는 함수 · 메서드 {len(test_only)}개" if ko else f"{len(test_only)} function(s) only tests call"),
+                    "detail": ("제품 코드에서는 아무도 부르지 않고 테스트만 부른다. 남은 도우미이거나, 연결하는 걸 잊은 기능일 수 있다." if ko else
+                               "Nothing in the product calls these; only tests do. Either a leftover helper kept alive by its test, or a feature someone forgot to wire in."),
+                    "symbols": test_only, "evidence": f"code_map.json test_only ({code_map.get('test_files', 0)} test files read for callers only)."})
     public = {k: v for k, v in code_map["duplicate_names"].items() if not k.startswith("_")}
     if public:
         out.append({"id": "gen-dup-names", "severity": "info", "category": "duplicated logic", "generated": True,
@@ -177,7 +209,6 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
     layers, mod_layer, lp = assign_layers(code_map, narrative)
     problems += lp
     inc = incoming(code_map)
-    problems += finding_problems(narrative, inc)
 
     keys = sorted(code_map["symbols"])
     index = {k: i for i, k in enumerate(keys)}
@@ -239,7 +270,11 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
     roles = [{**r, "_locs": [enrich(code_map, s) for s in r.get("symbols", [])]} for r in narrative.get("roles", [])]
     flows = [{**f, "steps": with_loc(f.get("steps", []))} for f in narrative.get("input_flows", [])]
     entities = [{**e, "events": with_loc(e.get("events", [])), "auto": tables.get(e.get("table", ""))} for e in narrative.get("entities", [])]
-    findings = [{**f, "_locs": [enrich(code_map, s) for s in f.get("symbols", []) + f.get("modules", [])]} for f in narrative.get("findings", [])]
+    findings = []
+    for f in narrative.get("findings", []):
+        fixed = finding_fixed(f, code_map, inc, paths.root)
+        known = [s for s in f.get("symbols", []) + f.get("modules", []) if s in code_map["symbols"] or s in code_map["modules"] or s.endswith(".*")]
+        findings.append({**f, "_locs": [enrich(code_map, s) for s in known], **({"status": "fixed", "fixed_reason": fixed} if fixed else {})})
     findings += [{**f, "_locs": [enrich(code_map, s) for s in (f.get("symbols", []) + f.get("modules", []))[:12]]}
                  for f in generated_findings(code_map, narrative, lang)]
 

@@ -144,17 +144,33 @@ class Staleness(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn(expected, out)
 
-    def test_no_callers_finding_breaks_when_a_caller_appears(self):
+    def test_findings_retire_themselves_when_the_code_is_fixed(self):
         repo = setup("flask_app")
         n = repo / "docs" / "code-flow" / "narrative.toml"
-        n.write_text(n.read_text(encoding="utf-8") + '\n[[findings]]\nid = "dead-helper"\nseverity = "info"\ncategory = "dead code"\n'
-                     'title = "unused_helper has no caller"\ndetail = "x"\nsymbols = ["app.orders:unused_helper"]\ncheck = "no_callers"\n', encoding="utf-8")
+        head = 'severity = "info"\ncategory = "x"\ndetail = "x"\n'
+        n.write_text(n.read_text(encoding="utf-8")
+                     + f'\n[[findings]]\nid = "dead-helper"\n{head}title = "no caller"\nsymbols = ["app.orders:unused_helper"]\ncheck = "no_callers"\n'
+                     + f'\n[[findings]]\nid = "no-notify"\n{head}title = "list skips notify"\nsymbols = ["app.orders:list_orders"]\n'
+                       'check = { kind = "not_calls", target = "app.orders:notify" }\n'
+                     + f'\n[[findings]]\nid = "todo-text"\n{head}title = "has a TODO"\nsymbols = ["app.orders:unused_helper"]\n'
+                       'check = { kind = "text_in", pattern = "def unused_helper" }\n', encoding="utf-8")
         self.assertEqual(run(repo, "build")[0], 0)
+        status = lambda: {f["id"]: f.get("status", "open") for f in page_data(repo)[0]["findings"] if not f.get("generated")}  # noqa: E731
+        self.assertEqual(status(), {"dead-helper": "open", "no-notify": "open", "todo-text": "open"})
         src = repo / "app" / "orders.py"
-        src.write_text(src.read_text() + "\n\ndef uses_it():\n    return unused_helper()\n")
-        code, out = run(repo, "check")
+        text = src.read_text()
+        src.write_text(text.replace("def unused_helper(", "def renamed_helper(") + "\n\ndef uses_it():\n    return renamed_helper()\n")
+        self.assertEqual(run(repo, "build")[0], 0)  # a fixed finding is not a broken build: it moves to the Fixed list
+        self.assertEqual(status(), {"dead-helper": "fixed", "no-notify": "open", "todo-text": "fixed"})
+
+    def test_malformed_check_fails_the_build(self):
+        repo = setup("flask_app")
+        n = repo / "docs" / "code-flow" / "narrative.toml"
+        n.write_text(n.read_text(encoding="utf-8") + '\n[[findings]]\nid = "bad"\nseverity = "info"\ncategory = "x"\ntitle = "t"\n'
+                     'detail = "x"\nsymbols = ["app.orders:notify"]\ncheck = { kind = "calls" }\n', encoding="utf-8")
+        code, out = run(repo, "build")
         self.assertEqual(code, 1)
-        self.assertIn("finding dead-helper", out)
+        self.assertIn("calls needs target", out)
 
 
 class Languages(unittest.TestCase):

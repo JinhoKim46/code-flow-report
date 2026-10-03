@@ -2,8 +2,16 @@
 
 ## 0.5.0 — 2026-10
 
-Found by running the skill on a Streamlit + SQLModel app and on ten trending public repos.
+Found by running the skill on a Streamlit + SQLModel app, comparing it with a report built by a 1,633-line extractor written for that app, and probing ten trending public repos. On that app the generic skill now matches the hand-built map on model calls (9 sites, 7 roles), injected callables, table access and test-only functions.
 
+- **Model-call gateways**: the `llm` profile finds the repo's own wrappers around an SDK (a client class's methods, or a function that takes the prompt) and records every call to them with its label, model setting, messages builder and output schema. The draft makes one model card per role, prefilled. HTTP calls whose URL names a model host (OpenRouter, Anthropic, …) count as model calls. Profiles can add `find_gateways(records, calls, symbols)`.
+- **Injected callables**: a `Callable[...]` field bound at construction (`Deps(make_llm=make_llm)`) resolves calls through it (`deps.make_llm(...)`) to the bound functions; the code map lists them as `binds`. `self.x = param` takes the parameter's annotation.
+- **Tests are read for callers only**: they add no edges or numbers, but "only tests call this" and "nothing calls this" (methods included, when no unresolved call could reach them) are generated findings now.
+- **Findings retire themselves**: `check` can be `no_callers`, `symbol_exists`, `{kind = "text_in", pattern}`, `{kind = "calls", target}` or `{kind = "not_calls", target}`. When the code no longer shows a finding it moves to a "Fixed" list on the page instead of failing the build; `status = "fixed"` + `fixed_in` keeps hand-marked history.
+- A read-then-write function counts as both reader and writer; a `select(M)` built in one function is that function's read.
+- `import ui_common` from a script folder binds the name to the module it resolves to (`app.ui_common`), so `ui_common.x()` resolves.
+- **Faster map**: looking for `*.sql` no longer walks `.venv`, `node_modules` or hidden folders (8.3 s → 1.7 s on a repo with a virtualenv inside).
+- `Any`, `Self`, `Protocol` annotations are not treated as types.
 - New `ui` stack profile (Streamlit, Gradio, NiceGUI): widgets and callbacks are entry points, so a script-style app gets journeys instead of none, plus a "UI triggers" table. Profiles can now add `on_module(ctx, tree)`, `triggers(records, code_map)` and `SINK = False`.
 - ORM session writes count: `s.add(M(...))`, `s.delete(row)`, `s.merge`, `s.exec(select(M))` on a SQLAlchemy / SQLModel `Session` become table writes and reads, naming the exact model when the code says it (constructed, typed, or assigned from `select(M)` / `s.get(M, …)`). Journeys now end where the data lands.
 - `with f() as s` binds the yielded type of a `@contextmanager` (`-> Iterator[Session]` / `Generator[...]`): +3.7 points resolved on a SQLModel app.

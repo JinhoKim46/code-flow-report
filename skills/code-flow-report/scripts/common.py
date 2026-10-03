@@ -85,6 +85,21 @@ def _walk(node, where):
             yield from _walk(v, f"{where}[{label}]")
 
 
+CHECK_KINDS = {"no_callers", "symbol_exists", "text_in", "calls", "not_calls"}
+
+
+def check_problem(check) -> str | None:
+    """Why a finding's `check` is malformed, or None. A string is the kind; a table has `kind` plus its argument."""
+    kind = check if isinstance(check, str) else check.get("kind") if isinstance(check, dict) else None
+    if kind not in CHECK_KINDS:
+        return f"{check!r} — kind must be one of {sorted(CHECK_KINDS)}"
+    if kind == "text_in" and not (isinstance(check, dict) and check.get("pattern")):
+        return 'text_in needs pattern = "<regex>"'
+    if kind in ("calls", "not_calls") and not (isinstance(check, dict) and check.get("target")):
+        return f'{kind} needs target = "pkg.mod:function"'
+    return None
+
+
 def narrative_problems(narrative: dict, code_map: dict) -> list[str]:
     """Everything the narrative names that the code no longer has. Empty list = consistent."""
     symbols, modules, tables = code_map["symbols"], code_map["modules"], set(code_map["tables"])
@@ -110,6 +125,14 @@ def narrative_problems(narrative: dict, code_map: dict) -> list[str]:
             out.append(f"{where}.severity: {value!r} must be one of {sorted(SEVERITIES)}")
         elif key == "stage" and value not in STAGES:
             out.append(f"{where}.stage: {value!r} must be one of {sorted(STAGES)}")
+    # a finding that checks itself (or is marked fixed) may name code that is gone — that is how it gets fixed
+    exempt = {f"narrative.findings[{f.get('id')}]" for f in narrative.get("findings", [])
+              if isinstance(f, dict) and (f.get("check") or f.get("status") == "fixed")}
+    out = [p for p in out if not any(p.startswith(e + ".") for e in exempt)]
+    for f in narrative.get("findings", []):
+        problem = check_problem(f.get("check")) if isinstance(f, dict) and f.get("check") else None
+        if problem:
+            out.append(f"narrative.findings[{f.get('id')}].check: {problem}")
     for mod, note in narrative.get("module_notes", {}).items():
         if mod not in modules:
             out.append(f"narrative.module_notes: module not in code: {mod}")

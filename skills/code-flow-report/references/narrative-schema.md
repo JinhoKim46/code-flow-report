@@ -144,7 +144,14 @@ title = "README says 5 retries; the client retries 3 times"
 detail = "What is true now · what trigger makes it go wrong · how far it reaches."
 symbols = ["shop.payments:charge"]
 evidence = "How you verified: the functions/files you read, the command you ran and what it printed (no line numbers — they go stale)"
-check = "no_callers"              # optional: fail the build once symbols[0] gains a caller
+check = "no_callers"              # optional: re-checked on every build; once it no longer holds, the finding
+                                  # moves to the page's "Fixed" list (the build does not fail). All are about symbols[0]:
+                                  #   "no_callers"     holds while it has no caller
+                                  #   "symbol_exists"  holds while it exists
+                                  #   { kind = "text_in", pattern = "regex" }    holds while its source matches
+                                  #   { kind = "calls", target = "pkg.mod:f" }   holds while it calls target
+                                  #   { kind = "not_calls", target = "pkg.mod:f" } holds while it does not
+# status = "fixed" + fixed_in = "#42"   mark a finding fixed by hand (kept as history in the Fixed list)
 ```
 
 Generated findings (import cycles, dead-code candidates, duplicate names, parse errors, coverage) are added by the builder and disappear when fixed — do not repeat them by hand unless you verified and want to add detail.

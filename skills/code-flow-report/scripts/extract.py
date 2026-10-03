@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import builtins
 import fnmatch
+import os
 import re
 import sys
 import warnings
@@ -178,6 +179,30 @@ def source_files(root: Path, cfg: dict) -> list[Path]:
     return sorted(files)
 
 
+TEST_DIRS = ("tests", "test", "testing")
+
+
+def test_callers(root: Path, cfg: dict, res: "Resolver", strip: list[str]) -> tuple[set[str], int]:
+    """Internal symbols that test code calls or references. Tests are read for this only: they add no
+    edges, no symbols and no numbers, but they let the report tell "only tests call this" from "nothing does"."""
+    called: set[str] = set()
+    files = [f for d in TEST_DIRS if (root / d).is_dir() for f in sorted((root / d).rglob("*.py")) if "__pycache__" not in f.parts]
+    for f in files:
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        mod = module_name(root, f, strip)
+        imports, _ = import_table(tree, mod, res, f.name == "__init__.py")
+        c = Calls(mod, f.relative_to(root).as_posix(), imports, res, set(), {}, cfg)
+        try:
+            c.visit(tree)
+        except (KeyError, AttributeError, IndexError, TypeError):
+            continue  # a test file shaped in a way the visitor does not expect: skip it, it only adds callers
+        called |= {b for _, b, _ in c.calls + c.refs}
+    return called, len(files)
+
+
 def module_name(root: Path, path: Path, strip: list[str]) -> str:
     parts = list(path.relative_to(root).with_suffix("").parts)
     for s in strip:
@@ -190,20 +215,29 @@ def module_name(root: Path, path: Path, strip: list[str]) -> str:
     return ".".join(parts) or path.stem
 
 
+def walk_files(root: Path, exclude: set[str]):
+    """Every file under root, never entering an excluded or hidden folder (a .venv or node_modules can hold
+    hundreds of thousands of files: `root.glob("**/…")` walks them all before filtering)."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in exclude and not d.startswith("."))
+        for name in sorted(filenames):
+            yield Path(dirpath, name)
+
+
 def known_tables(root: Path, cfg: dict) -> set[str]:
     names = set()
     exclude = set(cfg["scan"].get("exclude", DEFAULT_EXCLUDE)) - {"migrations"}
-    for g in cfg["scan"].get("schema_globs", ["**/*.sql"]):
-        for f in sorted(root.glob(g)):
-            rel = f.relative_to(root)
-            if exclude & set(rel.parts[:-1]):
-                continue
-            try:
-                text = f.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
-            names.update(n.replace('"', "") for n in CREATE_RE.findall(text))
+    globs = cfg["scan"].get("schema_globs", ["**/*.sql"])
+    for f in walk_files(root, exclude | {"node_modules", "site-packages"}):
+        rel = f.relative_to(root).as_posix()
+        if not any(fnmatch.fnmatch(rel, g) or (g.startswith("**/") and fnmatch.fnmatch(rel, g[3:])) for g in globs):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
+        names.update(n.replace('"', "") for n in CREATE_RE.findall(text))
     return names
 
 
@@ -286,6 +320,8 @@ class Resolver:
         self.class_attr_types: dict[str, dict[str, tuple[str, str]]] = {}   # class key → attr → (kind, target)
         self.return_types: dict[str, tuple[str, str]] = {}                  # function key → type of what it returns
         self.inferred_params: dict[str, dict[str, tuple[str, str]]] = {}    # function key → param → type seen at every call site
+        self.gateways: dict[str, set[str]] = {}
+        self.binds: dict[str, list[str]] = {}  # "pkg.mod:Class.field" → functions passed for that Callable field at construction  # profile name → the repo's own functions that wrap that stack (e.g. an LLM client)
         self.by_suffix: dict[str, list[str]] = defaultdict(list)
         for m in modules:
             parts = m.split(".")
@@ -412,7 +448,12 @@ def import_table(tree: ast.Module, mod: str, res: Resolver, is_pkg: bool):
                     table[a.asname] = ("module", internal) if internal else ("external", a.name)
                 else:
                     top = a.name.split(".")[0]
-                    if internal:
+                    if internal and internal != a.name and internal.endswith("." + a.name):
+                        # `import ui_common` in app/views/x.py found as app.ui_common (the script folder is on
+                        # sys.path): the local name means the mapped module, not the raw one
+                        mapped = internal[: len(internal) - len(a.name)] + top
+                        table[top] = ("module", mapped) if mapped in res.modules else ("pkg", mapped)
+                    elif internal:
                         table[top] = ("module", top) if top in res.modules else ("pkg", top)
                     else:
                         table[top] = ("external", top)
@@ -466,6 +507,7 @@ class Calls(ast.NodeVisitor):
         self.templates: dict[str, set[str]] = defaultdict(set)
         self.route_prefix_hints: list[tuple[str, str]] = []
         self.orm_ops: list[list] = []
+        self.binds_found: list[list] = []  # [class field, function, line]: Deps(make_llm=make_llm)
         # an unresolved `x.get_secret_value()` is AWS only in a module that imports boto3 (pydantic's SecretStr has it too)
         self.uses_aws = any(str(t).split(".")[0] in ("boto3", "botocore", "aioboto3", "aiobotocore")
                             for t in (imports.values() if isinstance(imports, dict) else imports))  # [symbol, line, op] for Session.add / delete / exec …
@@ -627,6 +669,8 @@ class Calls(ast.NodeVisitor):
                 return ("builtin", "list")
             if head in ("dict", "Dict", "Mapping"):
                 return ("builtin", "dict")
+            if head == "Callable":
+                return ("callable", "")  # resolved through the functions bound to it (Resolver.binds)
             if head in YIELDING:  # a @contextmanager's `Iterator[Session]`: `with f() as s` binds the Session
                 first = ann.slice.elts[0] if isinstance(ann.slice, ast.Tuple) else ann.slice
                 return self.annotation_type(first)
@@ -636,7 +680,7 @@ class Calls(ast.NodeVisitor):
         r = self.resolve_expr(ann)
         if r and r[0] == "internal" and self.res.symbols[r[1]]["kind"] == "class":
             return r
-        if r and r[0] == "external" and r[1].split(".")[-1][:1].isupper():
+        if r and r[0] == "external" and r[1].split(".")[-1][:1].isupper() and r[1].split(".")[-1] not in ("Any", "Self", "TypeVar", "Protocol"):
             return ("external", r[1] + "()")
         return None
 
@@ -680,7 +724,11 @@ class Calls(ast.NodeVisitor):
                 if tkind == "builtin":
                     return ("builtin", f"{ttarget}.{rest[0]}") if len(rest) == 1 and rest[0] in BUILTIN_METHODS.get(ttarget, ()) else None
                 if tkind == "internal" and len(rest) == 1:
-                    return self.res.method_of(ttarget, rest[0])
+                    r = self.res.method_of(ttarget, rest[0])
+                    bound = self.res.binds.get(f"{ttarget}.{rest[0]}")
+                    if bound and not (r and r[0] in ("internal", "external")):
+                        return ("internal", bound[0])  # deps.make_llm(...) → the function passed as make_llm
+                    return r
                 if tkind == "internal" and len(rest) == 2:
                     attr_t = self.res.class_attr_types.get(ttarget, {}).get(rest[0])
                     if attr_t and attr_t[0] == "internal":
@@ -850,12 +898,27 @@ class Calls(ast.NodeVisitor):
             if kind == "internal":
                 if self.res.symbols[target]["kind"] == "class":
                     self.constructs.append([caller, target, node.lineno])
+                    fields = self.res.class_attr_types.get(target, {})
+                    for kw in node.keywords:
+                        if kw.arg and fields.get(kw.arg, ("",))[0] == "callable":
+                            fn = self.resolve_expr(kw.value)
+                            if fn and fn[0] == "internal" and self.res.symbols[fn[1]]["kind"] in ("function", "nested", "method"):
+                                self.binds_found.append([f"{target}.{kw.arg}", fn[1], node.lineno])
                 self.calls.append([caller, target, node.lineno])
                 self._vote(target, node)
+                if isinstance(node.func, ast.Attribute):
+                    owner = self.value_type(node.func.value)
+                    for other in self.res.binds.get(f"{owner[1]}.{node.func.attr}", [])[1:] if owner and owner[0] == "internal" else []:
+                        self.calls.append([caller, other, node.lineno])
             elif kind == "external":
                 head, _, meth = target.rpartition(".")
                 if meth in ORM_SESSION_OPS and head.split(".")[-1].rstrip("()") in ORM_SESSION_TYPES:
                     self.orm_ops.append([caller, node.lineno, ORM_SESSION_OPS[meth], self._orm_target(node, meth)])
+                elif meth == "select" and target.split(".")[0] in ("sqlmodel", "sqlalchemy"):
+                    # a query built here and run elsewhere is still this function's read
+                    cls = self._queried_class(node)
+                    if cls:
+                        self.orm_ops.append([caller, node.lineno, "read", cls])
                 for prefix, service in EXTERNAL_SERVICES:
                     if target == prefix or target.startswith(prefix + ".") or target.startswith(prefix + "()"):
                         if service in ("PostgreSQL", "SQLite", "MySQL", "SQLAlchemy") and "()." in target:
@@ -1136,6 +1199,16 @@ def build(root: Path, cfg: dict) -> dict:
                         t = probe.annotation_type(n.annotation)
                         if t:
                             attrs.setdefault(n.target.id, t)
+                for meth in [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                    params = {a.arg: a.annotation for a in meth.args.args + meth.args.kwonlyargs if a.annotation is not None}
+                    for n in ast.walk(meth):
+                        if (isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Attribute)
+                                and isinstance(n.targets[0].value, ast.Name) and n.targets[0].value.id == "self"):
+                            v = n.value.values[0] if isinstance(n.value, ast.BoolOp) else n.value  # `http or httpx.Client()`
+                            if isinstance(v, ast.Name) and v.id in params:
+                                t = probe.annotation_type(params[v.id])
+                                if t:
+                                    attrs.setdefault(n.targets[0].attr, t)
                 for n in ast.walk(cls):
                     target = value = ann = None
                     if isinstance(n, ast.Assign) and len(n.targets) == 1:
@@ -1166,10 +1239,13 @@ def build(root: Path, cfg: dict) -> dict:
     prepass()
     prepass()  # a second round lets types found in the first flow into the second
 
+    binds_found: list[list] = []
+
     def main_pass():
         profile_records.clear()  # this pass may run twice; keep only the last pass's records
         calls, refs, constructs, external, sql, gateways = [], [], [], [], [], []
         orm_ops = []
+        binds_found.clear()
         templates, own_prefix, mount_prefix, django = {}, {}, {}, []
         totals, unresolved_names = Counter(), Counter()
         votes, unresolved_attr = defaultdict(lambda: defaultdict(list)), []
@@ -1189,6 +1265,7 @@ def build(root: Path, cfg: dict) -> dict:
             external += c.external
             sql += c.sql
             orm_ops += c.orm_ops
+            binds_found.extend(c.binds_found)
             gateways += c.gateway_calls
             django += c.django_routes
             for name, recs in c.profile_records.items():
@@ -1224,11 +1301,6 @@ def build(root: Path, cfg: dict) -> dict:
                 by_fn[sym][op] |= named
                 first_line[sym] = min(first_line.get(sym, line), line)
         for sym, ops in sorted(by_fn.items()):
-            if ops.keys() - {"read"}:
-                written = set().union(*(v for k, v in ops.items() if k != "read"))
-                ops["read"] = ops.get("read", set()) - written  # the written models are not also "read" here
-                if not ops["read"]:
-                    del ops["read"]
             sql.append({"symbol": sym, "line": first_line[sym], "via": "ORM session",
                         **{op: sorted(v) for op, v in sorted(ops.items())}})
         return (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
@@ -1243,6 +1315,18 @@ def build(root: Path, cfg: dict) -> dict:
                 res.inferred_params.setdefault(fk, {})[pn] = ts[0]
     if res.inferred_params:
         prepass()
+        (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
+         unresolved_names, votes, unresolved_attr) = main_pass()
+    # a profile can name the repo's own wrappers around its stack (an LLM client class); one more pass then
+    # records every call *to* those wrappers, which is where the roles, prompts and schemas are written
+    found = {p.NAME: p.find_gateways(profile_records.get(p.NAME, []), calls, symbols)
+             for p in active_profiles if hasattr(p, "find_gateways")}
+    binds = defaultdict(set)
+    for field, fn, _ in binds_found:
+        binds[field].add(fn)
+    if any(found.values()) or binds:
+        res.gateways = found
+        res.binds = {k: sorted(v) for k, v in binds.items()}
         (calls, refs, constructs, external, sql, gateways, templates, own_prefix, mount_prefix, django, totals,
          unresolved_names, votes, unresolved_attr) = main_pass()
 
@@ -1287,14 +1371,25 @@ def build(root: Path, cfg: dict) -> dict:
 
     incoming = Counter(b for _, b, _ in calls) + Counter(b for _, b, _ in refs)
     entry_names = set(cfg.get("conventions", {}).get("entry_names", ["main", "handler", "lambda_handler", "cli", "app", "create_app"]))
-    dead = []
+    test_called, test_files = test_callers(root, cfg, res, strip)
+    # a method can be dead too, unless its name is called somewhere we could not resolve (obj.name(...))
+    maybe_called = set(unresolved_names) | {c[1] for c in unresolved_attr}
+    dead, test_only = [], []
     for key, s in sorted(symbols.items()):
         mod, qual = key.split(":", 1)
-        if s["kind"] != "function" or qual.startswith("__") or s["decorators"]:
+        name = qual.rsplit(".", 1)[-1]
+        if s["decorators"] or name.startswith("__"):
+            continue
+        if s["kind"] == "method":
+            cls = symbols.get(f"{mod}:{qual.rsplit('.', 1)[0]}", {})
+            if name.startswith("_") or name in maybe_called or any("." in b or b[:1].isupper() and f"{mod}:{b}" not in symbols
+                                                                    for b in cls.get("bases", [])):
+                continue  # private, possibly called on an untyped object, or overriding a library base
+        elif s["kind"] != "function":
             continue
         if incoming[key] or key in routes or qual in entry_names:
             continue
-        dead.append(key)
+        (test_only if key in test_called else dead).append(key)
 
     names = defaultdict(list)
     for key, s in symbols.items():
@@ -1337,12 +1432,12 @@ def build(root: Path, cfg: dict) -> dict:
         "modules": dict(sorted(modules.items())),
         "symbols": dict(sorted(symbols.items())),
         "routes": dict(sorted(routes.items())),
-        "calls": calls, "refs": refs, "constructs": constructs, "inferred_calls": inferred,
+        "calls": calls, "refs": refs, "constructs": constructs, "inferred_calls": inferred, "binds": sorted(binds_found),
         "sql": sorted(sql, key=lambda e: (e["symbol"], e["line"])),
         "gateways": sorted(gateways, key=lambda e: (e["symbol"], e["line"])),
         "external": sorted(external, key=lambda e: (e["symbol"], e["line"], e["call"])),
         "import_cycles": cycles, "lazy_import_cycles": lazy_cycles,
-        "dead_candidates": dead, "duplicate_names": dup, "parse_errors": parse_errors,
+        "dead_candidates": dead, "test_only": test_only, "test_files": test_files, "duplicate_names": dup, "parse_errors": parse_errors,
         "profiles": {p.NAME: sorted(profile_records.get(p.NAME, []), key=lambda e: (e["symbol"], e["line"])) for p in active_profiles},
     }
 
