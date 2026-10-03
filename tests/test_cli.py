@@ -41,7 +41,7 @@ class FullRun(unittest.TestCase):
         cls.out = cls.repo / "docs" / "code-flow"
 
     def test_init_vendors_everything_needed_to_rebuild(self):
-        for name in ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "template.html", "profiles/__init__.py", "profiles/llm.py"]:
+        for name in ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "template.html", "profiles/__init__.py", "profiles/llm.py"]:
             with self.subTest(name):
                 self.assertTrue((self.out / "tools" / name).exists())
         self.assertEqual(tomllib.loads((self.out / "codeflow.toml").read_text())["paths"]["root"], "../..")
@@ -184,6 +184,18 @@ class Languages(unittest.TestCase):
         self.assertEqual(data["lang"], "ko")
         self.assertIn('lang="ko"', html)
         self.assertIn("주문을 받아", data["meta"]["lede"])
+
+
+class Infrastructure(unittest.TestCase):
+    def test_cdk_section_on_the_page_and_drafted_lambda_cards(self):
+        repo = setup("cdk_ts_app")
+        data, _ = page_data(repo)
+        sec = next(p for p in data["profiles"] if p["name"] == "infra")
+        self.assertTrue(sec["title"].startswith("Infrastructure (TypeScript CDK)"))
+        runs = [row[-1] for row in sec["rows"] if isinstance(row[-1], dict)]
+        self.assertEqual(sorted(r["sym"] for r in runs), ["functions.orders.app:create_order", "functions.orders.worker:handle"])
+        n = tomllib.loads((repo / "docs" / "code-flow" / "narrative.toml").read_text(encoding="utf-8"))
+        self.assertTrue(any(r["kind"] == "infra" for r in n["roles"]))
 
 
 class Profiles(unittest.TestCase):

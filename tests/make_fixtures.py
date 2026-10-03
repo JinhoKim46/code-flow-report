@@ -620,6 +620,115 @@ FIXTURES = {
             print(list_notes())
         """,
     },
+    "cdk_ts_app": {
+        "cdk.json": '{"app": "npx ts-node bin/app.ts"}\n',
+        "lib/storage.ts": """
+            import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+            import { Construct } from "constructs";
+
+            export class Storage extends Construct {
+              public readonly ordersTable: dynamodb.Table;
+
+              constructor(scope: Construct, id: string) {
+                super(scope, id);
+                const table = new dynamodb.Table(this, "Orders", {
+                  partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
+                });
+                this.ordersTable = table;
+              }
+            }
+        """,
+        "lib/app-stack.ts": """
+            import * as cdk from "aws-cdk-lib";
+            import * as lambda from "aws-cdk-lib/aws-lambda";
+            import * as sqs from "aws-cdk-lib/aws-sqs";
+            import * as apigw from "aws-cdk-lib/aws-apigateway";
+            import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+            import { Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
+            import { Construct } from "constructs";
+            import * as path from "path";
+            import { Storage } from "./storage";
+
+            export class AppStack extends cdk.Stack {
+              constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+                super(scope, id, props);
+                const storage = new Storage(this, "Storage");
+                const queue = new sqs.Queue(this, "OrdersQueue");
+                // a comment such as new lambda.Function(this, "Fake", {}) is not a resource
+                const api = new apigw.RestApi(this, "Api");
+                const createOrder = new lambda.Function(this, "CreateOrder", {
+                  runtime: lambda.Runtime.PYTHON_3_12,
+                  handler: "app.create_order",
+                  code: lambda.Code.fromAsset(path.join(__dirname, "../functions/orders")),
+                  environment: {
+                    TABLE_NAME: storage.ordersTable.tableName,
+                    QUEUE_URL: queue.queueUrl,
+                  },
+                });
+                const worker = new LambdaFunction(this, "Worker", {
+                  runtime: lambda.Runtime.PYTHON_3_12,
+                  handler: "worker.handle",
+                  code: lambda.Code.fromAsset("functions/orders"),
+                });
+                const orders = api.root.addResource("orders");
+                orders.addMethod("POST", new apigw.LambdaIntegration(createOrder));
+                worker.addEventSource(new SqsEventSource(queue));
+                storage.ordersTable.grantReadWriteData(createOrder);
+                queue.grantSendMessages(createOrder);
+                allowRead(worker);
+
+                function allowRead(fn: lambda.Function) {
+                  storage.ordersTable.grantReadData(fn);
+                }
+              }
+            }
+        """,
+        "functions/orders/app.py": """
+            import os
+
+            import boto3
+
+
+            def create_order(event, context):
+                table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
+                table.put_item(Item={"id": event["id"]})
+                boto3.client("sqs").send_message(QueueUrl=os.environ["QUEUE_URL"], MessageBody=event["id"])
+                return {"statusCode": 201}
+        """,
+        "functions/orders/worker.py": """
+            def handle(event, context):
+                return [record["body"] for record in event["Records"]]
+        """,
+    },
+    "cdk_py_app": {
+        "cdk.json": '{"app": "python3 app.py"}\n',
+        "infra/stack.py": """
+            from aws_cdk import Stack
+            from aws_cdk import aws_lambda as _lambda
+            from aws_cdk import aws_s3 as s3
+            from aws_cdk import aws_s3_notifications as s3n
+            from constructs import Construct
+
+
+            class IngestStack(Stack):
+                def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+                    super().__init__(scope, construct_id, **kwargs)
+                    bucket = s3.Bucket(self, "Uploads")
+                    fn = _lambda.Function(
+                        self, "Ingest",
+                        runtime=_lambda.Runtime.PYTHON_3_12,
+                        handler="ingest.handler",
+                        code=_lambda.Code.from_asset("functions"),
+                        environment={"BUCKET": bucket.bucket_name},
+                    )
+                    bucket.grant_read(fn)
+                    bucket.add_event_notification(s3.EventType.OBJECT_CREATED, s3n.LambdaDestination(fn))
+        """,
+        "functions/ingest.py": """
+            def handler(event, context):
+                return len(event["Records"])
+        """,
+    },
     "streamlit_app": {
         "app/main.py": """
             import streamlit as st

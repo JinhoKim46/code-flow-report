@@ -39,7 +39,7 @@ import extract  # noqa: E402
 from common import CONFIG_NAME, Paths, count_todo, load_map, load_narrative  # noqa: E402
 
 SAMPLE_DIRS = {"examples", "example", "samples", "demos", "demo", "benchmarks", "benchmark", "notebooks", "cookbook", "docs_src"}
-VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py"]
+VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py"]
 
 
 # --------------------------------------------------------------------------- init
@@ -152,6 +152,10 @@ def print_summary(cm: dict) -> None:
           f"(avoided by lazy import {s['lazy_import_cycles']}) · parse errors {s['parse_errors']}")
     if s.get("profiles"):
         print("stack profiles on: " + ", ".join(f"{k} ({v} records)" for k, v in s["profiles"].items()))
+    if s.get("infra_resources"):
+        infra = cm.get("infra", {})
+        print(f"infrastructure ({', '.join(infra.get('languages', []))} CDK): {s['infra_resources']} resources · "
+              f"{len(infra.get('edges', []))} wiring edges · Lambda handlers linked to Python {s['infra_lambdas_linked']}/{s['infra_lambdas']}")
     print("most frequent unresolved: " + ", ".join(f"{n}×{c}" for n, c in s["top_unresolved_names"][:8]))
 
 

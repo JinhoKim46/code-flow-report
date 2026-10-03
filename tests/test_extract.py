@@ -268,6 +268,60 @@ class LibPkg(unittest.TestCase):
                                ("sdk", "lib.chain:ask")})                  # llm.invoke(...)
 
 
+def infra_edges(cm):
+    import infra
+    inf = cm["infra"]
+    return {(infra.describe(inf, e["from"]), e["kind"], e["label"], infra.describe(inf, e["to"])) for e in inf["edges"]}
+
+
+class CdkTypeScriptApp(unittest.TestCase):
+    """CDK in TypeScript wiring Python Lambdas: what runs each handler and what it may touch."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("cdk_ts_app")
+
+    def test_resources_and_handlers(self):
+        res = {(r["service"], r["id"]): r.get("handler_symbol") for r in self.cm["infra"]["resources"]}
+        self.assertEqual(res, {("SQS", "OrdersQueue"): None, ("API Gateway", "Api"): None, ("DynamoDB", "Orders"): None,
+                               ("Lambda", "CreateOrder"): "functions.orders.app:create_order",  # path.join(__dirname, "../functions/orders")
+                               ("Lambda", "Worker"): "functions.orders.worker:handle"})        # imported as LambdaFunction
+        self.assertEqual(self.cm["infra"]["languages"], ["TypeScript"])
+
+    def test_wiring(self):
+        self.assertEqual(infra_edges(self.cm), {
+            ("API Gateway Api", "route", "POST /orders", "Lambda CreateOrder"),
+            ("SQS OrdersQueue", "trigger", "Sqs", "Lambda Worker"),
+            ("Lambda CreateOrder", "grant", "grantReadWriteData", "DynamoDB Orders"),   # storage.ordersTable: a construct's property
+            ("Lambda CreateOrder", "grant", "grantSendMessages", "SQS OrdersQueue"),
+            ("Lambda Worker", "grant", "grantReadData", "DynamoDB Orders"),             # through the allowRead(fn) helper
+            ("Lambda CreateOrder", "env", "TABLE_NAME", "DynamoDB Orders"),
+            ("Lambda CreateOrder", "env", "QUEUE_URL", "SQS OrdersQueue")})
+
+    def test_handlers_are_journey_entries(self):
+        import draft
+        self.assertEqual({(s, t) for s, k, t in draft.entry_points(self.cm) if k == "infra"}, {
+            ("functions.orders.app:create_order", "API Gateway Api (POST /orders) → Lambda CreateOrder"),
+            ("functions.orders.worker:handle", "SQS OrdersQueue (Sqs) → Lambda Worker")})
+        cards = {r["id"]: r for r in draft.propose_roles(self.cm, 6) if r["kind"] == "infra"}
+        self.assertEqual(len(cards), 2)
+
+
+class CdkPythonApp(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("cdk_py_app")
+
+    def test_python_cdk_wiring(self):
+        self.assertEqual({r["handler_symbol"] for r in self.cm["infra"]["resources"] if r.get("handler_symbol")}, {"functions.ingest:handler"})
+        self.assertEqual(infra_edges(self.cm), {("S3 Uploads", "notify", "S3 event", "Lambda Ingest"),
+                                                ("Lambda Ingest", "grant", "grant_read", "S3 Uploads"),
+                                                ("Lambda Ingest", "env", "BUCKET", "S3 Uploads")})
+
+    def test_no_infra_without_cdk(self):
+        self.assertEqual(code_map("flask_app")["infra"], {})
+
+
 class StreamlitApp(unittest.TestCase):
     """A script-style UI: widgets are the entry points; SQLModel writes go through a @contextmanager session."""
 

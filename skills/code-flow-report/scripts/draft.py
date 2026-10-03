@@ -12,9 +12,11 @@ import re
 from collections import Counter, defaultdict
 
 try:
+    from . import infra as infra_scanner
     from . import profiles as profile_registry
     from .build import auto_layers, common_prefix
 except ImportError:
+    import infra as infra_scanner
     import profiles as profile_registry
     from build import auto_layers, common_prefix
 
@@ -200,6 +202,9 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
         elif key in cm["symbols"]:
             out.append((key, "cli", name))
     out += library_api(cm)
+    for sym, trig in infra_scanner.triggers(cm.get("infra") or {}):  # SQS IngestionQueue (Sqs) → Lambda UploadHandler
+        if sym in cm["symbols"]:
+            out.append((sym, "infra", trig))
     for r in cm.get("profiles", {}).get("jobs", []):
         out.append((r["job"], "job", r.get("how", "")))
     for k, s in cm["symbols"].items():
@@ -218,7 +223,8 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
     return uniq
 
 
-ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)", "api": "library user"}
+ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)", "api": "library user",
+         "infra": "AWS (invokes the Lambda)"}
 
 # a library's journeys start where its users call it: the entry methods of the classes it exports
 API_METHODS = ("run", "__call__", "invoke", "ainvoke", "execute", "stream", "chat", "generate", "predict", "fit", "transform",
@@ -351,10 +357,34 @@ def propose_roles(cm: dict, n: int) -> list[dict]:
         p = by_name.get(name)
         if p and hasattr(p, "draft_roles"):
             profile_roles += p.draft_roles(recs, cm)
+    profile_roles += infra_roles(cm)
     covered = {s for r in profile_roles for s in r.get("symbols", [])}
     # a generic service card whose functions a profile card already explains would be a duplicate
     roles = [r for r in roles if not (r["kind"] == "external" and set(r["symbols"]) <= covered)]
     return roles + profile_roles
+
+
+def infra_roles(cm: dict) -> list[dict]:
+    """One card per Lambda whose Python handler is known: what invokes it, what it may touch, what tells it where."""
+    infra = cm.get("infra") or {}
+    roles = []
+    for i, r in enumerate(infra.get("resources", [])):
+        if not r.get("handler_symbol") or r["handler_symbol"] not in cm["symbols"]:
+            continue
+        edges = infra["edges"]
+        inbound = [f"{infra_scanner.describe(infra, e['from'])} ({e['label']})" for e in edges if e["to"] == i and e["kind"] != "env"]
+        grants = [f"{infra_scanner.describe(infra, e['to'])} ({e['label']})" for e in edges if e["from"] == i and e["kind"] == "grant"]
+        env = [f"{e['label']} → {infra_scanner.describe(infra, e['to'])}" for e in edges if e["from"] == i and e["kind"] == "env"]
+        roles.append({"id": "lambda-" + _slug(r["id"] + "-" + r["file"].rsplit("/", 1)[-1].split(".")[0]), "kind": "infra",
+                      "name": f"Lambda {r['id']}", "symbols": [r["handler_symbol"]],
+                      "purpose": "TODO: what this function is for, in one sentence",
+                      "message": [f"invoked by: {x}" for x in inbound] or ["TODO: what invokes it (no trigger found in the CDK code)"],
+                      "config": f"defined in {r['file']}:{r['line']}" + (f" · environment: {'; '.join(env)}" if env else ""),
+                      "output": "TODO: what it returns or writes",
+                      "validation": "TODO: retries, timeouts, dead-letter handling",
+                      "logging": "TODO: where a failure is noticed",
+                      "result_use": ("may use: " + "; ".join(grants)) if grants else "TODO: what it may touch (no grants found)"})
+    return roles
 
 
 def propose_input_flows(cm: dict, g: "Graph", n: int = 4) -> list[dict]:

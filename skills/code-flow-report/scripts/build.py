@@ -14,9 +14,11 @@ from collections import defaultdict
 from pathlib import Path
 
 try:
+    from . import infra as infra_scanner
     from . import profiles as profile_registry
     from .common import Paths, check_problem, count_todo, narrative_problems
 except ImportError:  # script import
+    import infra as infra_scanner
     import profiles as profile_registry
     from common import Paths, check_problem, count_todo, narrative_problems
 
@@ -270,6 +272,14 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
             for sym, rows in p.card_extras(records).items():
                 card_extras[sym] += rows
 
+    infra = code_map.get("infra") or {}
+    if infra.get("resources"):
+        sec = infra_scanner.section(infra, lang)
+        prof_sections.insert(0, {"name": "infra", "rows": sec["rows"], "columns": sec["columns"],
+                                 "title": "인프라 (CDK)" if lang == "ko" else f"Infrastructure ({' and '.join(infra['languages'])} CDK)",
+                                 "intro": (f"CDK 코드에서 읽은 리소스 {len(infra['resources'])}개와 그 연결. 람다마다 실행하는 파이썬 함수({infra['lambdas_linked']}/{infra['lambdas']}개 연결)와, 그것을 호출하는 것(큐, API, 워크플로)과 쓸 수 있는 것(grant), 환경 변수로 이름을 받는 리소스를 보인다."
+                                           if lang == "ko" else
+                                           f"{len(infra['resources'])} resources read from the CDK code and how they are wired: for each Lambda, the Python function it runs ({infra['lambdas_linked']} of {infra['lambdas']} linked), what invokes it (queues, APIs, workflows), what it may use (grants) and which resources it is told about through environment variables.")})
     roles = [{**r, "_locs": [enrich(code_map, s) for s in r.get("symbols", [])]} for r in narrative.get("roles", [])]
     flows = [{**f, "steps": with_loc(f.get("steps", []))} for f in narrative.get("input_flows", [])]
     entities = [{**e, "events": with_loc(e.get("events", [])), "auto": tables.get(e.get("table", ""))} for e in narrative.get("entities", [])]

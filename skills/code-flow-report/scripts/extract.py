@@ -31,13 +31,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 try:  # package import (tests) or script import (CLI)
+    from . import infra as infra_scanner
     from . import profiles as profile_registry
 except ImportError:  # pragma: no cover
+    import infra as infra_scanner
     import profiles as profile_registry
 
 BUILTINS = set(dir(builtins))
 ROUTE_VERBS = {"get", "post", "put", "patch", "delete", "route", "api_route", "websocket", "head", "options"}
-DEFAULT_EXCLUDE = ["tests", "test", "testing", ".venv", "venv", "env", ".env", "node_modules", "__pycache__",
+DEFAULT_EXCLUDE = ["tests", "test", "testing", "integtests", "integration_tests", "e2e", ".venv", "venv", "env", ".env", "node_modules", "__pycache__",
                    "build", "dist", ".git", ".tox", ".nox", "site-packages", "migrations", "cdk.out", ".mypy_cache",
                    ".pytest_cache", ".claude", "docs"]
 
@@ -208,7 +210,7 @@ def console_scripts(root: Path) -> dict[str, str]:
     return {k: v for k, v in sorted(scripts.items()) if isinstance(v, str)}
 
 
-TEST_DIRS = ("tests", "test", "testing")
+TEST_DIRS = ("tests", "test", "testing", "integtests", "integration_tests", "e2e")
 
 
 def test_callers(root: Path, cfg: dict, res: "Resolver", strip: list[str]) -> tuple[set[str], int]:
@@ -1551,6 +1553,10 @@ def build(root: Path, cfg: dict) -> dict:
     resolved = totals["internal"] + totals["external"] + totals["builtin"] + totals["convention"]
     relevant = totals["call_sites"] - totals["builtin"]
     value_like = sum(c for n, c in unresolved_names.items() if n in VALUE_METHOD_NAMES and n not in by_name)
+    # infrastructure as code (CDK in TypeScript or Python): what runs each handler and what it may touch
+    infra = {}
+    if cfg.get("infra", {}).get("enabled", True):
+        infra = infra_scanner.scan(root, cfg, modules, symbols, set(cfg["scan"].get("exclude", DEFAULT_EXCLUDE)) - {"tests", "test"}, walk_files)
     summary = {
         "files": len(modules), "lines": sum(m["lines"] for m in modules.values()),
         "functions": sum(1 for s in symbols.values() if s["kind"] in ("function", "nested")),
@@ -1570,6 +1576,8 @@ def build(root: Path, cfg: dict) -> dict:
         "tables": len(tables), "orm_models": len(models), "import_cycles": len(cycles),
         "lazy_import_cycles": len(lazy_cycles), "parse_errors": len(parse_errors),
         "profiles": {p.NAME: len(profile_records.get(p.NAME, [])) for p in active_profiles},
+        "infra_resources": len(infra.get("resources", [])), "infra_lambdas": infra.get("lambdas", 0),
+        "infra_lambdas_linked": infra.get("lambdas_linked", 0),
         "top_unresolved_names": [[n, c] for n, c in unresolved_names.most_common(15)],
     }
     return {
@@ -1590,6 +1598,7 @@ def build(root: Path, cfg: dict) -> dict:
         "dead_candidates": dead, "test_only": test_only, "test_files": test_files, "duplicate_names": dup, "parse_errors": parse_errors,
         "profiles": {p.NAME: sorted(profile_records.get(p.NAME, []), key=lambda e: (e["symbol"], e["line"])) for p in active_profiles},
         "console_scripts": console_scripts(root),
+        "infra": infra,
     }
 
 
