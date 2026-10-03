@@ -232,6 +232,32 @@ class LlmApp(unittest.TestCase):
         self.assertTrue(cards["model-judge"]["output"].startswith("Verdict"))
 
 
+class LibPkg(unittest.TestCase):
+    """A library: entry points are its exported API and console scripts; active-record models; SurrealQL schema."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cm = code_map("lib_pkg")
+
+    def test_library_api_console_scripts_and_scripts_are_entries(self):
+        import draft
+        self.assertEqual({(s, k, t) for s, k, t in draft.entry_points(self.cm)},
+                         {("scripts.seed:<module>", "cli", "python scripts/seed.py"),  # top-level script code is a symbol
+                          ("lib.cli:run", "cli", "libtool"),                              # [project.scripts]
+                          ("lib.agents:Base.run", "api", "Agent().run()")})                # __all__ class, method via its base
+
+    def test_active_record_models_on_a_surrealql_schema(self):
+        self.assertEqual(self.cm["tables"], ["note"])  # DEFINE TABLE; ApiModel(Model) is this repo's Model, not a table
+        by = {(e["symbol"], op): e[op] for e in self.cm["sql"] for op in ("insert", "update", "delete", "read") if e.get(op)}
+        self.assertEqual(by, {("lib.store:add_note", "insert"): ["note"], ("lib.store:list_notes", "read"): ["note"]})
+
+    def test_model_calls_through_inheritance_retry_wrappers_and_langchain(self):
+        llm = {(r.get("kind", "sdk"), r["symbol"]) for r in self.cm["profiles"]["llm"]}
+        self.assertEqual(llm, {("sdk", "lib.models:OpenAIModel.generate"),  # SDK method handed to self.retry(...)
+                               ("gateway", "lib.agents:Agent.step"),       # self.model (typed in Base) → Model.generate
+                               ("sdk", "lib.chain:ask")})                  # llm.invoke(...)
+
+
 class StreamlitApp(unittest.TestCase):
     """A script-style UI: widgets are the entry points; SQLModel writes go through a @contextmanager session."""
 

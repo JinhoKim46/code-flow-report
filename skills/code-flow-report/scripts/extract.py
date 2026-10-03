@@ -89,6 +89,13 @@ LITERALS = {ast.List: "list", ast.ListComp: "list", ast.Dict: "dict", ast.DictCo
             ast.Tuple: "tuple", ast.JoinedStr: "str"}
 # ORM session calls: the table is not in the call, so it is taken from the model classes the same function names
 ORM_SESSION_TYPES = {"Session", "AsyncSession", "scoped_session", "sessionmaker"}
+# a model class names its table in one of these (SQLAlchemy, active-record bases, document stores)
+TABLE_ATTRS = {"__tablename__", "table_name", "_table_name", "__table_name__", "collection_name", "__collection__", "_table"}
+# methods on a model class or instance that touch its table: notebook.save(), Note.get(id), Model.objects.filter(...)
+ACTIVE_RECORD_OPS = {"save": "insert", "create": "insert", "insert": "insert", "bulk_create": "insert", "update": "update",
+                     "upsert": "update", "update_or_create": "update", "get_or_create": "insert", "delete": "delete",
+                     "remove": "delete", "get": "read", "get_all": "read", "all": "read", "filter": "read", "find": "read",
+                     "first": "read", "exclude": "read", "count": "read", "exists": "read", "search": "read", "values": "read"}
 ORM_SESSION_OPS = {"add": "insert", "add_all": "insert", "merge": "update", "delete": "delete", "bulk_save_objects": "insert",
                    "bulk_insert_mappings": "insert", "bulk_update_mappings": "update",
                    "exec": "read", "execute": "read", "get": "read", "query": "read", "scalars": "read", "scalar": "read"}
@@ -103,9 +110,11 @@ SQL_WRITE = {
 }
 SQL_READ = re.compile(r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
 CREATE_RE = re.compile(
-    r"^\s*CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?(?:TABLE(?:\s+IF\s+NOT\s+EXISTS)?|(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW(?:\s+IF\s+NOT\s+EXISTS)?)\s+([A-Za-z_][\w.\"]*)",
+    r"^\s*(?:CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?(?:TABLE(?:\s+IF\s+NOT\s+EXISTS)?|(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW(?:\s+IF\s+NOT\s+EXISTS)?)"
+    r"|DEFINE\s+TABLE(?:\s+(?:IF\s+NOT\s+EXISTS|OVERWRITE))?)\s+([A-Za-z_][\w.\"]*)",  # SQL, and SurrealQL's DEFINE TABLE
     re.MULTILINE | re.IGNORECASE,
 )
+SCHEMA_GLOBS = ["**/*.sql", "**/*.surql", "**/*.surrealql"]
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -179,6 +188,26 @@ def source_files(root: Path, cfg: dict) -> list[Path]:
     return sorted(files)
 
 
+def exports_of(tree: ast.Module) -> list[str]:
+    """A module's public API as it declares it: the names in a literal `__all__`."""
+    for n in tree.body:
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets) and isinstance(n.value, (ast.List, ast.Tuple)):
+            return [e.value for e in n.value.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return []
+
+
+def console_scripts(root: Path) -> dict[str, str]:
+    """`[project.scripts]` in pyproject.toml: command name → "pkg.mod:function" (an entry point with no __main__)."""
+    try:
+        import tomllib
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        return {}
+    scripts = data.get("project", {}).get("scripts", {}) or data.get("tool", {}).get("poetry", {}).get("scripts", {})
+    return {k: v for k, v in sorted(scripts.items()) if isinstance(v, str)}
+
+
 TEST_DIRS = ("tests", "test", "testing")
 
 
@@ -227,7 +256,7 @@ def walk_files(root: Path, exclude: set[str]):
 def known_tables(root: Path, cfg: dict) -> set[str]:
     names = set()
     exclude = set(cfg["scan"].get("exclude", DEFAULT_EXCLUDE)) - {"migrations"}
-    globs = cfg["scan"].get("schema_globs", ["**/*.sql"])
+    globs = cfg["scan"].get("schema_globs", SCHEMA_GLOBS)
     for f in walk_files(root, exclude | {"node_modules", "site-packages"}):
         rel = f.relative_to(root).as_posix()
         if not any(fnmatch.fnmatch(rel, g) or (g.startswith("**/") and fnmatch.fnmatch(rel, g[3:])) for g in globs):
@@ -268,8 +297,9 @@ class Definitions(ast.NodeVisitor):
         }
         table = None
         for stmt in node.body:
-            if isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__tablename__" for t in stmt.targets):
-                table = literal_str(stmt.value)
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
+            if any(isinstance(t, ast.Name) and t.id in TABLE_ATTRS for t in targets) and getattr(stmt, "value", None) is not None:
+                table = literal_str(stmt.value) or table  # __tablename__, or an active-record `table_name: ClassVar[str] = "note"`
             if isinstance(stmt, ast.ClassDef) and stmt.name == "Meta":
                 for m in stmt.body:
                     if isinstance(m, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "db_table" for t in m.targets):
@@ -321,7 +351,8 @@ class Resolver:
         self.return_types: dict[str, tuple[str, str]] = {}                  # function key → type of what it returns
         self.inferred_params: dict[str, dict[str, tuple[str, str]]] = {}    # function key → param → type seen at every call site
         self.gateways: dict[str, set[str]] = {}
-        self.binds: dict[str, list[str]] = {}  # "pkg.mod:Class.field" → functions passed for that Callable field at construction  # profile name → the repo's own functions that wrap that stack (e.g. an LLM client)
+        self.binds: dict[str, list[str]] = {}
+        self.models: dict[str, str] = {}  # class key → table, for active-record calls  # "pkg.mod:Class.field" → functions passed for that Callable field at construction  # profile name → the repo's own functions that wrap that stack (e.g. an LLM client)
         self.by_suffix: dict[str, list[str]] = defaultdict(list)
         for m in modules:
             parts = m.split(".")
@@ -359,6 +390,32 @@ class Resolver:
                     return r
             elif kind == "external":
                 return ("external", f"{target}{'.' + rest if rest else ''}().{method}")
+        return None
+
+    def base_keys(self, class_key: str):
+        """The internal classes a class inherits from (same module, or imported by name)."""
+        mod = class_key.split(":", 1)[0]
+        for base in self.symbols.get(class_key, {}).get("bases", []):
+            head, _, rest = base.partition(".")
+            local = f"{mod}:{base}"
+            if local in self.symbols and self.symbols[local]["kind"] == "class":
+                yield local
+                continue
+            kind, target = self.all_imports.get(mod, {}).get(head, (None, None))
+            if kind == "symbol" and not rest and self.symbols.get(target, {}).get("kind") == "class":
+                yield target
+            elif kind == "module" and rest and self.symbols.get(f"{target}:{rest}", {}).get("kind") == "class":
+                yield f"{target}:{rest}"
+
+    def attr_type(self, class_key: str, attr: str, depth: int = 0):
+        """The type of `self.attr` as the class or one of its bases sets it (CodeAgent inherits self.model: Model)."""
+        t = self.class_attr_types.get(class_key, {}).get(attr)
+        if t or depth > 6:
+            return t
+        for b in self.base_keys(class_key):
+            t = self.attr_type(b, attr, depth + 1)
+            if t:
+                return t
         return None
 
     def method_of_bases(self, class_key: str, method: str):
@@ -644,7 +701,7 @@ class Calls(ast.NodeVisitor):
             types = {t for t in (self.value_type(o) for o in options) if t}
             return types.pop() if len(types) == 1 else None
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and self.class_stack:
-            return self.res.class_attr_types.get(f"{self.mod}:{self.class_stack[-1]}", {}).get(node.attr)
+            return self.res.attr_type(f"{self.mod}:{self.class_stack[-1]}", node.attr)
         if isinstance(node, ast.Attribute):
             r = self.resolve_expr(node)  # e.g. request.form → the library object flask.request.form
             if r and r[0] in ("external", "convention"):
@@ -704,7 +761,7 @@ class Calls(ast.NodeVisitor):
             head, *rest = chain.split(".")
             if head in ("self", "cls") and self.class_stack and len(rest) >= 2:
                 cls_key = f"{self.mod}:{self.class_stack[-1]}"
-                typed_attr = self.res.class_attr_types.get(cls_key, {}).get(rest[0])
+                typed_attr = self.res.attr_type(cls_key, rest[0])
                 if typed_attr:
                     tk, tt = typed_attr
                     if tk == "internal" and len(rest) == 2:
@@ -730,7 +787,7 @@ class Calls(ast.NodeVisitor):
                         return ("internal", bound[0])  # deps.make_llm(...) → the function passed as make_llm
                     return r
                 if tkind == "internal" and len(rest) == 2:
-                    attr_t = self.res.class_attr_types.get(ttarget, {}).get(rest[0])
+                    attr_t = self.res.attr_type(ttarget, rest[0])
                     if attr_t and attr_t[0] == "internal":
                         return self.res.method_of(attr_t[1], rest[1])
                     if attr_t and attr_t[0] in ("external", "convention"):
@@ -768,7 +825,11 @@ class Calls(ast.NodeVisitor):
                 return ("unresolved", f"{mod}.{'.'.join(parts)}")
             if kind == "internal":
                 key = f"{target}.{'.'.join(rest)}"
-                return ("internal", key) if key in self.res.symbols else None
+                if key in self.res.symbols:
+                    return ("internal", key)
+                if len(rest) == 1 and self.res.symbols[target]["kind"] == "class":
+                    return self.res.method_of(target, rest[0])  # Note.get_all() defined on a base class
+                return None
             if kind == "external":
                 return ("external", ".".join([target] + rest))
             if kind == "builtin":
@@ -935,6 +996,13 @@ class Calls(ast.NodeVisitor):
                                 self.templates[caller].add(tpl)
                         self.external.append(entry)
                         break
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ACTIVE_RECORD_OPS and self.res.models:
+            recv = node.func.value.value if isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "objects" else node.func.value
+            owner = self.value_type(recv)
+            if not (owner and owner[0] == "internal"):
+                owner = self.resolve_expr(recv)
+            if owner and owner[0] == "internal" and owner[1] in self.res.models:
+                self.orm_ops.append([caller, node.lineno, ACTIVE_RECORD_OPS[node.func.attr], owner[1]])
         for prof in self.profiles:
             rec = prof.on_call(self, node, r, chain)
             if rec:
@@ -1142,7 +1210,8 @@ def build(root: Path, cfg: dict) -> dict:
         symbols.update(d.symbols)
         models.update(d.models)
         has_main = any(isinstance(n, ast.If) and "__main__" in ast.unparse(n.test) for n in tree.body)
-        modules[mod] = {"file": rel, "lines": len(text.splitlines()), "doc": first_paragraph(ast.get_docstring(tree)), "cli": has_main}
+        modules[mod] = {"file": rel, "lines": len(text.splitlines()), "doc": first_paragraph(ast.get_docstring(tree)), "cli": has_main,
+                        "exports": exports_of(tree)}
         strings = {}
         for n in tree.body:
             if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
@@ -1168,9 +1237,20 @@ def build(root: Path, cfg: dict) -> dict:
     profile_records: dict[str, list] = defaultdict(list)
 
     res = Resolver(set(modules), symbols)
-    tables = known_tables(root, cfg) | set(models.values())
     tables_by_mod = {m: import_table(trees[m], m, res, is_pkg[m]) for m in sorted(trees)}
     res.all_imports = {m: t[0] for m, t in tables_by_mod.items()}
+    # `class X(Model)` names a table only when Model is the ORM's (django, peewee…), not a class of this repo
+    for key in [k for k, t in models.items() if t == k.rsplit(":", 1)[-1].split(".")[-1].lower()]:
+        mod = key.split(":", 1)[0]
+        for b in symbols[key].get("bases", []):
+            if b != "Model":
+                continue
+            imported = res.all_imports.get(mod, {}).get("Model", (None, None))
+            if f"{mod}:Model" in symbols or (imported[0] == "symbol" and imported[1] in symbols):
+                del models[key]
+                break
+    res.models = models
+    tables = known_tables(root, cfg) | set(models.values())
     def class_key(m, cls):
         return next((k for k, sd in symbols.items() if k.startswith(m + ":") and sd["kind"] == "class" and sd["line"] == cls.lineno), None)
 
@@ -1346,6 +1426,15 @@ def build(root: Path, cfg: dict) -> dict:
     call_keys = {(a, b, ln) for a, b, ln in calls}
     refs = [r for r in refs if (r[0], r[1], r[2]) not in call_keys and r[0] != r[1]]
 
+    # top-level code that does real work (a training script, a Streamlit page) is a symbol of its own, so the graph shows
+    # it and a journey can start there; a module that only defines things keeps its pseudo-caller out of the symbols
+    top = Counter(a for a, b, _ in calls if a.endswith(":<module>"))
+    for key, n in top.items():
+        mod = key.split(":", 1)[0]
+        if n >= 3 and key not in symbols and mod in modules:
+            symbols[key] = {"kind": "module", "file": modules[mod]["file"], "line": 1, "end": modules[mod]["lines"],
+                            "doc": modules[mod]["doc"], "params": [], "decorators": [], "async": False}
+
     # final prefix = where it is mounted + what the blueprint/router declares itself
     names = set(own_prefix) | set(mount_prefix)
     prefixes = {n: "/" + "/".join(x.strip("/") for x in (mount_prefix.get(n, ""), own_prefix.get(n, "")) if x.strip("/")) for n in names}
@@ -1439,6 +1528,7 @@ def build(root: Path, cfg: dict) -> dict:
         "import_cycles": cycles, "lazy_import_cycles": lazy_cycles,
         "dead_candidates": dead, "test_only": test_only, "test_files": test_files, "duplicate_names": dup, "parse_errors": parse_errors,
         "profiles": {p.NAME: sorted(profile_records.get(p.NAME, []), key=lambda e: (e["symbol"], e["line"])) for p in active_profiles},
+        "console_scripts": console_scripts(root),
     }
 
 

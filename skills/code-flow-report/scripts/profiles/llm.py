@@ -12,10 +12,12 @@ records every call to them (kind "gateway") with its label, model, messages buil
 from __future__ import annotations
 
 import ast
+import re
 
 NAME = "llm"
 PACKAGES = ["openai", "anthropic", "litellm", "langchain", "langchain_openai", "langchain_anthropic",
-            "langchain_core", "google", "ollama", "mistralai", "cohere", "groq", "together", "vertexai"]
+            "langchain_core", "google", "ollama", "mistralai", "cohere", "groq", "together", "vertexai", "esperanto",
+            "langgraph", "huggingface_hub"]
 TITLE = {"en": "Model calls", "ko": "모델 호출"}
 INTRO = {"en": "Every call to a language-model API found in the code: provider, model and settings as written at the call site, the message roles in order, tools and the output schema. Values shown as code (not quoted) come from a variable; follow the function to see where it is set.",
          "ko": "코드에서 찾은 언어 모델 API 호출: 호출 지점에 적힌 제공자 · 모델 · 설정, 메시지 역할의 순서, 도구와 출력 스키마. 따옴표 없이 보이는 값은 변수에서 온다 — 함수를 따라가면 어디서 정해지는지 보인다."}
@@ -51,6 +53,8 @@ MODEL_HOSTS = {"openrouter": "OpenRouter", "api.openai": "OpenAI", "openai.azure
 HTTP_LIBS = ("httpx", "requests", "aiohttp", "urllib3")
 HTTP_METHODS = {"post", "request", "stream", "send"}
 LABEL_KW = ("role", "name", "purpose", "task", "label", "agent", "kind")
+INVOKE_METHODS = {"invoke", "ainvoke", "stream", "astream", "batch", "abatch"}
+MODEL_NAMES = re.compile(r"(model|llm|chain|chat)", re.I)  # LangChain: model.ainvoke(...), chain.invoke(...)
 PROMPT_PARAMS = {"messages", "prompt", "msgs", "conversation", "history", "contents", "input", "chat_history", "system"}
 
 
@@ -107,6 +111,15 @@ def find_gateways(records, calls, symbols):
         mod, qual = k.split(":", 1)
         return f"{mod}:{qual.rsplit('.', 1)[0]}" if symbols.get(k, {}).get("kind") == "method" else mod
 
+    def bases_of(cls_key):
+        mod = cls_key.split(":", 1)[0]
+        for b in symbols.get(cls_key, {}).get("bases", []):
+            name = b.rsplit(".", 1)[-1]
+            same = f"{mod}:{name}"
+            hits = [same] if same in symbols else [k for k, v in symbols.items() if v["kind"] == "class" and k.endswith(":" + name)]
+            if len(hits) == 1:
+                yield hits[0]
+
     changed = True
     while changed:
         changed = False
@@ -114,6 +127,24 @@ def find_gateways(records, calls, symbols):
             if b in gw and a not in gw and a in symbols and owner(a) == owner(b) and symbols[a]["kind"] in ("method", "function"):
                 gw[a] = gw[b]
                 changed = True
+        # polymorphism: callers hold the base type (self.model: Model), so a base method whose override is a gateway is one too
+        for k in list(gw):
+            if symbols.get(k, {}).get("kind") != "method":
+                continue
+            cls, meth = k.rsplit(".", 1)
+            todo, seen = list(bases_of(cls)), set()
+            while todo:  # climb through classes that do not override the method (OpenAIModel → ApiModel → Model)
+                base = todo.pop()
+                if base in seen:
+                    continue
+                seen.add(base)
+                bk = f"{base}.{meth}"
+                if bk not in symbols:
+                    todo += list(bases_of(base))
+                elif bk not in gw:
+                    same = all(p == gw[k] for x, p in gw.items() if x.endswith("." + meth))
+                    gw[bk] = gw[k] if same else "several providers"
+                    changed = True
     return gw
 
 
@@ -121,6 +152,25 @@ def on_call(ctx, node, resolved, chain):
     gateways = ctx.res.gateways.get(NAME, {})
     if resolved and resolved[0] == "internal" and resolved[1] in gateways and ctx.here() not in gateways:
         return _gateway_call(ctx, node, resolved[1], gateways[resolved[1]])
+    # an SDK method handed to a retry/backoff wrapper: retryer(self.client.chat.completions.create, **kwargs)
+    for a in node.args:
+        text = ast.unparse(a) if isinstance(a, ast.Attribute) else ""
+        prov = next((p for suffix, p in SUFFIXES if text.endswith("." + suffix)), None)
+        if prov:
+            return {"symbol": ctx.here(), "line": node.lineno, "provider": prov, "call": f"{_short(node.func, 30)}({text})",
+                    "settings": {}, "message_roles": []}
+    # LangChain / LangGraph chat models and chains: an untyped `model.ainvoke(messages)`
+    if isinstance(node.func, ast.Attribute) and node.func.attr in INVOKE_METHODS and not (resolved and resolved[0] == "internal"):
+        recv = node.func.value
+        name = recv.attr if isinstance(recv, ast.Attribute) else getattr(recv, "id", "")
+        if MODEL_NAMES.search(name or ""):
+            return {"symbol": ctx.here(), "line": node.lineno, "provider": "LangChain", "call": f"{name}.{node.func.attr}",
+                    "settings": {}, "message_roles": [f"<{_short(node.args[0], 40)}>"] if node.args else []}
+    # esperanto's AIFactory.create_language(...) / create_embedding(...): where a model client is made
+    if resolved and resolved[0] == "external" and resolved[1].startswith("esperanto") and resolved[1].rsplit(".", 1)[-1].startswith("create_"):
+        model = node.args[1] if len(node.args) > 1 else _kw(node, "model_name") or _kw(node, "model")
+        return {"symbol": ctx.here(), "line": node.lineno, "provider": "Esperanto", "call": resolved[1].split(".", 1)[-1],
+                "settings": {"model": _short(model)} if model is not None else {}, "message_roles": []}
     host = _http_model_call(ctx, node, resolved)
     if host:
         return {"symbol": ctx.here(), "line": node.lineno, "provider": host, "call": f"HTTP · {resolved[1]}",

@@ -180,11 +180,23 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
     for k, r in cm["routes"].items():
         out.append((k, "route", " · ".join(f"{m} {u}" for m, u in r["urls"][:2])))
     for m, info in cm["modules"].items():
+        # `python -m a.b` needs `a` to be a package; a script folder without __init__.py is run by path
+        parent = m.rsplit(".", 1)[0] if "." in m else None
+        in_script_folder = parent is not None and parent not in cm["modules"]
+        run = f"python {info['file']}" if in_script_folder else f"python -m {m}"
         if info.get("cli") and f"{m}:main" in cm["symbols"]:
-            # `python -m a.b` needs `a` to be a package; a script folder without __init__.py is run by path
-            parent = m.rsplit(".", 1)[0] if "." in m else None
-            run = f"python -m {m}" if parent is None or parent in cm["modules"] else f"python {info['file']}"
             out.append((f"{m}:main", "cli", run))
+        elif f"{m}:<module>" in cm["symbols"] and (info.get("cli") or in_script_folder):
+            out.append((f"{m}:<module>", "cli", run))  # a script whose work is its top-level code
+    for name, target in cm.get("console_scripts", {}).items():
+        mod, _, fn = target.partition(":")
+        key = f"{mod}:{fn.split('.')[0]}" if fn else ""
+        mod_key = next((m for m in cm["modules"] if m == mod or m.endswith("." + mod) or mod.endswith("." + m)), None)
+        if mod_key and f"{mod_key}:{fn}" in cm["symbols"]:
+            out.append((f"{mod_key}:{fn}", "cli", name))
+        elif key in cm["symbols"]:
+            out.append((key, "cli", name))
+    out += library_api(cm)
     for r in cm.get("profiles", {}).get("jobs", []):
         out.append((r["job"], "job", r.get("how", "")))
     for k, s in cm["symbols"].items():
@@ -203,7 +215,43 @@ def entry_points(cm: dict) -> list[tuple[str, str, str]]:
     return uniq
 
 
-ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)"}
+ACTOR = {"route": "client", "cli": "operator (CLI)", "job": "scheduler / worker", "ui": "user (UI)", "api": "library user"}
+
+# a library's journeys start where its users call it: the entry methods of the classes it exports
+API_METHODS = ("run", "__call__", "invoke", "ainvoke", "execute", "stream", "chat", "generate", "predict", "fit", "transform",
+               "serve", "start", "process", "search", "query", "load", "convert", "parse")
+
+
+def library_api(cm: dict) -> list[tuple[str, str, str]]:
+    """Exported functions, and the entry methods (found through the bases) of exported classes, from each `__all__`."""
+    syms, out = cm["symbols"], []
+
+    def method_through_bases(cls_key, name, depth=0):
+        if f"{cls_key}.{name}" in syms or depth > 5:
+            return f"{cls_key}.{name}" if f"{cls_key}.{name}" in syms else None
+        mod = cls_key.split(":", 1)[0]
+        for b in syms.get(cls_key, {}).get("bases", []):
+            b = b.rsplit(".", 1)[-1]
+            hits = [f"{mod}:{b}"] if f"{mod}:{b}" in syms else [k for k, v in syms.items() if v["kind"] == "class" and k.endswith(":" + b)]
+            found = method_through_bases(hits[0], name, depth + 1) if len(hits) == 1 else None
+            if found:
+                return found
+        return None
+
+    for mod, info in sorted(cm["modules"].items()):
+        if mod.split(".")[-1].startswith("_"):
+            continue
+        for name in info.get("exports", []):
+            key = f"{mod}:{name}"
+            kind = syms.get(key, {}).get("kind")
+            if kind == "function":
+                out.append((key, "api", f"{name}()"))
+            elif kind == "class":
+                for m in API_METHODS:
+                    target = method_through_bases(key, m)
+                    if target:
+                        out.append((target, "api", f"{name}().{m}()" if m != "__call__" else f"{name}()(…)"))
+    return out
 
 
 SIDE_WORDS = re.compile(r"(admin|backfill|migrat|seed|dump|debug|test|fixture|audit|sweep|export|import_|verify|revalidat)", re.I)

@@ -60,7 +60,8 @@ def detect_config(root: Path, lang: str, name: str | None, audience: str = "") -
     if len(samples) < len(include):
         include = [x for x in include if x not in samples]
     strip = ["src"] if (root / "src").is_dir() and any((root / "src").glob("*/__init__.py")) else []
-    schema = [g for g in ["**/*.sql"] if any(root.glob(g))]
+    found = {f.suffix for f in extract.walk_files(root, set(exclude) - {"migrations"}) if f.suffix in (".sql", ".surql", ".surrealql")}
+    schema = [g for g in extract.SCHEMA_GLOBS if g.rsplit(".", 1)[-1] in {s[1:] for s in found}]
     # first-parameter names used often enough to be a convention worth typing
     counts = Counter()
     cfg = {"scan": {"include": include or ["."], "exclude": exclude}}

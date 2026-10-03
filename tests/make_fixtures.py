@@ -500,6 +500,114 @@ FIXTURES = {
                 main()
         """,
     },
+    "lib_pkg": {
+        "pyproject.toml": """
+            [project]
+            name = "lib"
+            version = "0.1.0"
+
+            [project.scripts]
+            libtool = "lib.cli:run"
+        """,
+        "schema/0001.surql": """
+            DEFINE TABLE IF NOT EXISTS note SCHEMAFULL;
+        """,
+        "src/lib/__init__.py": "",
+        "src/lib/models.py": """
+            from openai import OpenAI
+
+
+            class Model:
+                def generate(self, messages):
+                    raise NotImplementedError
+
+
+            class ApiModel(Model):
+                pass
+
+
+            class OpenAIModel(ApiModel):
+                def __init__(self):
+                    self.client = OpenAI()
+
+                def generate(self, messages):
+                    return self.retry(self.client.chat.completions.create, messages=messages)
+
+                def retry(self, fn, **kwargs):
+                    return fn(**kwargs)
+        """,
+        "src/lib/agents.py": """
+            from lib.models import Model
+
+            __all__ = ["Agent"]
+
+
+            class Base:
+                def __init__(self, model: Model):
+                    self.model = model
+
+                def run(self, task):
+                    return self.step(task)
+
+                def step(self, task):
+                    raise NotImplementedError
+
+
+            class Agent(Base):
+                def step(self, task):
+                    return self.model.generate([task])
+        """,
+        "src/lib/store.py": """
+            from typing import ClassVar
+
+
+            class Record:
+                table_name: ClassVar[str] = ""
+
+                def save(self):
+                    return self
+
+                @classmethod
+                def get_all(cls):
+                    return []
+
+
+            class Note(Record):
+                table_name: ClassVar[str] = "note"
+
+
+            def add_note(text: str) -> Note:
+                note = Note()
+                note.save()
+                return note
+
+
+            def list_notes():
+                return Note.get_all()
+        """,
+        "src/lib/chain.py": """
+            from langchain_core.messages import HumanMessage
+
+
+            def ask(llm, question: str):
+                return llm.invoke([HumanMessage(content=question)])
+        """,
+        "src/lib/cli.py": """
+            from lib.store import add_note, list_notes
+
+
+            def run():
+                add_note("hello")
+                return list_notes()
+        """,
+        "scripts/seed.py": """
+            from lib.store import add_note, list_notes
+
+            add_note("one")
+            add_note("two")
+            print(list_notes())
+        """,
+    },
     "streamlit_app": {
         "app/main.py": """
             import streamlit as st
