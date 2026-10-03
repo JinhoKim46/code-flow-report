@@ -459,9 +459,13 @@ class Resolver:
         parts = importer.split(".")
         for i in range(len(parts) - 1, 0, -1):
             cand = ".".join(parts[:i] + [name])
-            if cand in self.modules:
+            # only a folder that is NOT a package can be on sys.path (a script folder); inside a package, Python 3
+            # never resolves `import openai` to a sibling `openai` module — the third-party package wins
+            if cand in self.modules and ".".join(parts[:i]) not in self.modules:
                 return cand
-        hits = self.by_suffix.get(name, [])
+        # a unique suffix match only when the match starts a source root (its parent folder is not a package):
+        # `import genai_core` → lib/.../python/genai_core, but never `import openai` → lib/.../adapters/openai
+        hits = [h for h in self.by_suffix.get(name, []) if h[: len(h) - len(name) - 1] not in self.modules]
         if len(hits) == 1:
             return hits[0]
         return None

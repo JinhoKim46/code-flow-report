@@ -424,6 +424,8 @@ FIXTURES = {
     },
     "llm_app": {
         "src/ai/__init__.py": "",
+        "src/ai/adapters/__init__.py": "",
+        "src/ai/adapters/openai.py": "def adapt(text):\n    return text\n",  # must not shadow the openai package
         "src/ai/client.py": """
             from openai import OpenAI
 
