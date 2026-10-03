@@ -131,7 +131,7 @@ def finding_fixed(f: dict, code_map: dict, inc: dict, root) -> str | None:
             lines = (root / s["file"]).read_text(encoding="utf-8").splitlines()[s["line"] - 1: s["end"]]
         except OSError:
             return None
-        return None if re.search(check["pattern"], "\n".join(lines)) else f"{sym} no longer contains /{check['pattern']}/"
+        return None if re.search(check["pattern"], "\n".join(lines), re.MULTILINE) else f"{sym} no longer contains /{check['pattern']}/"
     callees = {b for a, b, _ in code_map["calls"] if a == sym or a.startswith(sym + ".")}
     if kind == "calls":
         return None if check["target"] in callees else f"{sym} no longer calls {check['target'].split(':', 1)[1]}"
@@ -262,6 +262,8 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
         if not p:
             continue
         sec = p.section(records, code_map)
+        if not sec["rows"]:
+            continue  # the stack is imported but nothing of its shape was found: no empty table
         prof_sections.append({"name": name, "title": p.TITLE.get(lang, p.TITLE["en"]), "intro": p.INTRO.get(lang, p.INTRO["en"]),
                               "columns": sec["columns"].get(lang, sec["columns"]["en"]), "rows": sec["rows"]})
         if hasattr(p, "card_extras"):

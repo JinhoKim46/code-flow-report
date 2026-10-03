@@ -1,0 +1,1229 @@
+# Narrative for the code-flow report — the only hand-written input.
+#
+# Structure (modules, functions, call edges, routes, SQL access, boundaries) comes from code_map.json.
+# This file adds the explanation around it. Every `symbol` / `module` / `table` named here is checked
+# against the code on every build; a name that no longer exists fails the build and the staleness test.
+# Never write line numbers — the builder adds file:line from the code map.
+#
+# Proposed by `codeflow.py draft`. Replace every "TODO: …" (the report shows how many are left).
+# Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
+# A finding with a `check` retires itself: once the code no longer shows it, it moves to the page's Fixed list.
+# Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+# [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
+
+
+[meta]
+title = "smolagents"
+lede = "smolagents runs a language model in a loop until a task is done: on each step the model writes either a Python snippet (CodeAgent) or JSON tool calls (ToolCallingAgent), the library runs that action, and the result goes back into the next prompt. The agent loop in agents.py sits in the middle: models.py turns its memory into provider requests, tools.py and default_tools.py supply the callable tools, and local_python_executor.py or remote_executors.py run the code, while memory.py, monitoring.py and the CLI and Gradio front ends record the run and show it."
+audience = "learning the code"
+
+[module_notes.smolagents]
+purpose = "Gives users one import: `from smolagents import CodeAgent, OpenAIModel, tool` works without knowing which file each name lives in."
+does = "Re-exports the public names of every submodule with star imports; sets `__version__`."
+flow = "Python import → agent_types first, then agents (the comment says this order avoids a circular import through cli), then the other submodules, cli last. It has no logic of its own."
+note = "Import order matters: agents must load before cli, which imports agents."
+
+[module_notes."smolagents._function_type_hints_utils"]
+purpose = "Builds a tool's JSON input schema from an ordinary Python function, so a `@tool` function needs only type hints and a Google-style docstring."
+does = "Parses a Google-style docstring into a description, per-argument descriptions and a return description; turns type hints (Optional, Union, list, dict, Literal …) into JSON-schema types; finds which third-party packages a piece of source code imports."
+flow = "Called only by smolagents.tools: `tool()` calls get_json_schema to fill `inputs`/`output_type`; Tool.validate_arguments and validate_tool_arguments use _get_json_schema_type to map Python types to schema types; Tool.to_dict calls get_imports to write the tool's `requirements`, which remote executors later pip-install."
+note = "Copied from the transformers repository; a missing argument description in the docstring raises DocstringParsingException when the tool is created."
+
+[module_notes."smolagents.agent_types"]
+purpose = "Lets a tool or agent return text, an image or audio that still behaves like the plain value while also printing as a file path in a prompt and displaying in a notebook."
+does = "Wraps outputs as AgentText, AgentImage (a PIL image) or AgentAudio (a tensor plus sample rate); converts each to its raw value or to a string, saving images and audio to a temp file for the string form; unwraps AgentType inputs before a tool runs and wraps outputs by the tool's declared `output_type`."
+flow = "tool-call journey: Tool.__call__ (with sanitize_inputs_outputs) → handle_agent_input_types → forward → handle_agent_output_types. The run loop (_run_stream) wraps the final answer the same way, and gradio_ui checks for AgentImage/AgentAudio to render media. AgentAudio fetches a URL path with requests."
+note = "Every `to_string()` on a fresh object calls tempfile.mkdtemp and writes a file that nothing deletes."
+
+[module_notes."smolagents.agents"]
+purpose = "Holds the agent loop itself: everything else in the library is a part this loop calls."
+does = "Runs a task as a ReAct loop of numbered steps — optional planning steps, then action steps — until a final answer or max_steps, as a stream or as one return value (optionally a RunResult with tokens, timing and steps). Provides two ways to act: CodeAgent asks for a Python snippet and runs it in a Python executor; ToolCallingAgent asks for JSON tool calls and runs them, several in parallel threads. Lets agents manage other agents: a managed agent is called like a tool and returns a report. Saves an agent to a folder (agent.json, prompts.yaml, tools/, app.py, requirements.txt), reloads it, and pushes or pulls it on the Hugging Face Hub."
+flow = "Entry: code-agent-run and tool-calling-agent-run journeys (MultiStepAgent.run), also reached from cli.run_smolagent, gradio_ui.GradioUI._stream_response and vision_web_browser. run → initialize_system_prompt (Jinja templates) → memory.AgentMemory → _run_stream → _step_stream → models (Model.generate / generate_stream) → CodeAgent: utils.parse_code_blobs → local_python_executor or remote_executors; ToolCallingAgent: Model.parse_tool_calls → tools.validate_tool_arguments → Tool.__call__ → each step stored as memory.ActionStep, metrics to monitoring.Monitor through step callbacks."
+note = "An AgentError raised during a step (bad code, wrong tool arguments, a tool failure) is stored on the step and the loop goes on, so the model sees it next turn; only AgentGenerationError (a failed model call) ends the run. final_answer_checks and step_callbacks are not saved by to_dict/save."
+
+[module_notes."smolagents.cli"]
+purpose = "Lets someone run an agent from the shell (`smolagent \"task\"`) without writing Python."
+does = "Parses the model type, model id, tools, imports and action type from the command line, or asks for them in an interactive questionnaire when no prompt is given; builds one of four model classes (OpenAIModel, LiteLLMModel, TransformersModel, InferenceClientModel); builds tools from built-in names (TOOL_MAPPING) or Hugging Face Space ids."
+flow = "cli-run journey: console entry point main → parse_arguments / interactive_mode → run_smolagent → load_dotenv → load_model → default_tools.TOOL_MAPPING or tools.Tool.from_space → agents.CodeAgent (or ToolCallingAgent) with stream_outputs=True → MultiStepAgent.run. The answer is only printed by the agent's logger. vision_web_browser reuses load_model."
+note = "A tool name containing \"/\" is taken as a Space id; any other name not in TOOL_MAPPING (python_interpreter, web_search, visit_webpage) raises ValueError."
+
+[module_notes."smolagents.default_tools"]
+purpose = "Ships ready-made tools so an agent can search the web, read pages, run Python or answer without the user writing any."
+does = "Searches the web through DuckDuckGo, Google (SerpAPI or Serper), Brave or Exa APIs, or by scraping DuckDuckGo/Bing HTML; fetches a URL and returns it as truncated Markdown, or looks up a Wikipedia article; runs Python through the safe interpreter (PythonInterpreterTool), asks the human for input, and transcribes speech with a Whisper pipeline; provides FinalAnswerTool, which every agent gets as `final_answer`."
+flow = "tool-call journey: Tool.__call__ → VisitWebpageTool.forward (requests.get → markdownify → _truncate_content). Agents add FinalAnswerTool in _setup_tools; cli picks tools through TOOL_MAPPING; remote_executors patches FinalAnswerTool to raise an exception. Search tools reach outside services over HTTP; API keys come from env vars such as SERPAPI_API_KEY, SERPER_API_KEY, BRAVE_API_KEY and EXA_API_KEY."
+note = "Network failures in VisitWebpageTool come back as a text message, not an exception, so the model reads the error as the page content."
+
+[module_notes."smolagents.gradio_ui"]
+purpose = "Gives any agent a browser chat window with live streaming and file upload, in a few lines of code."
+does = "Builds a gr.ChatInterface around one agent and launches it; turns each streamed event — token deltas, planning steps, action steps with code and logs, errors, the final answer — into nested gr.ChatMessage bubbles with duration and token footnotes; saves uploaded files under a sanitised name and passes their paths to the agent; offers stream_to_gradio for use in custom Gradio apps."
+flow = "gradio-chat journey: GradioUI.create_app → _stream_response per message → _process_message (+ _save_uploaded_file into file_upload_folder) → agents.MultiStepAgent.run(stream=True) → models.agglomerate_stream_deltas for the live bubble → pull_messages_from_step → _process_action_step / _process_planning_step / _process_final_answer_step."
+note = "One agent object serves every browser session of the app, so concurrent users share the same memory. Uploads with the same file name overwrite each other."
+
+[module_notes."smolagents.local_python_executor"]
+purpose = "Runs model-written Python in the same process without plain `exec`, so the code can only import and call what the agent allows."
+does = "Interprets the code by walking its AST node by node (assignments, loops, functions, classes, comprehensions, try/with, imports) against a `state` dict that persists between steps; blocks imports outside the authorised list, dunder attribute access and a list of dangerous modules and functions; limits work with an operation counter, a while-loop cap and a per-call timeout; turns a `final_answer(...)` call into an exception that ends execution and marks the result as final; captures `print` output and truncates it."
+flow = "code-agent-run journey: CodeAgent.create_python_executor → LocalPythonExecutor; MultiStepAgent.run → send_variables / send_tools (agent tools + BASE_PYTHON_TOOLS); CodeAgent._step_stream → fix_final_answer_code → LocalPythonExecutor.__call__ → evaluate_python_code → evaluate_ast → evaluate_import / check_import_authorized → returns CodeOutput(output, logs, is_final_answer). Also used by default_tools.PythonInterpreterTool, and remote_executors reuses its CodeOutput and PythonExecutor types."
+note = "The timeout wraps execution in a `with ThreadPoolExecutor(...)` block; leaving that block waits for the worker thread, so code stuck in a blocking call is not cut off at timeout_seconds. Authorising \"*\" allows every import. This is an interpreter with checks, not an OS-level sandbox."
+
+[module_notes."smolagents.mcp_client"]
+purpose = "Turns the tools of an MCP server into ordinary smolagents Tools so an agent can call them."
+does = "Connects to one or several MCP servers (stdio or HTTP parameters) through the mcpadapt adapter; returns their tools as a list; disconnects; works as a context manager."
+flow = "User code: `with MCPClient(server_parameters) as tools:` → connect → mcpadapt's SmolAgentsAdapter → tools passed to an agent → each call goes over MCP to the server. tools.ToolCollection.from_mcp is the older route to the same adapter."
+note = "Without an explicit disconnect or the with-block, the server connection stays open."
+
+[module_notes."smolagents.memory"]
+purpose = "Keeps the record of a run in a form that can be both replayed to the model as chat messages and inspected by people."
+does = "Stores the system prompt and each step as typed records — TaskStep, PlanningStep, ActionStep (model output, code or tool calls, observations, images, error, tokens, timing), FinalAnswerStep; turns each step back into ChatMessages, with a summary mode that drops model outputs; exports succinct or full step dicts, replays a run in the console and concatenates all code actions into one script; dispatches step callbacks by step class."
+flow = "agents writes it on every step (_run_stream appends PlanningStep/ActionStep, run adds TaskStep) and reads it in write_memory_to_messages → ActionStep.to_messages before each model call; the CallbackRegistry calls monitoring.Monitor.update_metrics and user callbacks such as vision_web_browser.save_screenshot; gradio_ui reads steps to draw bubbles."
+note = "A step's observations_images are re-sent to the model on every later step unless something clears them; vision_web_browser does this by hand for older screenshots."
+
+[module_notes."smolagents.models"]
+purpose = "Puts every LLM behind one `generate(messages) -> ChatMessage` interface, so the agent loop does not care which provider or local runtime answers."
+does = "Defines the chat data types (ChatMessage, tool calls, stream deltas) and joins streamed deltas into one message; turns memory messages into provider format — merging same-role messages, converting roles, inlining images, adding stop sequences, tool JSON schemas and structured-output formats; calls API providers (OpenAI and Azure, LiteLLM and its router, Hugging Face InferenceClient, Amazon Bedrock) with a rate limiter and a retry on rate-limit errors, or local runtimes (Transformers, vLLM, MLX); extracts tool calls from plain text when the model did not use native tool calling; saves and rebuilds a model from a dict without its token or api_key."
+flow = "model-generate journey: agents (_step_stream, _generate_planning_step, provide_final_answer) → OpenAIModel.generate (or another subclass) → Model._prepare_completion_kwargs → get_clean_message_list → get_tool_json_schema → ApiModel._apply_rate_limit → utils.Retrying → provider client → ChatMessage with token_usage (monitoring.TokenUsage) → Model.parse_tool_calls → get_tool_call_from_text for ToolCallingAgent. Outside services: OpenAI-compatible APIs, LiteLLM, Hugging Face Inference, AWS bedrock-runtime."
+note = "Rate-limit detection is a string match (\"429\", \"rate limit\", \"too many requests\") on the exception text; any other error is not retried."
+
+[module_notes."smolagents.monitoring"]
+purpose = "Gives the agent loop one place to print what is happening and to add up time and tokens per run."
+does = "Holds TokenUsage and Timing records; totals step durations and input/output tokens across a run (Monitor); prints rich panels, code blocks, rules, Markdown and errors filtered by LogLevel (OFF, ERROR, INFO, DEBUG), escaping arbitrary tool output so it cannot break Rich markup; draws an agent's tools and managed agents as a tree."
+flow = "agents creates an AgentLogger and a Monitor per agent; Monitor.update_metrics is registered as an ActionStep callback through memory.CallbackRegistry; models attach TokenUsage to each ChatMessage; remote_executors and memory log through the same AgentLogger. Output goes only to the console."
+
+[module_notes."smolagents.remote_executors"]
+purpose = "Runs a CodeAgent's code outside the user's machine or process, in a real sandbox, when the in-process interpreter is not enough."
+does = "Sends tools to the sandbox as source code and pip-installs their requirements; sends variables with SafeSerializer (pickle only when allow_pickle=True); runs each snippet on a Jupyter-style kernel in E2B, a local Docker container (Jupyter Kernel Gateway image built on demand), Modal or Blaxel, and detects the final answer by a patched FinalAnswerTool that raises a serialised exception; cleans up the sandbox on exit."
+flow = "CodeAgent.create_python_executor with executor_type \"e2b\" / \"docker\" / \"modal\" / \"blaxel\" → RemotePythonExecutor.send_tools (tools.get_tools_definition_code, install_packages) and send_variables (serialization.SafeSerializer) → per step __call__ → run_code_raise_errors → kernel over the provider SDK or a websocket (_websocket_run_code_raise_errors) → CodeOutput (from local_python_executor). Outside services: E2B, Docker, Modal, Blaxel."
+note = "create_python_executor refuses remote execution when the agent has managed agents."
+
+[module_notes."smolagents.serialization"]
+purpose = "Moves Python values between the agent process and a remote sandbox without pickle, which would let a hostile sandbox run code in the agent's process."
+does = "Encodes values as JSON with type markers (tuple, set, bytes, complex, datetime, Decimal, Path, PIL image, numpy values, dataclasses, dicts with non-string keys) under a \"safe:\" prefix; decodes them and rejects \"pickle:\" data unless allow_pickle is set; generates the same serializer as source code to inject into the sandbox."
+flow = "Used only by remote_executors: send_variables → SafeSerializer.dumps and get_deserializer_code (run inside the kernel). Final answers coming back are decoded by RemotePythonExecutor._deserialize_final_answer, a separate decoder in remote_executors."
+note = "The patched FinalAnswerTool in remote_executors carries its own inlined copy of the encoder (its source is shipped to the sandbox) and _deserialize_final_answer has its own decoder, so a type added here must be added in both places too."
+
+[module_notes."smolagents.tool_validation"]
+purpose = "Checks that a Tool class can be saved as standalone source and rebuilt elsewhere (on the Hub or in a sandbox)."
+does = "Walks a method's AST to make sure it uses only its own arguments, builtins, imported modules and names it defines; checks that `__init__` arguments have defaults and that class attributes are simple literals."
+flow = "Called from tools.Tool.to_dict: MethodChecker on the forward of a `@tool` function, validate_tool_attributes on a Tool subclass. to_dict runs on Tool.save, push_to_hub, agent save and on remote_executors.send_tools."
+note = "A tool whose forward reads a module-level variable fails here at save time, not at run time."
+
+[module_notes."smolagents.tools"]
+purpose = "Defines what a tool is — a name, a description, typed inputs, an output type and a `forward` — so agents, prompts, schemas and sandboxes all treat tools the same way."
+does = "Validates a tool's attributes when it is created and turns it into a code-style or tool-calling prompt; makes a tool from a plain function with `@tool`, from a Hub repo or Python code, from a Gradio Space, from a Gradio or LangChain tool, from a Transformers pipeline (PipelineTool), or a whole collection from the Hub or an MCP server; calls a tool (lazy setup, dict-argument unpacking, optional AgentType wrapping) and validates JSON arguments against its input schema; saves a tool as source with requirements and an optional Gradio app, and pushes it to the Hub."
+flow = "tool-call journey: Tool.__call__ → setup → forward. tool-calling-agent-run: ToolCallingAgent.execute_tool_call → validate_tool_arguments → Tool.__call__. cli-run: Tool.from_space. remote_executors uses get_tools_definition_code to rebuild tools inside the sandbox. Uses _function_type_hints_utils for schemas and tool_validation for save checks."
+note = "Tool.from_hub, load_tool and ToolCollection.from_mcp run downloaded or server-defined code only with trust_remote_code=True; otherwise they raise."
+
+[module_notes."smolagents.utils"]
+purpose = "Collects the helpers the agent loop and models share, so error types, parsing and retry logic are defined once."
+does = "Defines the AgentError family (parsing, execution, tool-call, tool-execution, max-steps, generation) that decides whether a step error is shown to the model or ends the run; pulls code blocks or a JSON blob out of model text, with readable error messages for the model; truncates long content, makes values JSON-safe and Rich-safe; recovers the source of classes and instances for saving, and renders the Gradio app template; supplies RateLimiter and Retrying for model calls."
+flow = "agents (parse_code_blobs in CodeAgent._step_stream, AgentError handling in _run_stream, truncate_content in managed-agent reports) → models (Retrying.__call__, RateLimiter, parse_json_blob in get_tool_call_from_text) → tools (instance_to_source and get_source in Tool.to_dict). Writes nothing."
+note = "parse_code_blobs falls back to markdown ```python fences and then to treating the whole reply as code if it parses, so prose that happens to be valid Python would be executed."
+
+[module_notes."smolagents.vision_web_browser"]
+purpose = "Shows the library driving a real browser: a CodeAgent that sees screenshots and controls Chrome through helium."
+does = "Starts a Chrome driver with Selenium and helium; gives the agent browser tools (go back, close pop-ups, find text with Ctrl+F) plus web search; after each step, attaches a screenshot and the current URL to the step and drops screenshots older than two steps."
+flow = "python -m entry point main → run_webagent → cli.load_model → initialize_driver → initialize_agent (CodeAgent with step_callbacks=[save_screenshot], helium authorised) → python_executor(\"from helium import *\") → MultiStepAgent.run(prompt + helium_instructions) → save_screenshot writes memory.ActionStep.observations_images, which the next model call receives."
+note = "save_screenshot reads driver.current_url even when helium has no driver, which would raise AttributeError."
+
+[[layers]]
+id = "interfaces"
+name = "Entry points & UI"
+owns = "The ways a person starts an agent without writing the loop: the package facade (`import smolagents` re-exports every public class), the `smolagent` CLI, the Gradio chat UI, and the Selenium/helium web-browser demo. They build a model and tools from arguments, then call `agent.run` and display what it yields."
+modules = ["smolagents", "smolagents.cli", "smolagents.gradio_ui", "smolagents.vision_web_browser"]
+
+[[layers]]
+id = "agents"
+name = "Agents (the ReAct loop)"
+owns = "MultiStepAgent and its two concrete loops: CodeAgent (the model writes a Python snippet, an executor runs it) and ToolCallingAgent (the model emits JSON tool calls, the agent dispatches them). Owns the step loop, planning schedule, max_steps cut-off, final-answer checks, prompt templates (`prompts/*.yaml`, rendered with Jinja), managed sub-agents, and save/load/push of an agent to the Hub."
+modules = ["smolagents.agents"]
+
+[[layers]]
+id = "models"
+name = "Model gateway"
+owns = "One `Model.generate(messages, stop_sequences, response_format, tools_to_call_from)` interface over every provider: OpenAI-compatible servers and Azure, LiteLLM (and its Router), Hugging Face InferenceClient, Amazon Bedrock, and local Transformers / vLLM / MLX. Also the chat message types (ChatMessage, stream deltas, tool-call objects) that memory and the UI reuse, rate limiting and rate-limit retries."
+modules = ["smolagents.models"]
+
+[[layers]]
+id = "tools"
+name = "Tools & default tools"
+owns = "The Tool contract (name, description, typed inputs, output_type, forward), its validation and JSON-schema generation from type hints, the `@tool` decorator, Hub/Space/LangChain/MCP loaders, the built-in tools (web search, visit webpage, Wikipedia, speech-to-text, final_answer, user_input, python_interpreter) and the MCP client."
+modules = ["smolagents.tools", "smolagents.default_tools", "smolagents.tool_validation", "smolagents._function_type_hints_utils", "smolagents.mcp_client"]
+
+[[layers]]
+id = "executors"
+name = "Code executors"
+owns = "Where a CodeAgent's snippet actually runs: LocalPythonExecutor (an AST interpreter in the host process with an import allow-list and operation caps) and the remote executors (E2B, Docker, Modal, Blaxel) that run it in a Jupyter kernel elsewhere, plus the JSON-first serializer that carries variables and final answers across that boundary."
+modules = ["smolagents.local_python_executor", "smolagents.remote_executors", "smolagents.serialization"]
+
+[[layers]]
+id = "memory"
+name = "Memory & monitoring"
+owns = "The run's record, held in memory only (nothing is written to disk or a database unless the caller saves it): AgentMemory with SystemPromptStep / TaskStep / PlanningStep / ActionStep / FinalAnswerStep, each able to turn itself back into chat messages for the next model call; token and timing counters (TokenUsage, Timing, Monitor) and the rich console logger."
+modules = ["smolagents.memory", "smolagents.monitoring"]
+
+[[layers]]
+id = "utils"
+name = "Shared helpers & types"
+owns = "Leaf helpers every layer uses: the AgentError family, code-blob and JSON parsing out of model text, BASE_BUILTIN_MODULES, RateLimiter and Retrying, source extraction for saving tools; and the AgentText/AgentImage/AgentAudio wrappers that let tools return media."
+modules = ["smolagents.utils", "smolagents.agent_types"]
+
+[[journeys]]
+id = "tool-call"
+title = "Call one tool: VisitWebpageTool fetches a page"
+actor = "agent · ToolCallingAgent or model-written code"
+trigger = "tool(url=...) — from ToolCallingAgent.execute_tool_call, or visit_webpage(...) inside code run by the executor"
+summary = "Tool.__call__ lazily runs setup(), unpacks a single dict argument into keywords, optionally unwraps AgentType inputs, calls forward() and optionally wraps the output in an AgentType. VisitWebpageTool.forward then GETs the URL, converts the HTML to Markdown and truncates it; errors are returned as text, not raised."
+  [[journeys.steps]]
+  symbol = "smolagents.tools:Tool.__call__"
+  actor = "ToolCallingAgent.execute_tool_call / LocalPythonExecutor"
+  action = "Entry point for every tool: runs setup() once, converts a lone dict whose keys are all inputs into kwargs, and — only when sanitize_inputs_outputs=True — converts AgentType inputs to raw values and outputs to AgentTypes."
+  receives = "*args / **kwargs, sanitize_inputs_outputs flag"
+  returns = "forward()'s result, possibly wrapped"
+  stores = "nothing"
+  payload = '''
+visit_webpage(url="https://example.org/leopard-facts")
+
+'''
+  note = "'sanitize' here means type conversion, not content cleaning. ToolCallingAgent passes True after validate_tool_arguments; code run by LocalPythonExecutor calls the tool directly, so the default False applies and no schema validation runs."
+  [[journeys.steps]]
+  symbol = "smolagents.tools:Tool.setup"
+  action = "Hook for expensive one-time initialisation (PipelineTool loads its model here); the base version only sets is_initialized."
+  receives = "nothing"
+  returns = "nothing"
+  stores = "self.is_initialized = True"
+  [[journeys.steps]]
+  symbol = "smolagents.agent_types:handle_agent_input_types"
+  action = "Replaces any AgentType argument with its raw value (to_raw()), e.g. an AgentImage with the PIL image."
+  receives = "args, kwargs"
+  returns = "(args, kwargs) with raw values"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.default_tools:VisitWebpageTool.forward"
+  action = "requests.get(url, timeout=20), raise_for_status, markdownify the HTML, collapse runs of blank lines, then truncate."
+  receives = "url: str chosen by the model"
+  returns = "Markdown text, or an error sentence ('The request timed out…', 'Error fetching the webpage: …')"
+  stores = "nothing"
+  payload = '''
+"# Leopard\n\nLeopards can reach about 58 km/h in short bursts ..."
+
+'''
+  note = "No scheme or host check is made on the URL; whatever the page says is returned to the model verbatim."
+  [[journeys.steps]]
+  symbol = "smolagents.default_tools:VisitWebpageTool._truncate_content"
+  action = "Cuts the Markdown at max_output_length (default 40,000 chars) and appends a note saying it was truncated."
+  receives = "content, max_length"
+  returns = "possibly shortened text"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.agent_types:handle_agent_output_types"
+  action = "With sanitize on: output_type 'string' wraps the text in AgentText (a str subclass), so the agent stores it as an observation unchanged."
+  receives = "forward()'s output, tool.output_type"
+  returns = "AgentText"
+  stores = "nothing"
+
+[[journeys]]
+id = "code-agent-run"
+title = "Run a CodeAgent: the model writes Python, the library executes it"
+actor = "developer · Python code"
+trigger = "CodeAgent(tools, model).run(task)"
+summary = "run() rebuilds the system prompt, records the task in memory and hands tools and variables to the Python executor; _run_stream then loops over steps, each asking the model for a code blob, executing it in LocalPythonExecutor and storing the printed logs as the next observation. The loop ends when the executed code calls final_answer(), or when max_steps is reached and the model is asked for a final answer without tools."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent.run"
+  actor = "developer code"
+  action = "Sets up the run: merges additional_args into agent state (and appends their repr to the task text), puts a fresh SystemPromptStep into memory, resets memory and the token monitor when reset=True, appends a TaskStep, and pushes state and tools into the executor."
+  receives = "task: str, plus optional stream, reset, images, additional_args, max_steps, return_full_result"
+  returns = "the final answer (stream=False), a RunResult when return_full_result is set, or the _run_stream generator itself when stream=True"
+  stores = "self.memory.system_prompt, self.memory.steps += TaskStep, self.state updated with additional_args"
+  payload = '''
+agent.run("How many seconds would a leopard at 58 km/h need to cross a 155 m bridge?",
+          additional_args={"bridge_length_m": 155})
+
+'''
+  note = "With stream=False the whole generator is drained into a list and only steps[-1] (asserted to be a FinalAnswerStep) is used; the run's token totals are summed from every ActionStep/PlanningStep and become None if any step lacks token_usage."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:CodeAgent.initialize_system_prompt"
+  action = "Renders the system prompt from the code_agent.yaml (or structured_code_agent.yaml) Jinja template: tool signatures, managed agents, the authorized import list, custom instructions and the code-block tags the model must use."
+  receives = "self.prompt_templates['system_prompt'], self.tools, self.authorized_imports, self.code_block_tags"
+  returns = "system prompt text"
+  stores = "nothing (called through the system_prompt property, so it is rebuilt on every run)"
+  note = "MultiStepAgent.system_prompt is a read-only property that calls this abstract method; each agent class supplies its own template."
+  [[journeys.steps]]
+  symbol = "smolagents.local_python_executor:LocalPythonExecutor.send_tools"
+  action = "Makes tools callable from generated code: combines the agent's tools and managed agents with BASE_PYTHON_TOOLS (the allowed builtins) and any additional_functions into static_tools."
+  receives = "{tool name: Tool} including final_answer and managed agents"
+  returns = "nothing"
+  stores = "executor.static_tools (send_variables has already copied agent state into executor.state)"
+  note = "Static tools cannot be reassigned by the generated code; a remote executor (E2B, Docker, Modal, Blaxel) implements the same PythonExecutor interface instead."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent._run_stream"
+  action = "The step loop: while no final answer and step_number <= max_steps, optionally runs a planning step, creates an ActionStep, delegates to self._step_stream and yields every event; model-caused AgentErrors are stored on the step and the loop continues, AgentGenerationError is re-raised."
+  receives = "task text, max_steps, images"
+  returns = "a generator of ChatMessageStreamDelta, ToolCall, ActionOutput, ActionStep, PlanningStep and finally a FinalAnswerStep"
+  stores = "memory.steps += PlanningStep / ActionStep (appended in a finally block, so failed steps are kept too); step callbacks run in _finalize_step"
+  note = "self._step_stream is a virtual call: MultiStepAgent._step_stream only raises NotImplementedError and CodeAgent/ToolCallingAgent override it. Errors are deliberately fed back to the model (ActionStep.to_messages adds 'Error: ... Now let's retry') rather than ending the run."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent._generate_planning_step"
+  action = "Only when planning_interval is set (step 1, then every N steps): asks the model for a facts-and-plan text with stop sequence <end_plan>; the first plan uses the initial_plan template, later ones a summary of memory between update_plan_pre/post templates."
+  receives = "task, is_first_step, step number"
+  returns = "yields stream deltas (if stream_outputs) and then one PlanningStep"
+  stores = "PlanningStep (plan text, input messages, token usage) — appended to memory by _run_stream"
+  payload = '''
+PlanningStep(plan="Here are the facts I know and the plan of action ...\n1. convert 58 km/h to m/s\n2. divide 155 by it", token_usage=TokenUsage(input_tokens=812, output_tokens=96))
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.agents:CodeAgent._step_stream"
+  action = "One think-act-observe step: turns the whole memory into messages (write_memory_to_messages), calls the model with stop sequences 'Observation:', 'Calling tools:' and the closing code tag, then parses and executes the code."
+  receives = "the current ActionStep"
+  returns = "yields ToolCall(name='python_interpreter', arguments=code) and finally ActionOutput(output, is_final_answer)"
+  stores = "ActionStep.model_input_messages, model_output_message, model_output, token_usage, code_action, tool_calls, observations, action_output"
+  note = "Any exception from the model call becomes AgentGenerationError (ends the run); a parsing failure becomes AgentParsingError and an execution failure AgentExecutionError (both fed back to the model). If the model output does not already end with the closing tag, the tag is appended to the stored output to nudge later generations to stop there."
+  [[journeys.steps]]
+  symbol = "smolagents.models:OpenAIModel.generate"
+  action = "Example provider behind self.model.generate (a virtual call — Model.generate is abstract): cleans the messages, applies rate limit and retry, calls chat.completions.create and wraps the reply in a ChatMessage. See the model-generate journey."
+  receives = "list[ChatMessage], stop_sequences, optional response_format (structured outputs)"
+  returns = "ChatMessage(role='assistant', content=..., token_usage=...)"
+  stores = "nothing"
+  payload = '''
+"Thought: convert speed, then divide.\n<code>\nspeed = 58 * 1000 / 3600\nfinal_answer(155 / speed)\n</code>"
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.utils:parse_code_blobs"
+  action = "Extracts the code: every match of the configured tag pair (default <code>…</code>) joined together, else markdown ```python blocks, else the whole text if it parses as Python; otherwise raises ValueError with a hint the model will see."
+  receives = "model output text, code_block_tags"
+  returns = "code string"
+  stores = "nothing"
+  note = "With use_structured_outputs_internally the output is JSON instead and the code is read from its 'code' field."
+  [[journeys.steps]]
+  symbol = "smolagents.local_python_executor:fix_final_answer_code"
+  action = "If the code both calls final_answer( and assigns to a variable named final_answer, renames the variable to final_answer_variable so the tool is not shadowed."
+  receives = "code string"
+  returns = "code string (unchanged in the common case)"
+  stores = "ActionStep.code_action"
+  [[journeys.steps]]
+  symbol = "smolagents.local_python_executor:LocalPythonExecutor.__call__"
+  action = "Runs the code against the executor's persistent state, static tools and authorized imports, and packages output, print logs and the final-answer flag."
+  receives = "code_action: str"
+  returns = "CodeOutput(output, logs, is_final_answer)"
+  stores = "executor.state keeps every variable between steps (and between runs unless the agent is recreated)"
+  note = "Its docstring says plainly: 'It is not a security sandbox: for isolated execution of untrusted code, use a remote executor.'"
+  [[journeys.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_python_code"
+  action = "ast.parse()s the code and walks each top-level node through evaluate_ast inside a thread with a 30 s timeout (MAX_EXECUTION_TIME_SECONDS); final_answer is wrapped to raise FinalAnswerException, a BaseException so generated 'except Exception' cannot swallow it."
+  receives = "code, static_tools, custom_tools, state, authorized_imports, max_print_outputs_length"
+  returns = "(result, is_final_answer)"
+  stores = "state['_print_outputs'] (truncated to 50,000 chars by default), state['_operations_count']"
+  note = "Limits enforced here and in evaluate_ast: MAX_OPERATIONS = 10,000,000 AST nodes, MAX_WHILE_ITERATIONS = 1,000,000, dunder attribute access refused, calls only to names in state, static tools, custom tools or ERRORS. On timeout the worker thread cannot be killed and keeps running in the background (stated in timeout's docstring)."
+  [[journeys.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_import"
+  action = "The import allow-list: 'import x' / 'from x import y' succeed only if check_import_authorized finds x in BASE_BUILTIN_MODULES plus additional_authorized_imports ('*' allows anything); the module is copied via get_safe_module before it enters state."
+  receives = "an ast.Import / ast.ImportFrom node, state, authorized_imports"
+  returns = "None, or raises InterpreterError 'Import of os is not allowed…'"
+  stores = "the imported module (or names) into state"
+  note = "Results of evaluate_ast pass through check_safer_result (safer_eval), which also refuses unauthorized module objects and DANGEROUS_FUNCTIONS such as builtins.eval/exec and os.system."
+  [[journeys.steps]]
+  symbol = "smolagents.agent_types:handle_agent_output_types"
+  action = "After the loop, wraps the final answer in an AgentType (AgentText / AgentImage / AgentAudio) when its type is recognised, for the FinalAnswerStep."
+  receives = "final answer value"
+  returns = "AgentText('9.62…') or the raw value"
+  stores = "FinalAnswerStep.output"
+  note = "If max_steps runs out, _handle_max_steps_reached first calls provide_final_answer, a tool-less model call over the memory, and records an ActionStep carrying AgentMaxStepsError."
+
+[[journeys]]
+id = "tool-calling-agent-run"
+title = "Run a ToolCallingAgent: the model returns JSON tool calls"
+actor = "developer · Python code"
+trigger = "ToolCallingAgent(tools, model).run(task)"
+summary = "Same run/_run_stream loop as CodeAgent, but each step sends the tools as JSON schemas and expects tool calls back (native API tool calls, or a JSON blob parsed from text). Each call is checked against the tool's input schema and executed — several in parallel threads — and the stringified results become the step's observation; calling the final_answer tool ends the run."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent.run"
+  actor = "developer code"
+  action = "Records the task, resets memory, rebuilds the system prompt (as in code-agent-run); there is no python_executor, so nothing is sent to one."
+  receives = "task: str and run options"
+  returns = "final answer or RunResult"
+  stores = "memory.steps += TaskStep"
+  payload = '''
+agent.run("What is the population of Lyon divided by the population of Geneva?")
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.initialize_system_prompt"
+  action = "Renders the toolcalling_agent.yaml system prompt with tools, managed agents and custom instructions."
+  receives = "prompt_templates, tools, managed_agents"
+  returns = "system prompt text"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent._run_stream"
+  action = "Step loop with optional planning; calls the overridden ToolCallingAgent._step_stream (virtual call)."
+  receives = "task, max_steps"
+  returns = "generator of steps and events"
+  stores = "memory.steps += ActionStep per step"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent._step_stream"
+  action = "Builds messages from memory and calls model.generate (or generate_stream) with tools_to_call_from = tools + managed agents; if the reply has no native tool_calls it asks the model class to parse them from the text, otherwise it JSON-decodes each call's arguments."
+  receives = "the current ActionStep"
+  returns = "yields ToolCall / ToolOutput events, then ActionOutput(final_answer, is_final_answer)"
+  stores = "ActionStep.model_output_message, model_output, token_usage"
+  note = "A final_answer call mixed with other calls raises AgentExecutionError; two final answers raise AgentToolExecutionError. A string final answer that names a state key is replaced by that state value."
+  [[journeys.steps]]
+  symbol = "smolagents.models:OpenAIModel.generate"
+  action = "Provider call; tools are sent as JSON schemas (get_tool_json_schema) with tool_choice='required' by default."
+  receives = "messages, stop_sequences, tools_to_call_from"
+  returns = "ChatMessage whose tool_calls hold the provider's tool-call objects"
+  stores = "nothing"
+  payload = '''
+{"tool_calls": [{"id": "call_7", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"Lyon population 2024\"}"}}]}
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.models:Model.parse_tool_calls"
+  action = "Fallback for providers that return the call as text: sets role to assistant and builds one ChatMessageToolCall from the JSON blob in the content (keys tool_name_key / tool_arguments_key, default 'name' / 'arguments')."
+  receives = "ChatMessage without tool_calls"
+  returns = "the same ChatMessage with tool_calls filled and arguments JSON-decoded"
+  stores = "nothing"
+  note = "Failure here becomes AgentParsingError, which the loop feeds back to the model."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.process_tool_calls"
+  action = "Turns each model tool call into a ToolCall event, then runs them: one call directly, several in a ThreadPoolExecutor(max_tool_threads) with copied contextvars, yielding results as they complete."
+  receives = "ChatMessage with tool_calls, the ActionStep"
+  returns = "yields ToolCall, then ToolOutput per call"
+  stores = "ActionStep.tool_calls (sorted by id) and observations (each result's observation joined by newlines)"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.process_tool_calls.process_single_tool_call"
+  action = "Executes one call and turns the result into an observation: AgentImage/AgentAudio results are stored in state as image.png / audio.mp3 and summarised, anything else becomes str(result)."
+  receives = "ToolCall(name, arguments, id)"
+  returns = "ToolOutput(id, output, is_final_answer, observation, tool_call)"
+  stores = "self.state['image.png'] or ['audio.mp3'] for media results"
+  payload = '''
+ToolOutput(id="call_7", output="## Search Results\n\n[Lyon - Wikipedia](https://en.wikipedia.org/wiki/Lyon)\n...", is_final_answer=False, observation="## Search Results ...")
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.execute_tool_call"
+  action = "Refuses unknown tool names, replaces any string argument that equals a state key with the state value, validates the arguments, then calls the tool with sanitize_inputs_outputs=True (managed agents are called without it)."
+  receives = "tool_name, arguments (dict or single value)"
+  returns = "the tool's output"
+  stores = "nothing"
+  note = "Validation failures become AgentToolCallError and execution failures AgentToolExecutionError, both with a 'Please try again' message the model reads on the next step."
+  [[journeys.steps]]
+  symbol = "smolagents.tools:validate_tool_arguments"
+  action = "Checks each argument name is in tool.inputs, its JSON type matches (integer accepted for number, 'any' accepts all, null only when nullable), and every non-nullable input is present."
+  receives = "Tool, arguments"
+  returns = "None, or raises ValueError / TypeError"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.tools:Tool.__call__"
+  action = "Runs the tool (see the tool-call journey): lazy setup, AgentType inputs unwrapped, forward(), output wrapped by output_type."
+  receives = "keyword arguments"
+  returns = "AgentText / AgentImage / AgentAudio or raw value"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.memory:ActionStep.to_messages"
+  action = "On the next step, write_memory_to_messages replays this step to the model: assistant output, a TOOL_CALL message listing the calls, a TOOL_RESPONSE 'Observation:' message, and any error with a retry hint."
+  receives = "the stored ActionStep"
+  returns = "list[ChatMessage]"
+  stores = "nothing"
+
+[[journeys]]
+id = "model-generate"
+title = "Turn chat messages into a provider request and back"
+actor = "agent step"
+trigger = "self.model.generate(messages, stop_sequences=..., tools_to_call_from=...)"
+summary = "An API model (OpenAIModel shown; LiteLLMModel and InferenceClientModel follow the same shape) flattens ChatMessages into provider dicts, adds stop sequences, tool schemas and the model's own kwargs, waits on its rate limiter and calls the client through a retryer that only retries rate-limit errors. The reply becomes a ChatMessage with content, tool_calls and token usage; if tool calls came back as text, parse_tool_calls extracts them from a JSON blob."
+  [[journeys.steps]]
+  symbol = "smolagents.models:OpenAIModel.generate"
+  actor = "CodeAgent._step_stream / ToolCallingAgent._step_stream"
+  action = "Builds completion kwargs (model id, role conversions, images as data URLs), rate-limits, calls client.chat.completions.create through the retryer, strips text after stop sequences for models that ignore 'stop', and builds the ChatMessage."
+  receives = "list[ChatMessage], stop_sequences, response_format, tools_to_call_from"
+  returns = "ChatMessage(role, content, tool_calls, raw=response, token_usage)"
+  stores = "nothing"
+  note = "The agent calls the Model through generate (Model.__call__ is just an alias); the base Model.generate raises NotImplementedError, so the provider subclass decides everything below."
+  [[journeys.steps]]
+  symbol = "smolagents.models:Model._prepare_completion_kwargs"
+  action = "Assembles the request dict in priority order: cleaned messages, then stop / response_format / tools (+ tool_choice, default 'required'), then explicit kwargs, then the model's own self.kwargs (REMOVE_PARAMETER deletes a key)."
+  receives = "messages and the specific parameters"
+  returns = "completion_kwargs dict"
+  stores = "nothing"
+  payload = '''
+{"model": "gpt-4.1-mini", "messages": [{"role": "system", "content": [{"type": "text", "text": "You are an expert assistant ..."}]}, {"role": "user", "content": [{"type": "text", "text": "New task:\nHow many seconds ..."}]}], "stop": ["Observation:", "Calling tools:", "</code>"]}
+
+'''
+  note = "stop is sent only if supports_stop_parameter(model_id) is true (some reasoning models reject it)."
+  [[journeys.steps]]
+  symbol = "smolagents.models:get_clean_message_list"
+  action = "Deep-copies the messages, maps roles (tool-call and tool-response roles become assistant / user via tool_role_conversions), base64-encodes images (as image_url data URLs when asked), and merges consecutive messages of the same role."
+  receives = "list[ChatMessage | dict], role_conversions, image flags"
+  returns = "list of {'role', 'content'} dicts"
+  stores = "nothing"
+  note = "Images must be PIL images: encode_image_base64 calls image.save()."
+  [[journeys.steps]]
+  symbol = "smolagents.models:get_tool_json_schema"
+  action = "For tool-calling requests, converts each Tool's name, description and inputs into an OpenAI-style function schema; inputs not marked nullable are listed as required."
+  receives = "Tool"
+  returns = "{'type': 'function', 'function': {'name', 'description', 'parameters'}}"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.models:ApiModel._apply_rate_limit"
+  action = "Calls RateLimiter.throttle, which sleeps just long enough to respect requests_per_minute (no-op when unset)."
+  receives = "nothing"
+  returns = "nothing"
+  stores = "the limiter's last-call timestamp"
+  [[journeys.steps]]
+  symbol = "smolagents.utils:Retrying.__call__"
+  action = "Calls the client; on an exception that is_rate_limit_error recognises ('429', 'rate limit', 'too many requests' in the message) it sleeps with exponential backoff and jitter and tries again, up to RETRY_MAX_ATTEMPTS = 3; any other exception is re-raised at once."
+  receives = "client function and completion kwargs"
+  returns = "the provider response"
+  stores = "nothing (logs each retry through the module logger)"
+  note = "The delay starts from RETRY_WAIT = 60 s and is multiplied before the first sleep, so the first wait is 120–240 s. retry=False on the model sets max_attempts to 1."
+  [[journeys.steps]]
+  symbol = "smolagents.models:remove_content_after_stop_sequences"
+  action = "When the provider was not sent 'stop', cuts the reply at the first stop sequence locally."
+  receives = "content, stop_sequences"
+  returns = "trimmed content"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.models:Model.parse_tool_calls"
+  action = "Called by ToolCallingAgent when the ChatMessage has no tool_calls: builds one from the text with get_tool_call_from_text and JSON-decodes arguments."
+  receives = "ChatMessage"
+  returns = "ChatMessage with tool_calls"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.models:get_tool_call_from_text"
+  action = "Reads the tool name and arguments keys from the parsed JSON blob and gives the call a fresh uuid4 id."
+  receives = "text, tool_name_key, tool_arguments_key"
+  returns = "ChatMessageToolCall"
+  stores = "nothing"
+  payload = '''
+'Action: {"name": "final_answer", "arguments": {"answer": "about 2.2"}}'  ->  ChatMessageToolCall(id="4f1c…", function=ChatMessageToolCallFunction(name="final_answer", arguments={"answer": "about 2.2"}))
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.utils:parse_json_blob"
+  action = "Takes the text from the first '{' to the last '}' and json.loads it (strict=False); errors become ValueError messages written for the model, including a hint when it tried to send several calls."
+  receives = "text"
+  returns = "(dict, text before the JSON)"
+  stores = "nothing"
+
+[[journeys]]
+id = "cli-run"
+title = "Run an agent from the smolagent console command"
+actor = "user · terminal"
+trigger = "smolagent \"<task>\" --model-type ... --tools ... (entry point smolagents.cli:main)"
+summary = "main parses arguments, or walks the user through an interactive questionnaire when no prompt is given, then run_smolagent loads .env, builds the model and the named tools, creates a CodeAgent (or ToolCallingAgent) with streaming output and calls run(prompt). The answer is printed by the agent's rich logger; main returns nothing."
+  [[journeys.steps]]
+  symbol = "smolagents.cli:main"
+  actor = "terminal"
+  action = "Parses arguments; with no positional prompt switches to interactive_mode, otherwise copies the parsed options; then calls run_smolagent."
+  receives = "sys.argv"
+  returns = "None"
+  stores = "nothing"
+  payload = '''
+smolagent "Summarise today's top AI news" --model-type InferenceClientModel --model-id Qwen/Qwen3-Next-80B-A3B-Thinking --tools web_search visit_webpage --imports numpy
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.cli:parse_arguments"
+  action = "argparse definition: prompt (optional), --model-type (default InferenceClientModel), --action-type (code | tool_calling), --model-id, --imports, --tools (default web_search), --verbosity-level, --provider, --api-base, --api-key."
+  receives = "command line"
+  returns = "argparse.Namespace"
+  stores = "nothing"
+  note = "--verbosity-level is parsed but never passed to the agent."
+  [[journeys.steps]]
+  symbol = "smolagents.cli:interactive_mode"
+  action = "Rich prompts for action type, tools (showing TOOL_MAPPING descriptions), model type, model id, optional provider / API base / key / imports, and the task."
+  receives = "keyboard input"
+  returns = "(prompt, tools, model_type, model_id, provider, api_base, api_key, imports, action_type)"
+  stores = "nothing"
+  note = "action_type is reset to 'code' after the question, and the offered model type 'OpenAIServerModel' is not a name load_model accepts — see findings."
+  [[journeys.steps]]
+  symbol = "smolagents.cli:run_smolagent"
+  action = "load_dotenv(), load the model, resolve tool names (a name containing '/' becomes Tool.from_space, otherwise TOOL_MAPPING[name]()), build the agent with stream_outputs=True and run it."
+  receives = "prompt, tool names, model options, imports, action_type"
+  returns = "None (the run's answer is not returned or printed by the CLI itself)"
+  stores = "environment variables from a .env file into os.environ"
+  note = "An unknown tool name raises ValueError before any model call."
+  [[journeys.steps]]
+  symbol = "smolagents.cli:load_model"
+  action = "Maps model_type to a class: OpenAIModel (api_base defaults to the Fireworks endpoint, key from FIREWORKS_API_KEY), LiteLLMModel, TransformersModel (device_map='auto'), InferenceClientModel (token from HF_API_KEY); anything else raises ValueError."
+  receives = "model_type, model_id, api_base, api_key, provider"
+  returns = "a Model instance"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.tools:Tool.from_space"
+  action = "For a tool name like 'user/space', wraps a Hugging Face Space as a Tool via gradio_client, with the space name as tool name."
+  receives = "space_id, name, description"
+  returns = "SpaceToolWrapper"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:CodeAgent.__init__"
+  action = "Loads the code_agent.yaml prompts, computes authorized_imports = BASE_BUILTIN_MODULES + --imports, picks code-block tags, runs MultiStepAgent setup (tools, final_answer tool, memory, logger, monitor) and creates the executor."
+  receives = "tools, model, additional_authorized_imports, stream_outputs=True"
+  returns = "CodeAgent"
+  stores = "agent.memory, agent.python_executor"
+  note = "stream_outputs=True requires the model to implement generate_stream, else ValueError."
+  [[journeys.steps]]
+  symbol = "smolagents.agents:CodeAgent.create_python_executor"
+  action = "executor_type 'local' (the CLI's only choice) gives LocalPythonExecutor, which checks that every authorized import is installed; remote types map to Blaxel/E2B/Docker/Modal executors."
+  receives = "executor_type, additional_authorized_imports"
+  returns = "PythonExecutor"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent.run"
+  action = "Runs the task as in code-agent-run; with stream_outputs the model's tokens are shown live in the terminal through rich.Live."
+  receives = "prompt"
+  returns = "final answer (discarded by run_smolagent)"
+  stores = "agent memory for this process only"
+
+[[journeys]]
+id = "gradio-chat"
+title = "Chat with an agent in the Gradio UI"
+actor = "user · browser"
+trigger = "message sent in the gr.ChatInterface built by GradioUI.create_app"
+summary = "Gradio calls GradioUI._stream_response for each chat message; it extracts the text (and saves attached files), runs the agent with stream=True and turns each yielded event into gr.ChatMessage bubbles — live token deltas in a temporary bubble, then step summaries, tool code, execution logs, errors and the final answer. The agent object is shared by every browser session of the app."
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI.create_app"
+  actor = "developer (GradioUI(agent).launch())"
+  action = "Builds a gr.Chatbot and a gr.ChatInterface with fn=self._stream_response, multimodal input only when file_upload_folder was given, and save_history=True."
+  receives = "the GradioUI instance"
+  returns = "gr.ChatInterface (launch() starts it with debug=True and share=True by default)"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI._stream_response"
+  actor = "Gradio ChatInterface"
+  action = "Per message: gets task text and files, then iterates agent.run(task, images=files, stream=True, reset=self.reset_agent_memory) and yields the growing list of chat messages after every event."
+  receives = "message: str or {'text', 'files'}, history (ignored)"
+  returns = "generator of list[gr.ChatMessage]"
+  stores = "nothing itself; the agent's memory persists across messages unless reset_agent_memory=True"
+  payload = '''
+{"text": "Plot the monthly sales in this file", "files": ["/tmp/gradio/ab12/sales.csv"]}
+
+'''
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI._process_message"
+  action = "Plain strings pass through; for a multimodal dict with files and an upload folder, saves each file and appends 'You have been provided with these files: [...]' to the task text."
+  receives = "message"
+  returns = "(text, saved file paths or None)"
+  stores = "nothing"
+  note = "The returned file paths are handed to agent.run as images — see the finding on uploads."
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI._save_uploaded_file"
+  action = "Copies the uploaded temp file into file_upload_folder under its basename with every character outside [A-Za-z0-9_.-] replaced by '_'."
+  receives = "temp file path"
+  returns = "destination path"
+  stores = "a copy of the file in file_upload_folder (same name overwrites)"
+  [[journeys.steps]]
+  symbol = "smolagents.agents:MultiStepAgent.run"
+  action = "stream=True returns the _run_stream generator directly, so steps arrive as they happen."
+  receives = "task, images, stream=True, reset"
+  returns = "generator"
+  stores = "TaskStep in memory"
+  [[journeys.steps]]
+  symbol = "smolagents.models:agglomerate_stream_deltas"
+  action = "For ChatMessageStreamDelta events (only when the agent has stream_outputs), merges the deltas so far into one message whose Markdown replaces a single temporary bubble; '<' and '>' are escaped."
+  receives = "list[ChatMessageStreamDelta]"
+  returns = "ChatMessageStreamDelta (rendered with render_as_markdown)"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:pull_messages_from_step"
+  action = "When a whole step arrives, removes the temporary bubble and dispatches on step type: ActionStep, PlanningStep or FinalAnswerStep."
+  receives = "step, skip_model_outputs (= agent.stream_outputs, to avoid showing streamed text twice)"
+  returns = "generator of gr.ChatMessage"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:_process_action_step"
+  action = "Emits 'Step N', the cleaned model output, the first tool call (code formatted as a python block, titled 'Used tool python_interpreter'), execution logs, observation images, the error if any, and a footnote with token counts and duration."
+  receives = "ActionStep"
+  returns = "several gr.ChatMessage"
+  stores = "nothing"
+  [[journeys.steps]]
+  symbol = "smolagents.gradio_ui:_process_final_answer_step"
+  action = "Renders the final answer: AgentText as Markdown, AgentImage / AgentAudio as file components, anything else via str()."
+  receives = "FinalAnswerStep"
+  returns = "one gr.ChatMessage"
+  stores = "nothing"
+  payload = '''
+gr.ChatMessage(role="assistant", content="**Final answer:**\nSales peaked in March at 4,200 units.\n")
+
+'''
+
+[[roles]]
+id = "openai-api"
+name = "OpenAI-compatible API (OpenAI, Azure OpenAI, any /v1 server)"
+kind = "external"
+symbols = ["smolagents.models:OpenAIModel.generate", "smolagents.models:OpenAIModel.generate_stream", "smolagents.models:OpenAIModel.create_client", "smolagents.models:AzureOpenAIModel.create_client"]
+purpose = "Talks to OpenAI or any server exposing the OpenAI chat-completions API (vLLM server, Fireworks, Together, Ollama's /v1 …); AzureOpenAIModel swaps in `openai.AzureOpenAI`."
+message = ["POST chat.completions.create: model, messages (images as image URLs), stop, response_format, tools + tool_choice, plus any extra kwargs", "streaming adds stream=True and stream_options include_usage"]
+config = "Constructor arguments `model_id`, `api_base`, `api_key`, `organization`, `project`, `client_kwargs`; Azure adds `azure_endpoint`, `api_version`. When `api_key` is not passed the openai SDK itself reads its usual environment variables. The CLI's `load_model` defaults OpenAIModel to a Fireworks base URL and FIREWORKS_API_KEY."
+output = "`choices[0].message` (role, content, tool_calls) and `usage.prompt_tokens/completion_tokens`, wrapped into a ChatMessage with TokenUsage."
+validation = "Rate-limit retries via ApiModel.retryer; other HTTP errors propagate and the agent turns them into AgentGenerationError, which stops the run."
+logging = "Module logger on retries only."
+cost = "Not measured (token counts only)."
+result_use = "Returned as the step's ChatMessage."
+
+[[roles]]
+id = "aws-bedrock-runtime"
+name = "Amazon Bedrock (Converse API)"
+kind = "external"
+symbols = ["smolagents.models:AmazonBedrockModel.generate", "smolagents.models:AmazonBedrockModel._prepare_completion_kwargs", "smolagents.models:AmazonBedrockModel.create_client"]
+purpose = "Calls Bedrock models through boto3's `bedrock-runtime` Converse API."
+message = ["converse(modelId, messages) — every role is converted to `user` by default and the `type` key is stripped from content blocks; `toolConfig` is removed; stop sequences are not sent (Bedrock takes them via inferenceConfig, passed as a constructor kwarg)"]
+config = "`model_id`, `client` or `client_kwargs` (region_name, endpoint_url, config); credentials come from the default AWS chain or AWS_BEARER_TOKEN_BEDROCK; inferenceConfig / guardrailConfig as extra constructor kwargs."
+output = "The last content block that has `text` becomes the content; `usage.inputTokens/outputTokens` become TokenUsage. `response_format` raises ValueError."
+validation = "Rate-limit retries via ApiModel.retryer; KeyError if no text block comes back."
+logging = "Module logger on retries."
+cost = "Not measured."
+result_use = "Returned as the step's ChatMessage."
+
+[[roles]]
+id = "litellm"
+name = "LiteLLM (100+ providers through one client)"
+kind = "external"
+symbols = ["smolagents.models:LiteLLMModel.generate", "smolagents.models:LiteLLMModel.generate_stream", "smolagents.models:LiteLLMModel.create_client", "smolagents.models:LiteLLMRouterModel.create_client"]
+purpose = "Lets one class reach Anthropic, OpenAI, Ollama, Groq, Bedrock … by a provider-prefixed `model_id`; LiteLLMRouterModel adds a litellm Router for load balancing across deployments."
+message = ["litellm.completion(model, api_base, api_key, messages, stop, response_format, tools, …)", "Router: router.completion with the same arguments over `model_list` entries"]
+config = "`model_id` (provider-prefixed), `api_base`, `api_key`; otherwise litellm reads each provider's own environment variables. Router: `model_list` and `client_kwargs`. Without `model_id` LiteLLMModel warns and falls back to a hard-coded Anthropic model."
+output = "OpenAI-shaped response; an empty `choices` list raises RuntimeError."
+validation = "Rate-limit retries via ApiModel.retryer; messages are flattened to text by default for ollama/groq/cerebras model ids."
+logging = "Module logger on retries; litellm's own logging is not configured here."
+cost = "Not measured."
+result_use = "Returned as the step's ChatMessage."
+
+[[roles]]
+id = "model--generate-planning-step"
+name = "Model role: write or update the plan"
+kind = "model"
+symbols = ["smolagents.agents:MultiStepAgent._generate_planning_step"]
+purpose = "When `planning_interval` is set, the model writes a fact list and plan before step 1 and rewrites it every N steps, so the action steps have a plan to follow."
+input = "`prompt_templates['planning']`: `initial_plan` (task, tools, managed_agents) on the first step; later `update_plan_pre_messages` (task) and `update_plan_post_messages` (task, tools, managed_agents, remaining_steps)."
+message = ["first plan: one user message with the rendered initial_plan", "update: system = update_plan_pre_messages; then the memory in summary mode (no system prompt, no earlier plans); then user = update_plan_post_messages"]
+config = "`planning_interval` on the agent; same Model; stop sequence '<end_plan>'; streams when `stream_outputs` is on."
+output = "Free text plan, wrapped in a PlanningStep with the input messages and token usage."
+validation = "None: whatever text comes back is the plan."
+logging = "AgentLogger prints 'Initial plan' / 'Updated plan'."
+cost = "Not measured. Planning tokens are counted in RunResult.token_usage but not in Monitor totals (see findings)."
+result_use = "Appended to memory, so every following action step sees the plan in its messages."
+
+[[roles]]
+id = "model--step-stream"
+name = "Model role: write the next action (code or tool calls)"
+kind = "model"
+symbols = ["smolagents.agents:CodeAgent._step_stream", "smolagents.agents:ToolCallingAgent._step_stream"]
+purpose = "Each action step asks the model what to do next: CodeAgent wants a Thought plus one Python snippet between code tags; ToolCallingAgent wants one or more JSON tool calls."
+input = "System prompt from `prompts/code_agent.yaml` (or `structured_code_agent.yaml` when `use_structured_outputs_internally`) or `prompts/toolcalling_agent.yaml`, rendered by `populate_template` with `tools`, `managed_agents`, `authorized_imports`, `custom_instructions`, code-block tags. Then the whole memory replayed by `write_memory_to_messages`."
+message = ["system: the rendered system prompt (tool signatures, rules, few-shot examples)", "user: the task (and task images)", "for each earlier step: assistant = previous model output; tool-call → assistant; tool-response → user with 'Observation:' and execution logs, or the error text plus a retry hint", "planning steps add assistant (facts + plan) and user ('Now proceed…')"]
+config = "The Model instance passed to the agent; stop sequences fixed in code ('Observation:', 'Calling tools:', and the closing code tag); `stream_outputs` switches to `generate_stream`; CodeAgent may send CODEAGENT_RESPONSE_FORMAT (JSON with `thought` and `code`)."
+output = "CodeAgent: text containing a code block (or JSON {thought, code}). ToolCallingAgent: ChatMessage.tool_calls (name + arguments)."
+validation = "CodeAgent: `parse_code_blobs` / `extract_code_from_text`, then `fix_final_answer_code`; failure → AgentParsingError recorded on the step, and the loop continues so the model sees the error next step. ToolCallingAgent: `parse_tool_calls` if the provider gave none; arguments checked by `validate_tool_arguments`. A generation exception → AgentGenerationError, which ends the run."
+logging = "AgentLogger prints the model output (DEBUG) and the parsed code (INFO); the step keeps model_input_messages, model_output_message and token_usage."
+cost = "Not measured (token counts per step)."
+result_use = "Code goes to the python executor; tool calls to `execute_tool_call` (in parallel threads when there are several); the result becomes the step's observation, or the final answer when final_answer was called."
+
+[[roles]]
+id = "model-provide-final-answer"
+name = "Model role: answer anyway at max_steps"
+kind = "model"
+symbols = ["smolagents.agents:MultiStepAgent.provide_final_answer", "smolagents.agents:MultiStepAgent._handle_max_steps_reached"]
+purpose = "When the loop reaches `max_steps` without a final_answer call, one last model call is asked to answer from the memory so the run still returns something."
+input = "`prompt_templates['final_answer']['pre_messages']` (plain text) and `['post_messages']` rendered with `task`."
+message = ["system: final_answer.pre_messages", "the whole memory as messages minus its system prompt", "user: final_answer.post_messages with the task"]
+config = "`max_steps` (agent default 20, or per `run`); same Model."
+output = "A ChatMessage whose content becomes the run's output; the step records AgentMaxStepsError and RunResult.state is 'max_steps_error'."
+validation = "Any exception is caught and turned into the text 'Error in generating final LLM output: …', which is then returned as the answer (see findings)."
+logging = "Recorded as a final ActionStep carrying AgentMaxStepsError."
+cost = "Not measured."
+result_use = "Becomes the FinalAnswerStep output returned by `run`."
+
+[[roles]]
+id = "model-gateway"
+name = "Model gateway (Model base class)"
+kind = "model"
+symbols = ["smolagents.models:Model.generate", "smolagents.models:Model._prepare_completion_kwargs", "smolagents.models:ApiModel.__init__", "smolagents.models:Model.parse_tool_calls"]
+purpose = "Every model call an agent makes goes through `model.generate(...)` (or `generate_stream`), so the loop is written once and the provider is swapped by passing a different Model subclass."
+input = "A list of ChatMessage built by the agent from memory (`write_memory_to_messages`), plus stop_sequences, an optional response_format and, for ToolCallingAgent, the tool list turned into JSON schemas by `get_tool_json_schema`."
+message = ["`_prepare_completion_kwargs` cleans the message list (`get_clean_message_list`: merges consecutive same-role messages, maps tool-call → assistant and tool-response → user, optionally flattens content to text, converts images to data URLs)", "adds `stop` only when `supports_stop_parameter(model_id)` is true (o3/o4/gpt-5/grok are excluded), `response_format`, `tools` + `tool_choice`", "then caller kwargs, then the Model's own constructor kwargs win last (REMOVE_PARAMETER deletes a key)"]
+config = "Chosen in code by the caller: the Model subclass and its constructor arguments (`model_id`, `api_key`/`token`, `api_base`, `client_kwargs`, `requests_per_minute`, `retry`, any extra kwarg forwarded to the provider). The CLI's `load_model` maps `--model-type/--model-id/--api-base/--api-key/--provider` onto these."
+output = "A ChatMessage (role, content, tool_calls, raw provider response, TokenUsage) — or a stream of ChatMessageStreamDelta that `agglomerate_stream_deltas` folds into one."
+validation = "API models wrap the client call in `utils.Retrying`: up to RETRY_MAX_ATTEMPTS (3) attempts, base wait RETRY_WAIT (60 s) with exponential backoff and jitter, but only when `is_rate_limit_error` finds '429'/'rate limit'/'too many requests' in the exception text; every other error is re-raised. `RateLimiter.throttle` spaces calls when `requests_per_minute` is set. When the provider ignores `stop`, `remove_content_after_stop_sequences` trims the text afterwards. `parse_tool_calls` recovers a tool call from plain text when the provider returned none."
+logging = "Retries are logged through the module logger at INFO (before sleep / after attempt). Token counts come back on each ChatMessage and are summed by the agent (Monitor, RunResult)."
+cost = "Not measured by the library: it reports input/output token counts per step, never money."
+result_use = "The agent stores the ChatMessage on the current memory step and parses code or tool calls out of it."
+
+[[roles]]
+id = "hf-inference"
+name = "Hugging Face Inference (InferenceClient)"
+kind = "external"
+symbols = ["smolagents.models:InferenceClientModel.generate", "smolagents.models:InferenceClientModel.generate_stream", "smolagents.models:InferenceClientModel.create_client"]
+purpose = "The default hosted backend: calls `huggingface_hub.InferenceClient.chat_completion` on HF Inference Providers or a dedicated endpoint."
+message = ["chat_completion(messages, stop, response_format, tools, tool_choice …) with model, provider, token, timeout, bill_to, base_url set on the client"]
+config = "`model_id`, `provider`, `token`/`api_key` (falls back to the HF_TOKEN environment variable), `timeout`, `bill_to`, `base_url`, `client_kwargs`. The CLI passes `--api-key` or the HF_API_KEY environment variable."
+output = "OpenAI-shaped `choices[0].message` and usage, wrapped into a ChatMessage."
+validation = "Rate-limit retries via ApiModel.retryer. `generate` raises ValueError when `response_format` is given for a provider outside STRUCTURED_GENERATION_PROVIDERS (cerebras, fireworks-ai) — and then does not forward it even for those (see findings); `generate_stream` forwards it without the check."
+logging = "Module logger on retries."
+cost = "Not measured; `bill_to` routes billing to an organisation."
+result_use = "Returned as the step's ChatMessage."
+
+[[roles]]
+id = "local-models"
+name = "Local models (Transformers, vLLM, MLX)"
+kind = "model"
+symbols = ["smolagents.models:TransformersModel.generate", "smolagents.models:TransformersModel.generate_stream", "smolagents.models:VLLMModel.generate", "smolagents.models:MLXModel.generate"]
+purpose = "Run the model in the same process instead of calling an API: Transformers (CPU/GPU, text or vision), vLLM (GPU, structured outputs) and mlx-lm (Apple silicon)."
+input = "The same ChatMessage list, rendered with the model's own chat template (`apply_chat_template`, with tools passed as JSON schemas)."
+message = ["system / user / assistant turns after `get_clean_message_list`; tool calls and observations become assistant and user turns"]
+config = "`model_id`, `device_map`, `torch_dtype`, `trust_remote_code`, `model_kwargs`, `max_new_tokens` (TransformersModel); `model_kwargs` for vLLM; `model_id`, `trust_remote_code`, `load_kwargs`, `apply_chat_template_kwargs` for MLX."
+output = "Decoded text in a ChatMessage; token counts from the tokenizer. Tool calls are recovered from text by `parse_tool_calls`."
+validation = "Stop sequences are enforced by a stopping criterion (Transformers) or by trimming the text; no retries (no network)."
+logging = "None beyond the agent's step log."
+cost = "Local compute only; not measured."
+result_use = "Returned as the step's ChatMessage."
+
+[[roles]]
+id = "local-python-executor"
+name = "LocalPythonExecutor (in-process interpreter)"
+kind = "external"
+symbols = ["smolagents.local_python_executor:LocalPythonExecutor.__call__", "smolagents.local_python_executor:evaluate_python_code", "smolagents.local_python_executor:evaluate_ast", "smolagents.local_python_executor:check_import_authorized"]
+purpose = "The default place a CodeAgent's snippet runs: a hand-written AST interpreter inside your Python process, so no setup is needed — at the price of no real isolation."
+message = ["code string parsed by `ast.parse`, then each node evaluated by `evaluate_ast` against a state dict that persists across steps", "tools and BASE_PYTHON_TOOLS are the only callables; variables from `run(additional_args=…)` are injected via `send_variables`"]
+config = "`additional_authorized_imports` on CodeAgent (merged with BASE_BUILTIN_MODULES; '*' allows everything), `executor_kwargs` (`max_print_outputs_length`, `additional_functions`, `timeout_seconds`, default 30). Constants MAX_OPERATIONS (10,000,000) and MAX_WHILE_ITERATIONS (1,000,000)."
+output = "CodeOutput(output = value of the last expression or the final_answer argument, logs = captured print output, is_final_answer)."
+validation = "Imports outside the allow-list raise InterpreterError; dunder attributes are refused; functions listed in DANGEROUS_FUNCTIONS and non-authorized modules are refused when an expression evaluates to them; unknown builtins are refused; operations and while-iterations are counted; a thread-based timeout wraps the run. Isolation it does NOT give: same process, same filesystem, network and memory as the caller."
+logging = "Print output goes to `state['_print_outputs']`, which the agent copies into the step's observation."
+cost = "Free; CPU in your process."
+result_use = "The agent stores output and logs as the step's observation, or ends the run if is_final_answer."
+
+[[roles]]
+id = "remote-executors"
+name = "Remote executors (E2B, Docker, Modal, Blaxel)"
+kind = "external"
+symbols = ["smolagents.remote_executors:RemotePythonExecutor.send_tools", "smolagents.remote_executors:E2BExecutor.run_code_raise_errors", "smolagents.remote_executors:DockerExecutor.run_code_raise_errors", "smolagents.remote_executors:ModalExecutor.run_code_raise_errors", "smolagents.remote_executors:BlaxelExecutor.run_code_raise_errors", "smolagents.remote_executors:_websocket_run_code_raise_errors"]
+purpose = "Run the model's code in a real Python kernel outside your process. E2B: a managed cloud micro-VM sandbox via the e2b SDK. Docker: a local container running Jupyter Kernel Gateway, reached over HTTP + websocket on a host port. Modal: a Modal cloud sandbox with an encrypted tunnel to the kernel gateway. Blaxel: a Blaxel cloud sandbox with a Jupyter image."
+message = ["at start: create sandbox/container, open a kernel, `!pip install` the additional imports", "send_tools: pip install each tool's requirements, then send the tools' source code (`get_tools_definition_code`) and a patched final_answer that raises an exception carrying the serialized answer", "send_variables: variables serialized by SafeSerializer (JSON; pickle only when allow_pickle=True) plus deserializer code", "each step: the raw code string as one execute request"]
+config = "`executor_type` ('e2b' | 'docker' | 'modal' | 'blaxel') and `executor_kwargs` on CodeAgent: E2B passes kwargs to `Sandbox.create` (the e2b SDK reads its own API key); Docker `host`, `port`, `image_name`, `build_new_image`, `container_run_kwargs`, `dockerfile_content`; Modal `app_name`, `port`, `create_kwargs`; Blaxel `sandbox_name`, `image`, `memory`, `ttl`, `region`. Docker and Modal protect the kernel gateway with a random KG_AUTH_TOKEN."
+output = "CodeOutput built from the kernel's stdout/results; a final answer arrives as the patched exception and is decoded by `_deserialize_final_answer`."
+validation = "Kernel errors are raised as AgentError. Pickle payloads are refused unless allow_pickle=True. No import allow-list is enforced remotely: the sandbox boundary is the protection. Managed agents are refused with remote executors."
+logging = "AgentLogger logs startup, pip output and kernel logs."
+cost = "Billed by the sandbox provider (E2B, Modal, Blaxel); not measured here."
+result_use = "Same as the local executor: observation or final answer."
+
+[[roles]]
+id = "web-search"
+name = "Web search services"
+kind = "external"
+symbols = ["smolagents.default_tools:WebSearchTool.search", "smolagents.default_tools:DuckDuckGoSearchTool.forward", "smolagents.default_tools:GoogleSearchTool.forward", "smolagents.default_tools:ApiWebSearchTool.forward", "smolagents.default_tools:WebSearchTool.search_exa"]
+purpose = "Give the agent a `web_search` tool. Several interchangeable backends: DuckDuckGo through the ddgs package, Google through SerpAPI or Serper, Brave (or any compatible endpoint) through ApiWebSearchTool, and WebSearchTool scraping DuckDuckGo Lite or Bing RSS, or calling Exa."
+message = ["GET with the query (`q`), API key in the query string (SerpAPI/Serper) or a header (Brave `X-Subscription-Token`, Exa `x-api-key`)", "Exa: POST JSON {query, numResults, contents.highlights}"]
+config = "Environment variables SERPAPI_API_KEY or SERPER_API_KEY (GoogleSearchTool, chosen by `provider`), BRAVE_API_KEY (ApiWebSearchTool, name overridable by `api_key_name`, endpoint by `endpoint`), EXA_API_KEY (WebSearchTool engine='exa'); `max_results`, `rate_limit`, `engine` in the constructors."
+output = "A markdown list of title, link and snippet; an empty result raises 'No results found!' so the model sees an error and retries with a different query."
+validation = "DuckDuckGoSearchTool and ApiWebSearchTool enforce a per-instance rate limit (default 1 query/s). Non-200 responses raise. Only the Exa call sets a timeout; the others wait indefinitely (see findings)."
+logging = "None of its own; the agent logs the tool call and its observation."
+cost = "Depends on the provider's plan; not measured."
+result_use = "Returned as the tool output, which becomes the step's observation."
+
+[[roles]]
+id = "webpage-fetch"
+name = "Webpage fetch (visit_webpage)"
+kind = "external"
+symbols = ["smolagents.default_tools:VisitWebpageTool.forward"]
+purpose = "Let the agent read a page it found: GET the URL the model chose and convert the HTML to markdown."
+message = ["GET <url chosen by the model>, timeout 20 s, no custom headers"]
+config = "`max_output_length` (default 40,000 characters) in the constructor; nothing else."
+output = "Markdown text truncated to max_output_length; on timeout or request error a plain-text error message is returned instead of raising."
+validation = "Any URL is accepted — no scheme or host check (see findings). 20-second timeout."
+logging = "None of its own."
+cost = "Free."
+result_use = "Tool output → observation for the next model call."
+
+[[roles]]
+id = "mcp-client"
+name = "MCP servers (Model Context Protocol)"
+kind = "external"
+symbols = ["smolagents.mcp_client:MCPClient.connect", "smolagents.tools:ToolCollection.from_mcp"]
+purpose = "Turn the tools exposed by one or more MCP servers into smolagents Tools, through the mcpadapt library."
+message = ["stdio: launch the server as a subprocess (StdioServerParameters)", "HTTP: connect to `url` with transport 'streamable-http' (default) or 'sse'", "list tools once at connect time; each later tool call is forwarded to the server"]
+config = "`server_parameters` (StdioServerParameters, or a dict with `url` and `transport`, or a list of them), `adapter_kwargs`, `structured_output`. ToolCollection.from_mcp additionally requires `trust_remote_code=True`; MCPClient does not ask."
+output = "A list of Tool objects whose forward calls the MCP server; with structured_output, outputSchema and structuredContent are honoured."
+validation = "Unknown transport raises ValueError. The tool list is fixed at connect time. The connection must be closed with `disconnect()` or the context manager."
+logging = "None of its own."
+cost = "Depends on the server."
+result_use = "Passed to an agent's `tools`; the server's results become observations."
+
+[[roles]]
+id = "hf-hub"
+name = "Hugging Face Hub (push and load agents and tools)"
+kind = "external"
+symbols = ["smolagents.agents:MultiStepAgent.push_to_hub", "smolagents.agents:MultiStepAgent.from_hub", "smolagents.tools:Tool.push_to_hub", "smolagents.tools:Tool.from_hub", "smolagents.tools:ToolCollection.from_hub"]
+purpose = "Share an agent or a tool as a Hugging Face Space and load one back: push writes the tool code, agent.json, prompts, requirements and a Gradio app; load downloads them and executes the tool code."
+message = ["push: create_repo(repo_type='space', space_sdk='gradio'), metadata_update tags, upload_folder of the saved files", "load: hf_hub_download('tool.py') or snapshot_download of the Space, then `Tool.from_code` runs `exec` on the downloaded code"]
+config = "`repo_id`, `token` (or the token saved by `huggingface-cli login`), `private`, `create_pr`, `commit_message`; Hub kwargs `cache_dir`, `revision`, `proxies`, `local_files_only`."
+output = "push: the commit URL. load: a ready Tool or agent instance."
+validation = "Loading refuses unless `trust_remote_code=True`, because the downloaded code is executed in your process."
+logging = "None of its own."
+cost = "Free tier of the Hub; not measured."
+result_use = "Loaded tools and agents are used like locally defined ones."
+
+[[input_flows]]
+id = "task-text"
+source = "Task text from the developer, CLI prompt or Gradio chat message"
+sink = "Model prompts (TaskStep, planning prompts) and, via additional_args, executor state"
+  [[input_flows.steps]]
+  symbol = "smolagents.agents:MultiStepAgent.run"
+  guard = "None: the task is stored verbatim in a TaskStep; additional_args are merged into agent state and their repr is appended to the task text."
+  [[input_flows.steps]]
+  symbol = "smolagents.agents:MultiStepAgent._generate_planning_step"
+  guard = "Inserted into the planning templates through populate_template (Jinja, StrictUndefined) as a variable, not as template source."
+  [[input_flows.steps]]
+  symbol = "smolagents.models:get_clean_message_list"
+  guard = "Role check only (role must be a MessageRole); content is passed to the provider unchanged."
+
+[[input_flows]]
+id = "model-code"
+source = "Model output text parsed as Python (CodeAgent) — the main trust boundary"
+sink = "Execution in the host Python process (LocalPythonExecutor) with access to tools, authorized modules and agent state"
+  [[input_flows.steps]]
+  symbol = "smolagents.utils:parse_code_blobs"
+  guard = "Only text between the code-block tags (or markdown python fences, or text that parses as Python) is taken; everything between all matching tag pairs is joined and run."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:fix_final_answer_code"
+  guard = "Regex rename of a final_answer variable; not a safety check."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_python_code"
+  guard = "Parsed with ast.parse and interpreted node by node (never exec/eval); 30 s thread timeout, print output truncated, final_answer raises a BaseException."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_ast"
+  guard = "MAX_OPERATIONS = 10,000,000 node evaluations per execution; unsupported node types raise InterpreterError; results checked by check_safer_result (safer_eval)."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_import"
+  guard = "Import allow-list: BASE_BUILTIN_MODULES + additional_authorized_imports; '*' disables it."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:evaluate_attribute"
+  guard = "Any __dunder__ attribute access is refused."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:check_safer_result"
+  guard = "Rejects unauthorized module objects and DANGEROUS_FUNCTIONS (builtins.eval/exec/compile/globals/locals/__import__, os.system, os.popen, posix.system) as evaluation results."
+  [[input_flows.steps]]
+  symbol = "smolagents.local_python_executor:LocalPythonExecutor"
+  guard = "Documented as 'not a security sandbox'; for untrusted code use executor_type e2b / docker / modal / blaxel (RemotePythonExecutor)."
+
+[[input_flows]]
+id = "tool-arguments"
+source = "Tool-call arguments chosen by the model (JSON from ToolCallingAgent, Python values from CodeAgent code)"
+sink = "Tool.forward — network requests, files, Spaces, sub-agents"
+  [[input_flows.steps]]
+  symbol = "smolagents.utils:parse_json_blob"
+  guard = "Text tool calls: first '{' to last '}' decoded with json.loads(strict=False); failure is reported back to the model."
+  [[input_flows.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.execute_tool_call"
+  guard = "Unknown tool names refused; string arguments equal to a state key are swapped for the state value."
+  [[input_flows.steps]]
+  symbol = "smolagents.tools:validate_tool_arguments"
+  guard = "Names and JSON types checked against tool.inputs; required inputs enforced. Not applied when generated code calls a tool directly."
+  [[input_flows.steps]]
+  symbol = "smolagents.agent_types:handle_agent_input_types"
+  guard = "Type conversion only (AgentType → raw value); no content validation."
+
+[[input_flows]]
+id = "web-content"
+source = "Web pages and search results fetched by tools (VisitWebpageTool, WebSearchTool)"
+sink = "Observations stored in ActionStep and replayed into every later model prompt"
+  [[input_flows.steps]]
+  symbol = "smolagents.default_tools:VisitWebpageTool.forward"
+  guard = "Any URL the model gives (no scheme/host check); 20 s timeout; HTML converted to Markdown and truncated to 40,000 chars. Page text is not marked as untrusted."
+  [[input_flows.steps]]
+  symbol = "smolagents.default_tools:WebSearchTool.search_duckduckgo"
+  guard = "Fixed DuckDuckGo Lite endpoint, query as a URL parameter; no timeout; result titles/links/descriptions parsed with HTMLParser."
+  [[input_flows.steps]]
+  symbol = "smolagents.agents:ToolCallingAgent.process_tool_calls.process_single_tool_call"
+  guard = "str(result) becomes the observation; '[' is replaced only in the console log line, not in what the model sees."
+  [[input_flows.steps]]
+  symbol = "smolagents.agents:CodeAgent._step_stream"
+  guard = "Code agents: the last output is truncate_content()ed to 20,000 chars before it joins the observation."
+  [[input_flows.steps]]
+  symbol = "smolagents.memory:ActionStep.to_messages"
+  guard = "Replayed as an 'Observation:' tool-response message; instructions inside a page reach the model with the same standing as any other observation."
+
+[[input_flows]]
+id = "gradio-upload"
+source = "Files attached in the Gradio chat (multimodal mode)"
+sink = "file_upload_folder on the host and the agent's task text / images"
+  [[input_flows.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI._process_message"
+  guard = "Only when file_upload_folder is set; no file-type check on this path."
+  [[input_flows.steps]]
+  symbol = "smolagents.gradio_ui:GradioUI._save_uploaded_file"
+  guard = "Basename only, characters outside [A-Za-z0-9_.-] replaced, so no path traversal; an existing file with the same name is overwritten."
+
+[[findings]]
+id = "max-steps-yields-stale-step"
+severity = "low"
+category = "risk"
+title = "When max_steps runs out, the stream re-yields the previous ActionStep instead of the max-steps step"
+detail = "True now: after the loop, _run_stream calls _handle_max_steps_reached (which appends a new ActionStep carrying AgentMaxStepsError and the forced answer to memory) and then yields `action_step` — the last loop step, already yielded once in the finally block. Trigger: any run that hits max_steps with stream=True. Reach: stream consumers such as GradioUI show the last step twice and never show the max-steps step; memory and the returned answer are correct."
+symbols = ["smolagents.agents:MultiStepAgent._run_stream"]
+evidence = "Read MultiStepAgent._run_stream and _handle_max_steps_reached in src/smolagents/agents.py: the finally block yields action_step, and the post-loop branch does `final_answer = self._handle_max_steps_reached(task)` followed by `yield action_step`; final_memory_step is local to _handle_max_steps_reached and not returned."
+check = {kind = "text_in", pattern = "_handle_max_steps_reached\\(task\\)\\s*\\n\\s*yield action_step"}
+
+[[findings]]
+id = "gradio-uploads-passed-as-images"
+severity = "medium"
+category = "risk"
+title = "GradioUI passes uploaded file paths to agent.run as images, which cannot be encoded"
+detail = "True now: _stream_response calls agent.run(task, images=task_files) where task_files are path strings from _process_message. run stores them as TaskStep.task_images (and ActionStep.observations_images), and get_clean_message_list calls encode_image_base64(image), which does image.save(...) — a str has no save. Trigger: GradioUI with file_upload_folder set and a user attaching any file. Reach: the first model call of that turn raises, CodeAgent/ToolCallingAgent wrap it as AgentGenerationError and the run ends; with reset_agent_memory=False the bad TaskStep stays in memory and later turns fail too. Verified by reading, not executed (dependencies not installed in this clone)."
+symbols = ["smolagents.gradio_ui:GradioUI._stream_response", "smolagents.gradio_ui:GradioUI._process_message", "smolagents.memory:TaskStep.to_messages", "smolagents.utils:encode_image_base64"]
+evidence = "Read GradioUI._process_message/_stream_response (gradio_ui.py), MultiStepAgent.run/_run_stream (agents.py: images → TaskStep(task_images=images) and ActionStep(observations_images=images)), TaskStep.to_messages (memory.py: {'type': 'image', 'image': image}), get_clean_message_list (models.py) and encode_image_base64 (utils.py: image.save(buffered, format='PNG'))."
+check = {kind = "text_in", pattern = "images=task_files"}
+
+[[findings]]
+id = "gradio-share-default"
+severity = "medium"
+category = "risk"
+title = "GradioUI.launch() shares the app publicly by default"
+detail = "True now: launch(share=True) is the default, which asks Gradio for a public share link. Trigger: calling GradioUI(agent).launch() without share=False. Reach: anyone with the link can drive the agent — for a CodeAgent that means model-written code runs in LocalPythonExecutor on the host (documented as not a sandbox) with the agent's tools and API keys behind them, and every visitor shares one agent memory."
+symbols = ["smolagents.gradio_ui:GradioUI.launch"]
+evidence = "Read GradioUI.launch (`def launch(self, share: bool = True, **kwargs)` → create_app().launch(debug=True, share=share)) and the LocalPythonExecutor docstring in local_python_executor.py."
+check = {kind = "text_in", pattern = "share: bool = True"}
+
+[[findings]]
+id = "gradio-upload-filter-unused"
+severity = "low"
+category = "dead code"
+title = "GradioUI.upload_file's extension allow-list is never used by the chat"
+detail = "True now: upload_file checks extensions against ['.pdf', '.docx', '.txt'], but create_app wires only _stream_response, whose _process_message saves every attached file without a type check. Trigger: a user attaches any file type in multimodal mode. Reach: the file is copied into file_upload_folder and its path is given to the agent; the allow-list gives a false impression of filtering."
+symbols = ["smolagents.gradio_ui:GradioUI.upload_file"]
+evidence = "grep for upload_file in src/ finds only its definition; read GradioUI.create_app and _process_message."
+check = "no_callers"
+
+[[findings]]
+id = "visit-webpage-any-url"
+severity = "medium"
+category = "risk"
+title = "visit_webpage fetches any URL the model picks, including internal addresses"
+detail = "True now: VisitWebpageTool.forward calls requests.get(url, timeout=20) with no scheme, host or IP check and returns the page body to the model. Trigger: an agent with this tool (it is in TOOL_MAPPING, so `add_base_tools=True` adds it) running on a machine or cloud VM with internal HTTP services, and a model steered by injected page text to request e.g. a metadata endpoint or localhost admin port. Reach: any GET-readable resource reachable from the host, whose content then lands in the model's context (and in the provider's logs)."
+symbols = ["smolagents.default_tools:VisitWebpageTool.forward"]
+evidence = "Read VisitWebpageTool.forward and TOOL_MAPPING in default_tools.py; no URL validation anywhere on the path."
+check = {kind = "text_in", pattern = "requests\\.get\\(url, timeout=20\\)"}
+
+[[findings]]
+id = "cli-interactive-action-type-ignored"
+severity = "low"
+category = "risk"
+title = "Interactive CLI ignores the chosen action type"
+detail = "True now: interactive_mode asks 'code' or 'tool_calling', then unconditionally sets action_type = \"code\" before returning. Trigger: running smolagent with no prompt and choosing tool_calling. Reach: a CodeAgent is built anyway; the non-interactive --action-type flag is unaffected."
+symbols = ["smolagents.cli:interactive_mode"]
+evidence = "Read interactive_mode in src/smolagents/cli.py: `action_type = Prompt.ask(...)` early, then `imports = []` / `action_type = \"code\"` before the advanced-options block."
+check = {kind = "text_in", pattern = "imports = \\[\\]\\s*\\n\\s*action_type = \"code\""}
+
+[[findings]]
+id = "cli-interactive-openaiservermodel"
+severity = "low"
+category = "risk"
+title = "Interactive CLI offers 'OpenAIServerModel', which load_model rejects"
+detail = "True now: interactive_mode's model-type choices include OpenAIServerModel, but load_model only matches 'OpenAIModel' and raises ValueError('Unsupported model type') otherwise. Trigger: choosing OpenAIServerModel in interactive mode. Reach: the CLI exits with an error before any model call; it also skips the API-option questions' intended model."
+symbols = ["smolagents.cli:interactive_mode", "smolagents.cli:load_model"]
+evidence = "Read interactive_mode (choices=[\"InferenceClientModel\", \"OpenAIServerModel\", \"LiteLLMModel\", \"TransformersModel\"]) and load_model (branches OpenAIModel, LiteLLMModel, TransformersModel, InferenceClientModel, else ValueError) in src/smolagents/cli.py."
+check = {kind = "text_in", pattern = "\"OpenAIServerModel\""}
+
+[[findings]]
+id = "inference-client-drops-response-format"
+severity = "low"
+category = "risk"
+title = "InferenceClientModel.generate validates response_format but never sends it"
+detail = "True now: generate raises if the provider does not support structured outputs, then calls _prepare_completion_kwargs with `# response_format=response_format` commented out; generate_stream does pass it. Trigger: CodeAgent(use_structured_outputs_internally=True) without stream_outputs on InferenceClientModel. Reach: the request carries no JSON schema, so the reply may not be JSON and CodeAgent._step_stream's json.loads(output_text)['code'] fails as AgentParsingError on that step."
+symbols = ["smolagents.models:InferenceClientModel.generate"]
+evidence = "Read InferenceClientModel.generate and generate_stream in src/smolagents/models.py, and the structured branch of CodeAgent._step_stream in agents.py."
+check = {kind = "text_in", pattern = "# response_format=response_format"}
+
+[[findings]]
+id = "local-timeout-does-not-interrupt"
+severity = "medium"
+category = "risk"
+title = "The local executor's 30-second timeout only reports late; it does not give control back early"
+detail = "True now: `timeout` runs the snippet in a ThreadPoolExecutor inside a `with` block. When future.result times out it raises ExecutionTimeoutError — but leaving the `with` block calls executor.shutdown(wait=True), which waits for the snippet to finish first. Trigger: model-written code that blocks without counting AST operations, e.g. `time.sleep(600)` (time is in BASE_BUILTIN_MODULES) or a tool call that hangs on the network. Reach: the whole agent run stalls for as long as that code takes; the 30 s limit only changes the error message afterwards. The docstring says the caller 'will receive a TimeoutError and can continue execution', and the tests only assert that the error is raised, not when."
+symbols = ["smolagents.local_python_executor:timeout"]
+evidence = "Read local_python_executor:timeout and TestTimeout in tests/test_local_python_executor.py. Reproduced the exact pattern standalone (ThreadPoolExecutor in a with block, submit time.sleep(6), result(timeout=2)): the timeout error surfaced after 6.0 s, not 2 s."
+check = {kind = "text_in", pattern = "with ThreadPoolExecutor\\(max_workers=1\\) as executor"}
+
+[[findings]]
+id = "local-executor-not-a-boundary"
+severity = "medium"
+category = "risk"
+title = "LocalPythonExecutor limits imports and dunders, not the host: same process, files, network and memory"
+detail = "True now: the default executor ('local') interprets model-written code in your process. It refuses imports outside the allow-list, dunder attributes, the functions in DANGEROUS_FUNCTIONS and unknown builtins, and caps operations. It cannot stop: memory exhaustion (no cap), disk or network use through any authorized module or any tool (tools run with full privileges), or anything once `additional_authorized_imports` contains '*'. DANGEROUS_MODULES is defined but never read — the only module gate is the allow-list. Trigger: an untrusted or prompt-injected model (e.g. via visit_webpage content) plus a permissive import list or a powerful tool. Reach: everything the Python process can touch. README and the class docstring say this plainly ('not a security sandbox'); the remote executors are the documented answer."
+symbols = ["smolagents.local_python_executor:check_import_authorized", "smolagents.local_python_executor:check_safer_result", "smolagents.local_python_executor:LocalPythonExecutor.__call__"]
+evidence = "Read check_import_authorized (returns True as soon as '*' is in the tree), check_safer_result, evaluate_import, LocalPythonExecutor; `grep -n DANGEROUS_MODULES src/smolagents/*.py` finds only its definition. README 'Security' section and LocalPythonExecutor docstring read."
+
+[[findings]]
+id = "remote-executors-ignore-allow-list"
+severity = "info"
+category = "risk"
+title = "With a remote executor, additional_authorized_imports means 'pip install these', not an allow-list"
+detail = "True now: RemotePythonExecutor runs the code string as-is in the kernel; `additional_imports` are only passed to `!pip install`. The system prompt still lists the authorized imports, but nothing enforces them remotely. Trigger: someone moving from local to e2b/docker expecting the same import restriction. Reach: only what the sandbox itself allows — which is the intended boundary."
+symbols = ["smolagents.remote_executors:RemotePythonExecutor.install_packages"]
+evidence = "Read RemotePythonExecutor.__call__, install_packages, E2BExecutor.__init__, DockerExecutor.__init__ and _websocket_run_code_raise_errors: no import check on the code."
+
+[[findings]]
+id = "search-tools-no-timeout"
+severity = "low"
+category = "risk"
+title = "Most web-search calls have no HTTP timeout"
+detail = "True now: GoogleSearchTool.forward, ApiWebSearchTool.forward, WebSearchTool.search_duckduckgo and search_bing call requests.get without `timeout`; only search_exa (30 s) and visit_webpage (20 s) set one. Trigger: a search endpoint that accepts the connection but never answers. Reach: the step hangs indefinitely; in a CodeAgent the local executor's timeout cannot cut it short either (see the timeout finding)."
+symbols = ["smolagents.default_tools:GoogleSearchTool.forward", "smolagents.default_tools:ApiWebSearchTool.forward", "smolagents.default_tools:WebSearchTool.search_duckduckgo", "smolagents.default_tools:WebSearchTool.search_bing"]
+evidence = "Read each forward/search function in default_tools.py and compared the requests.get calls."
+check = {kind = "text_in", pattern = "requests\\.get\\(base_url, params=params\\)"}
+
+[[findings]]
+id = "bedrock-tool-calls-key"
+severity = "low"
+category = "risk"
+title = "AmazonBedrockModel.generate reads a 'tool_calls' key the Converse response does not normally carry"
+detail = "True now: generate builds the ChatMessage with `response['output']['message']['tool_calls']`. Bedrock's Converse API returns `output.message` with `role` and `content` (tool use appears as `toolUse` content blocks), so a real response without that key would raise KeyError after the text has already been extracted. Trigger: any AmazonBedrockModel.generate against the real service. Reach: every Bedrock call. Not verified against a live endpoint here, and the test suite only tests client creation for Bedrock (TestAmazonBedrockModel.test_client_for_bedrock), so it is unexercised either way."
+symbols = ["smolagents.models:AmazonBedrockModel.generate"]
+evidence = "Read AmazonBedrockModel.generate and _prepare_completion_kwargs; `grep -n -i bedrock tests/*.py` shows only the client test. Response shape per the public boto3 Converse documentation."
+check = {kind = "text_in", pattern = "\\[\"message\"\\]\\[\"tool_calls\"\\]"}
+
+[[findings]]
+id = "final-answer-error-as-output"
+severity = "low"
+category = "risk"
+title = "At max_steps, a failed final-answer call is returned as the answer text"
+detail = "True now: provide_final_answer catches every exception from model.generate and returns a ChatMessage whose content is 'Error in generating final LLM output: …'; _handle_max_steps_reached returns that content as the run's output. Trigger: the model provider fails (outage, context too long — likely, since this call replays the whole memory) on the forced answer. Reach: `agent.run()` returns the error string as if it were the answer; only `return_full_result=True` shows state 'max_steps_error'."
+symbols = ["smolagents.agents:MultiStepAgent.provide_final_answer"]
+evidence = "Read MultiStepAgent.provide_final_answer, _handle_max_steps_reached and run."
+check = {kind = "text_in", pattern = "Error in generating final LLM output"}
+
+[[findings]]
+id = "monitor-skips-planning-tokens"
+severity = "info"
+category = "duplicated logic"
+title = "Two token totals: Monitor counts action steps only, RunResult also counts planning"
+detail = "True now: _setup_step_callbacks registers monitor.update_metrics for ActionStep only, so `agent.monitor.get_total_token_counts()` excludes PlanningStep tokens, while `run(return_full_result=True)` sums both ActionStep and PlanningStep from memory. Trigger: planning_interval set. Reach: token/cost reporting only; the two numbers disagree by the planning calls."
+symbols = ["smolagents.agents:MultiStepAgent._setup_step_callbacks"]
+evidence = "Read MultiStepAgent._setup_step_callbacks, Monitor.update_metrics and the token loop in MultiStepAgent.run."
+check = {kind = "text_in", pattern = "register\\(ActionStep, self\\.monitor\\.update_metrics\\)"}
+
+[[findings]]
+id = "mcp-structured-output-warning-stale"
+severity = "low"
+category = "doc vs code"
+title = "MCP warning says the structured_output default changes 'in version 1.25'; at 1.27.0.dev0 it is still False"
+detail = "True now: MCPClient.__init__ and ToolCollection.from_mcp warn 'Currently it defaults to False, but in version 1.25, the default will change to True', and still set False; `__version__` is 1.27.0.dev0. Trigger: any MCP use without structured_output. Reach: a misleading FutureWarning only."
+symbols = ["smolagents.mcp_client:MCPClient.__init__", "smolagents.tools:ToolCollection.from_mcp"]
+evidence = "Read both functions and src/smolagents/__init__.py (__version__)."
+check = {kind = "text_in", pattern = "in version 1\\.25, the default will change to True"}
+
+[[findings]]
+id = "mcpclient-no-trust-gate"
+severity = "info"
+category = "risk"
+title = "ToolCollection.from_mcp demands trust_remote_code; MCPClient connects without it"
+detail = "True now: from_mcp raises unless trust_remote_code=True ('it will execute code on your local machine'), but MCPClient — the newer, documented entry point — launches a stdio server or connects over HTTP with no such flag. Trigger: a user relying on the flag as the safety prompt. Reach: whatever the MCP server or its subprocess can do; the two entry points disagree about whether consent is needed."
+symbols = ["smolagents.mcp_client:MCPClient.__init__"]
+evidence = "Read MCPClient.__init__/connect and ToolCollection.from_mcp."
+
+[[findings]]
+id = "readme-agents-line-count"
+severity = "info"
+category = "doc vs code"
+title = "README says agents.py has under 1,000 lines; it has 1,813"
+detail = "True now: README states 'the logic for agents fits in ~1,000 lines of code' and 'the main code in agents.py has <1,000 lines'. `wc -l src/smolagents/agents.py` prints 1813. Reach: expectation-setting for newcomers only."
+symbols = ["smolagents.agents:MultiStepAgent"]
+evidence = "Read README.md (Simplicity bullet and the abstractions paragraph); ran wc -l on src/smolagents/agents.py."
+
+[[findings]]
+id = "cli-openai-defaults-to-fireworks"
+severity = "info"
+category = "doc vs code"
+title = "CLI `--model-type OpenAIModel` silently targets Fireworks"
+detail = "True now: cli.load_model builds OpenAIModel with api_base defaulting to https://api.fireworks.ai/inference/v1 and api_key defaulting to FIREWORKS_API_KEY; InferenceClientModel reads HF_API_KEY (not HF_TOKEN, which the class itself falls back to). Neither default is mentioned in README's CLI section. Trigger: running `smolagent … --model-type OpenAIModel --model-id gpt-…` without --api-base. Reach: the request (and the prompt) goes to Fireworks and fails or bills there."
+symbols = ["smolagents.cli:load_model"]
+evidence = "Read cli.load_model; `grep -n 'FIREWORKS\\|HF_API_KEY' README.md docs/source/en -r` found nothing."
+check = {kind = "text_in", pattern = "api\\.fireworks\\.ai"}
+
+[[layer_rules]]
+text = "The model gateway never imports the agent loop or any UI: models know messages and tools, not agents."
+from_layers = ["models"]
+forbid = ["smolagents.agents", "smolagents.gradio_ui", "smolagents.cli", "smolagents.vision_web_browser"]
+
+[[layer_rules]]
+text = "Tools never import agents, models or memory: a tool is usable on its own, outside any agent."
+from_layers = ["tools"]
+forbid = ["smolagents.agents", "smolagents.models", "smolagents.memory"]
+
+[[layer_rules]]
+text = "Executors never import agents, models or memory: they receive code, tools and variables and return a CodeOutput."
+from_layers = ["executors"]
+forbid = ["smolagents.agents", "smolagents.models", "smolagents.memory"]
+
+[[layer_rules]]
+text = "Provider SDKs (openai, litellm, boto3, vllm, mlx_lm) are imported only inside the model gateway, never by agents, memory or executors."
+from_layers = ["agents", "memory", "executors"]
+forbid = ["openai", "litellm", "boto3", "vllm", "mlx_lm"]
+
+[[layer_rules]]
+text = "Only the entry-point layer imports Gradio's UI module or the CLI; the agent loop does not depend on how it is displayed."
+from_layers = ["agents", "models", "tools", "executors", "memory", "utils"]
+forbid = ["smolagents.gradio_ui", "smolagents.cli", "smolagents.vision_web_browser"]
+
+[[layer_rules]]
+text = "Memory and monitoring never import the agent loop: steps are plain records the agent fills in."
+from_layers = ["memory"]
+forbid = ["smolagents.agents"]
+
+[[decisions]]
+decision = "What code runs (CodeAgent) or which tool is called with which arguments (ToolCallingAgent) at each step"
+by = "model"
+how = "The model writes a Python snippet or JSON tool calls from the system prompt and the replayed memory; the agent only parses it (parse_code_blobs / parse_tool_calls) and runs it."
+symbol = "smolagents.agents:CodeAgent._step_stream"
+
+[[decisions]]
+decision = "Which modules model-written code may import in the local executor"
+by = "code"
+how = "check_import_authorized walks the import path against BASE_BUILTIN_MODULES plus the user's additional_authorized_imports ('numpy.*' allows submodules, '*' allows everything); get_safe_module strips unauthorized submodules from an allowed module."
+symbol = "smolagents.local_python_executor:check_import_authorized"
+
+[[decisions]]
+decision = "How much work one snippet may do locally"
+by = "code"
+how = "evaluate_ast counts operations up to MAX_OPERATIONS, evaluate_while caps iterations at MAX_WHILE_ITERATIONS, evaluate_python_code wraps the run in a thread timeout (timeout_seconds, default 30, configurable or None)."
+symbol = "smolagents.local_python_executor:evaluate_ast"
+
+[[decisions]]
+decision = "Where the model's code executes (in-process or a sandbox)"
+by = "people"
+how = "The user passes executor_type ('local' default, 'e2b', 'docker', 'modal', 'blaxel') or a ready executor to CodeAgent; create_python_executor builds it."
+symbol = "smolagents.agents:CodeAgent.create_python_executor"
+
+[[decisions]]
+decision = "Which tools and model the agent has"
+by = "people"
+how = "The user passes `tools`, `model`, optional `managed_agents` and `add_base_tools` (adds TOOL_MAPPING: web_search and visit_webpage, plus python_interpreter for a ToolCallingAgent only) to the agent constructor; final_answer is always added."
+symbol = "smolagents.agents:MultiStepAgent._setup_tools"
+
+[[decisions]]
+decision = "When the run stops"
+by = "model"
+how = "The model ends the run by calling final_answer; the code stops it anyway after max_steps (agent default 20, overridable per run) and asks for a forced answer via provide_final_answer, or when interrupt() is called."
+symbol = "smolagents.agents:MultiStepAgent._run_stream"
+
+[[decisions]]
+decision = "Whether a final answer is accepted"
+by = "code"
+how = "Each function in the user's final_answer_checks is called with (answer, memory, agent); a falsy result or exception becomes an AgentError on the step and the loop continues."
+symbol = "smolagents.agents:MultiStepAgent._validate_final_answer"
+
+[[decisions]]
+decision = "When to plan"
+by = "people"
+how = "planning_interval on the agent; _run_stream runs a planning step on step 1 and every planning_interval steps after."
+symbol = "smolagents.agents:MultiStepAgent._run_stream"
+
+[[decisions]]
+decision = "Whether a failed model call is retried"
+by = "code"
+how = "ApiModel's Retrying retries only when is_rate_limit_error matches the exception text, up to 3 attempts with 60 s exponential backoff; retry=False disables it."
+symbol = "smolagents.models:is_rate_limit_error"
+
+[[decisions]]
+decision = "Whether downloaded or remote code may run"
+by = "people"
+how = "Tool.from_hub, MultiStepAgent.from_hub and ToolCollection.from_mcp refuse unless the caller passes trust_remote_code=True; remote executors accept pickle only with allow_pickle=True."
+symbol = "smolagents.tools:Tool.from_hub"

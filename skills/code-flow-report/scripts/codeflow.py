@@ -413,7 +413,7 @@ def cmd_merge(a) -> int:
                 doc[k] = {**doc.get(k, {}), **v}
             else:
                 doc[k] = v
-        print(f"merged {part.name}: " + ", ".join(f"{k} {len(v) if isinstance(v, list) else 1}" for k, v in frag.items()))
+        print(f"merged {part.name}: " + ", ".join(f"{k} {len(v) if isinstance(v, list) or k == 'module_notes' else 1}" for k, v in frag.items()))
     if not a.check:
         paths.narrative.write_text(drafter.to_toml(doc, drafter.HEADER), encoding="utf-8")
     cm = load_map(paths)

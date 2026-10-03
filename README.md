@@ -6,7 +6,7 @@
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757.svg)](https://code.claude.com/docs/en/discover-plugins)
 [![Python 3.11+ · stdlib only](https://img.shields.io/badge/python-3.11%2B%20%C2%B7%20stdlib%20only-3776ab.svg)](#faq)
 
-![Structure map: one module selected, everything unconnected fades](docs/screenshot-structure.png)
+![The smolagents report: the agents module selected, everything not connected to it fades; the layer rules below are re-checked on every build](docs/screenshot-structure.png)
 
 <p align="center"><a href="#examples">Example reports</a> · <a href="#quick-start">Quick start</a> · <a href="#how-it-works">How it works</a> · <a href="#limits">Limits</a> · <a href="#faq">FAQ</a></p>
 
@@ -62,7 +62,7 @@ claude plugin update code-flow-report@code-flow-report             # third-party
 | **Findings** | Where do docs and code disagree? Also: real risks with their trigger and reach, dead or test-only code, and import cycles. |
 | **Call-graph explorer** | Search anything. Click a node and everything unconnected fades. |
 
-![A journey: one request as a sequence of calls, step by step](docs/screenshot-journey.png)
+![A journey from the smolagents report: CodeAgent.run, call by call, from the task to the executed code and the final answer](docs/screenshot-journey.png)
 
 ## How it works
 
@@ -91,6 +91,16 @@ docs/code-flow/
 
 Optional, and only if you say yes: `tests/test_code_flow.py`, a unittest that fails when the report no longer matches the code.
 </details>
+
+## What it recognises
+
+| | |
+|---|---|
+| **Entry points** | Flask, FastAPI and Django routes, with blueprint/router prefixes per module. `main()` scripts and `[project.scripts]` console commands, and scripts whose work is top-level code. A library's public API (`__all__` and package re-exports, with entry methods found through the base classes). Streamlit, Gradio and NiceGUI widgets and callbacks. Celery, RQ and APScheduler tasks and schedules. |
+| **Data** | SQL in strings (with tables from `.sql` and SurrealQL schemas), SQLAlchemy and SQLModel session calls, Django and active-record models (`obj.save()`, `Model.get()`, `Model.objects.filter()`), shared write/audit wrappers. |
+| **Calls** | Types from annotations, `with … as` (including `@contextmanager`), return types, `__init__` parameters, inherited attributes, injected callables (`Deps(make_llm=…)`), and parameter types agreed by every call site. Virtual calls get dashed edges to every override. |
+| **Boundaries** | HTTP clients, cloud SDKs, databases, queues, email, subprocesses. Model calls through openai, anthropic, litellm, Gemini, LangChain, esperanto or plain HTTP to a model host, plus the repo's own wrappers around them. |
+| **Tests** | Read only for callers: "only tests call this" and "nothing calls this". |
 
 ## Commands
 
@@ -139,7 +149,7 @@ The core knows only generic shapes: calls, imports, routes, SQL and ORM, externa
 
 | Profile | Switched on by | Adds |
 |---|---|---|
-| `llm` | openai, anthropic, litellm, langchain, google, ollama, mistralai, … | Model calls with provider, model, settings, message roles and schema. It finds your own wrappers around the SDK (`LLMClient.chat_json`) and records every call to them as a role. |
+| `llm` | openai, anthropic, litellm, langchain, langgraph, esperanto, google, ollama, mistralai, huggingface_hub, … | Model calls with provider, model, settings, message roles and schema, including SDK methods passed to retry wrappers, LangChain `.invoke`, and HTTP calls to a model host. It finds the repo's own wrappers around the SDK (`LLMClient.chat_json`, a `Model.generate` hierarchy) and records every call to them as a role. |
 | `jobs` | celery, rq, dramatiq, huey, apscheduler, schedule, arq, prefect, airflow, … | Tasks, schedules and enqueue sites, so that work with no visible caller shows up |
 | `ui` | streamlit, gradio, nicegui | Buttons, chat inputs, uploads and callbacks as journey entry points, plus a "UI triggers" table |
 
@@ -147,11 +157,16 @@ A profile is one Python file. See [`references/profiles.md`](skills/code-flow-re
 
 ## Examples
 
-| Repository | What it shows | Report |
-|---|---|---|
-| [`examples/demo-shop`](examples/demo-shop) (invented) | Flask routes, SQL, a background job, an LLM call | [code-flow-report.html](examples/demo-shop/docs/code-flow/code-flow-report.html) |
+Reports built by the skill on popular open-source repositories, each at a pinned commit, with no repo-specific code:
 
-To view a report, download the HTML file and open it, or browse it through any static file host.
+| Repository | Kind | What the report shows | Report |
+|---|---|---|---|
+| [huggingface/smolagents](https://github.com/huggingface/smolagents) | LLM agent library | Entry points from its public API (`CodeAgent().run()`), the agent loop past virtual calls, 5 model-call sites behind a model gateway, what the local code executor does and does not isolate. 6 journeys · 15 cards · 18 module notes · 24 findings | [examples/smolagents](examples/smolagents) |
+| [lfnovo/open-notebook](https://github.com/lfnovo/open-notebook) | Web app: FastAPI + LangGraph + SurrealDB | 116 routes with their real prefixes, 16 SurrealDB tables read from SurrealQL migrations, active-record models, a background command queue, LangChain/esperanto model roles. 6 journeys · 18 cards · 15 entities · 84 module notes · 31 findings | [examples/open-notebook](examples/open-notebook) |
+| [karpathy/nanochat](https://github.com/karpathy/nanochat) | ML training pipeline | Tokenizer → pretraining → SFT → RL → eval → chat, with scripts whose work is top-level code, and checkpoints on disk instead of a database. 6 journeys · 8 cards · 30 module notes · 15 findings | [examples/nanochat](examples/nanochat) |
+| [`examples/demo-shop`](examples/demo-shop) (invented) | Small Flask app | Flask routes, SQL, a background job, an LLM call | [report](examples/demo-shop/docs/code-flow/code-flow-report.html) |
+
+Each folder holds the page (`code-flow-report.html`; download it and open it in a browser), everything Claude wrote (`narrative.toml`), and the extracted map. Findings describe the code at that commit as the writers verified it. They are not reports filed with those projects, and some describe deliberate design choices.
 
 ## Measured
 
@@ -159,10 +174,14 @@ Maps built with zero configuration:
 
 | Repository | Kind | Size | Map time | Function calls resolved (graph coverage) | All call sites resolved |
 |---|---|---|---|---|---|
-| a private Flask app + batch loader + CDK | web app | 126 files · 53k lines | 1.7 s | **96.2 %** | 91.5 % |
-| a Streamlit + SQLModel LLM app | app with an LLM layer | 53 files · 7.6k lines | 1.7 s | **94.6 %** | 93.8 % |
-| fastapi/full-stack-fastapi-template | API + ORM | 27 files · 1.7k lines | 0.1 s | **97.2 %** | 97.0 % |
-| httpie/cli | class-heavy CLI library | 86 files · 10.6k lines | 0.4 s | **83.3 %** | 82.7 % |
+| fastapi/full-stack-fastapi-template | API + ORM | 27 files · 1.7k lines | 0.1 s | **98.4 %** | 98.1 % |
+| a Streamlit + SQLModel LLM app | app with an LLM layer | 53 files · 7.6k lines | 1.7 s | **95.1 %** | 94.2 % |
+| huggingface/smolagents | agent library | 18 files · 12.8k lines | 0.7 s | **88.5 %** | 88.7 % |
+| lfnovo/open-notebook | FastAPI + SurrealDB app | 84 files · 21k lines | 1.0 s | **87.9 %** | 89.1 % |
+| httpie/cli | class-heavy CLI library | 86 files · 10.6k lines | 0.5 s | **84.7 %** | 83.6 % |
+| karpathy/nanochat | PyTorch training pipeline | 30 files · 6.7k lines | 0.4 s | **80.2 %** | 83.7 % |
+
+Library-heavy code resolves less: calls on tensors and other library values whose type the source does not state (`x.view(...)`, `logits.size()`) have no target to find.
 
 On the Streamlit app, the generic skill was compared with a report built from a 1,633-line extractor written for that app. The two maps share the same 253 functions and 580 call edges. They agree on all 9 model call sites (7 roles), all injected callables and all table readers, writers and deleters, and both find the one function that only tests call.
 

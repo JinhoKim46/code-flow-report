@@ -1,0 +1,4452 @@
+{
+ "schema": 2,
+ "scope": [
+  "dev",
+  "nanochat",
+  "scripts",
+  "tasks"
+ ],
+ "summary": {
+  "files": 30,
+  "lines": 6715,
+  "functions": 99,
+  "methods": 106,
+  "classes": 26,
+  "routes": 0,
+  "route_functions": 0,
+  "call_sites": 2127,
+  "resolved_internal": 421,
+  "resolved_external": 764,
+  "resolved_builtin": 596,
+  "resolved_by_convention": 0,
+  "unresolved": 346,
+  "resolved_ratio": 0.8373,
+  "graph_coverage": 0.8018,
+  "inferred_edges": 64,
+  "override_edges": 56,
+  "unresolved_value_like": 53,
+  "internal_edges": 415,
+  "reference_edges": 29,
+  "sql_sites": 0,
+  "gateway_sites": 0,
+  "external_sites": 60,
+  "tables": 0,
+  "orm_models": 0,
+  "import_cycles": 1,
+  "lazy_import_cycles": 0,
+  "parse_errors": 0,
+  "profiles": {
+   "llm": 0
+  },
+  "top_unresolved_names": [
+   ["size", 16],
+   ["append", 16],
+   ["to", 14],
+   ["decode", 14],
+   ["get_bos_token_id", 11],
+   ["item", 11],
+   ["numel", 11],
+   ["view", 9],
+   ["encode", 9],
+   ["log", 9],
+   ["encode_special", 8],
+   ["float", 6],
+   ["get_vocab_size", 6],
+   ["write", 6],
+   ["tokenizer", 6]
+  ]
+ },
+ "tables": [],
+ "orm_models": {},
+ "orm_uses": {},
+ "modules": {
+  "dev.repackage_data_reference": {
+   "file": "dev/repackage_data_reference.py",
+   "lines": 128,
+   "doc": "Repackage a given dataset into simple parquet shards:",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "datasets",
+    "huggingface_hub",
+    "os",
+    "pyarrow",
+    "tiktoken",
+    "time"
+   ],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 22,
+   "unresolved": 0
+  },
+  "nanochat": {
+   "file": "nanochat/__init__.py",
+   "lines": 0,
+   "doc": "",
+   "cli": false,
+   "exports": [],
+   "packages": [],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 0,
+   "unresolved": 0
+  },
+  "nanochat.checkpoint_manager": {
+   "file": "nanochat/checkpoint_manager.py",
+   "lines": 193,
+   "doc": "Utilities for saving and loading model/optim/state checkpoints.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "json",
+    "logging",
+    "os",
+    "re",
+    "torch"
+   ],
+   "imports": ["nanochat.common", "nanochat.gpt", "nanochat.tokenizer"],
+   "lazy_imports": [],
+   "call_sites": 86,
+   "unresolved": 6
+  },
+  "nanochat.common": {
+   "file": "nanochat/common.py",
+   "lines": 328,
+   "doc": "Common utilities for nanochat.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "filelock",
+    "logging",
+    "os",
+    "re",
+    "torch",
+    "urllib"
+   ],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 70,
+   "unresolved": 2
+  },
+  "nanochat.core_eval": {
+   "file": "nanochat/core_eval.py",
+   "lines": 262,
+   "doc": "Functions for evaluating the CORE metric, as described in the DCLM paper. https://arxiv.org/abs/2406.11794",
+   "cli": false,
+   "exports": [],
+   "packages": ["jinja2", "random", "torch"],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 96,
+   "unresolved": 20
+  },
+  "nanochat.dataloader": {
+   "file": "nanochat/dataloader.py",
+   "lines": 166,
+   "doc": "Distributed dataloaders for pretraining.",
+   "cli": false,
+   "exports": [],
+   "packages": ["pyarrow", "torch"],
+   "imports": ["nanochat.common", "nanochat.dataset"],
+   "lazy_imports": [],
+   "call_sites": 41,
+   "unresolved": 9
+  },
+  "nanochat.dataset": {
+   "file": "nanochat/dataset.py",
+   "lines": 160,
+   "doc": "The base/pretraining dataset is a set of parquet files. This file contains utilities for: - iterating over the parquet files and yielding documents from it - download the files on demand if they are not on disk",
+   "cli": true,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "multiprocessing",
+    "os",
+    "pyarrow",
+    "requests",
+    "time"
+   ],
+   "imports": [
+    "nanochat.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 69,
+   "unresolved": 4
+  },
+  "nanochat.engine": {
+   "file": "nanochat/engine.py",
+   "lines": 352,
+   "doc": "Engine for efficient inference of our models.",
+   "cli": true,
+   "exports": [],
+   "packages": [
+    "collections",
+    "contextlib",
+    "signal",
+    "time",
+    "torch",
+    "warnings"
+   ],
+   "imports": ["nanochat.checkpoint_manager", "nanochat.common"],
+   "lazy_imports": [],
+   "call_sites": 124,
+   "unresolved": 38
+  },
+  "nanochat.execution": {
+   "file": "nanochat/execution.py",
+   "lines": 134,
+   "doc": "Sandboxed execution utilities for running Python code that comes out of an LLM. Inspired by the OpenAI HumanEval code: https://github.com/openai/human-eval/blob/master/human_eval/execution.py",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "dataclasses",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "typing"
+   ],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 7,
+   "unresolved": 0
+  },
+  "nanochat.flash_attention": {
+   "file": "nanochat/flash_attention.py",
+   "lines": 195,
+   "doc": "Unified Flash Attention interface with automatic FA3/SDPA switching.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "kernels",
+    "os",
+    "torch",
+    "types"
+   ],
+   "imports": [],
+   "lazy_imports": [
+    "nanochat.common"
+   ],
+   "call_sites": 35,
+   "unresolved": 15
+  },
+  "nanochat.fp8": {
+   "file": "nanochat/fp8.py",
+   "lines": 266,
+   "doc": "Minimal FP8 training for nanochat — tensorwise dynamic scaling only.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "torch"
+   ],
+   "imports": [
+    "nanochat.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 44,
+   "unresolved": 21
+  },
+  "nanochat.gpt": {
+   "file": "nanochat/gpt.py",
+   "lines": 555,
+   "doc": "GPT model (rewrite, a lot simpler) Notable features: - rotary embeddings (and no positional embeddings) - QK norm - untied weights for token embedding and lm_head - relu^2 activation in MLP - norm after token embedding - no learnable params in rmsnorm - no bias in linear layers - Group-Query Attent…",
+   "cli": false,
+   "exports": [],
+   "packages": ["dataclasses", "functools", "torch"],
+   "imports": ["nanochat.common", "nanochat.flash_attention", "nanochat.optim"],
+   "lazy_imports": [],
+   "call_sites": 224,
+   "unresolved": 25
+  },
+  "nanochat.loss_eval": {
+   "file": "nanochat/loss_eval.py",
+   "lines": 65,
+   "doc": "A number of functions that help with evaluating a base model.",
+   "cli": false,
+   "exports": [],
+   "packages": ["math", "torch"],
+   "imports": [],
+   "lazy_imports": [],
+   "call_sites": 29,
+   "unresolved": 9
+  },
+  "nanochat.optim": {
+   "file": "nanochat/optim.py",
+   "lines": 459,
+   "doc": "A nice and efficient mixed AdamW/Muon Combined Optimizer. Usually the embeddings and scalars go into AdamW, and the matrix parameters go into Muon. The same class handles both single GPU and distributed training: when there is no multi-rank process group, the communication ops are simply skipped an…",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "torch"
+   ],
+   "imports": [
+    "nanochat.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 151,
+   "unresolved": 25
+  },
+  "nanochat.tokenizer": {
+   "file": "nanochat/tokenizer.py",
+   "lines": 279,
+   "doc": "BPE Tokenizer in the style of GPT-4: train with rustbpe, inference with tiktoken.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "copy",
+    "functools",
+    "os",
+    "pickle",
+    "rustbpe",
+    "tiktoken",
+    "torch"
+   ],
+   "imports": [],
+   "lazy_imports": [
+    "nanochat.common"
+   ],
+   "call_sites": 101,
+   "unresolved": 17
+  },
+  "scripts.base_eval": {
+   "file": "scripts/base_eval.py",
+   "lines": 243,
+   "doc": "Unified evaluation script for base models.",
+   "cli": true,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "csv",
+    "json",
+    "os",
+    "random",
+    "shutil",
+    "tempfile",
+    "time",
+    "torch",
+    "yaml",
+    "zipfile"
+   ],
+   "imports": [
+    "nanochat.checkpoint_manager",
+    "nanochat.common",
+    "nanochat.core_eval",
+    "nanochat.dataloader",
+    "nanochat.engine",
+    "nanochat.loss_eval",
+    "nanochat.tokenizer"
+   ],
+   "lazy_imports": [],
+   "call_sites": 97,
+   "unresolved": 10
+  },
+  "scripts.base_train": {
+   "file": "scripts/base_train.py",
+   "lines": 604,
+   "doc": "Train model. From root directory of the project, run as:",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "contextlib",
+    "dataclasses",
+    "gc",
+    "json",
+    "math",
+    "os",
+    "time",
+    "torch",
+    "wandb"
+   ],
+   "imports": [
+    "nanochat.checkpoint_manager",
+    "nanochat.common",
+    "nanochat.dataloader",
+    "nanochat.engine",
+    "nanochat.flash_attention",
+    "nanochat.fp8",
+    "nanochat.gpt",
+    "nanochat.loss_eval",
+    "nanochat.tokenizer",
+    "scripts.base_eval"
+   ],
+   "lazy_imports": [],
+   "call_sites": 191,
+   "unresolved": 26
+  },
+  "scripts.chat_cli": {
+   "file": "scripts/chat_cli.py",
+   "lines": 100,
+   "doc": "New and upgraded chat mode because a lot of the code has changed since the last one.",
+   "cli": false,
+   "exports": [],
+   "packages": ["argparse", "torch"],
+   "imports": ["nanochat.checkpoint_manager", "nanochat.common", "nanochat.engine"],
+   "lazy_imports": [],
+   "call_sites": 43,
+   "unresolved": 8
+  },
+  "scripts.chat_eval": {
+   "file": "scripts/chat_eval.py",
+   "lines": 240,
+   "doc": "Evaluate the Chat model. All the generic code lives here, and all the evaluation-specific code lives in nanochat directory and is imported from here.",
+   "cli": true,
+   "exports": [],
+   "packages": ["argparse", "functools", "torch"],
+   "imports": [
+    "nanochat.checkpoint_manager",
+    "nanochat.common",
+    "nanochat.engine",
+    "tasks.arc",
+    "tasks.gsm8k",
+    "tasks.humaneval",
+    "tasks.mmlu"
+   ],
+   "lazy_imports": [],
+   "call_sites": 90,
+   "unresolved": 15
+  },
+  "scripts.chat_rl": {
+   "file": "scripts/chat_rl.py",
+   "lines": 326,
+   "doc": "Reinforcement learning on GSM8K via \"GRPO\".",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "itertools",
+    "os",
+    "torch",
+    "wandb"
+   ],
+   "imports": [
+    "nanochat.checkpoint_manager",
+    "nanochat.common",
+    "nanochat.engine",
+    "tasks.gsm8k"
+   ],
+   "lazy_imports": [],
+   "call_sites": 137,
+   "unresolved": 34
+  },
+  "scripts.chat_sft": {
+   "file": "scripts/chat_sft.py",
+   "lines": 499,
+   "doc": "Supervised fine-tuning (SFT) the model. Run as:",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "gc",
+    "os",
+    "time",
+    "torch",
+    "wandb"
+   ],
+   "imports": [
+    "nanochat.checkpoint_manager",
+    "nanochat.common",
+    "nanochat.engine",
+    "nanochat.flash_attention",
+    "nanochat.loss_eval",
+    "nanochat.tokenizer",
+    "scripts.chat_eval",
+    "tasks.common",
+    "tasks.gsm8k",
+    "tasks.mmlu",
+    "tasks.smoltalk"
+   ],
+   "lazy_imports": [],
+   "call_sites": 172,
+   "unresolved": 25
+  },
+  "scripts.infer_bench": {
+   "file": "scripts/infer_bench.py",
+   "lines": 246,
+   "doc": "Inference benchmark: measure latency, throughput, memory and bandwidth utilization of a trained checkpoint, sweeping over the decode batch size.",
+   "cli": true,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "json",
+    "time",
+    "torch"
+   ],
+   "imports": ["nanochat.checkpoint_manager", "nanochat.common", "nanochat.engine"],
+   "lazy_imports": [],
+   "call_sites": 102,
+   "unresolved": 16
+  },
+  "scripts.tok_eval": {
+   "file": "scripts/tok_eval.py",
+   "lines": 243,
+   "doc": "Evaluate compression ratio of the tokenizer.",
+   "cli": false,
+   "exports": [],
+   "packages": [],
+   "imports": ["nanochat.dataset", "nanochat.tokenizer"],
+   "lazy_imports": [],
+   "call_sites": 35,
+   "unresolved": 4
+  },
+  "scripts.tok_train": {
+   "file": "scripts/tok_train.py",
+   "lines": 91,
+   "doc": "Train a tokenizer using our own BPE Tokenizer library. In the style of GPT-4 tokenizer.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "argparse",
+    "os",
+    "time",
+    "torch"
+   ],
+   "imports": ["nanochat.common", "nanochat.dataset", "nanochat.tokenizer"],
+   "lazy_imports": [],
+   "call_sites": 35,
+   "unresolved": 7
+  },
+  "tasks.arc": {
+   "file": "tasks/arc.py",
+   "lines": 47,
+   "doc": "The ARC dataset from Allen AI. https://huggingface.co/datasets/allenai/ai2_arc",
+   "cli": false,
+   "exports": [],
+   "packages": [],
+   "imports": [
+    "tasks.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 6,
+   "unresolved": 0
+  },
+  "tasks.common": {
+   "file": "tasks/common.py",
+   "lines": 222,
+   "doc": "Base class for all Tasks. A Task is basically a dataset of conversations, together with some metadata and often also evaluation criteria. Example tasks: MMLU, ARC-Easy, ARC-Challenge, GSM8K, HumanEval, SmolTalk.",
+   "cli": true,
+   "exports": [],
+   "packages": [
+    "filelock",
+    "json",
+    "numpy",
+    "os",
+    "pyarrow",
+    "random",
+    "urllib"
+   ],
+   "imports": ["nanochat.common", "tasks.mmlu"],
+   "lazy_imports": [],
+   "call_sites": 62,
+   "unresolved": 2
+  },
+  "tasks.gsm8k": {
+   "file": "tasks/gsm8k.py",
+   "lines": 116,
+   "doc": "GSM8K evaluation. https://huggingface.co/datasets/openai/gsm8k",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "re"
+   ],
+   "imports": [
+    "tasks.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 24,
+   "unresolved": 1
+  },
+  "tasks.humaneval": {
+   "file": "tasks/humaneval.py",
+   "lines": 97,
+   "doc": "Evaluate the Chat model on HumanEval dataset. Btw this dataset is a misnomer and has nothing to do with humans. It is a coding benchmark.",
+   "cli": false,
+   "exports": [],
+   "packages": [
+    "re"
+   ],
+   "imports": ["nanochat.execution", "tasks.common"],
+   "lazy_imports": [],
+   "call_sites": 18,
+   "unresolved": 7
+  },
+  "tasks.mmlu": {
+   "file": "tasks/mmlu.py",
+   "lines": 54,
+   "doc": "The MMLU dataset. https://huggingface.co/datasets/cais/mmlu",
+   "cli": false,
+   "exports": [],
+   "packages": [],
+   "imports": [
+    "tasks.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 7,
+   "unresolved": 0
+  },
+  "tasks.smoltalk": {
+   "file": "tasks/smoltalk.py",
+   "lines": 45,
+   "doc": "SmolTalk by HuggingFace. Good \"general\" conversational dataset. https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk We use the \"smol\" version, which is more appropriate for smaller models.",
+   "cli": false,
+   "exports": [],
+   "packages": [],
+   "imports": [
+    "tasks.common"
+   ],
+   "lazy_imports": [],
+   "call_sites": 9,
+   "unresolved": 0
+  }
+ },
+ "symbols": {
+  "nanochat.checkpoint_manager:_patch_missing_config_keys": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 22,
+   "end": 27,
+   "doc": "Add default values for new config keys missing in old checkpoints.",
+   "params": [
+    "model_config_kwargs"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:_patch_missing_keys": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 29,
+   "end": 39,
+   "doc": "Add default values for new parameters that may be missing in old checkpoints.",
+   "params": ["model_data", "model_config"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:build_model": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 76,
+   "end": 114,
+   "doc": "A bunch of repetitive code to build a model from a given checkpoint. Returns: - base model - uncompiled, not wrapped in DDP - tokenizer - meta data saved during base model training",
+   "params": [
+    "checkpoint_dir",
+    "step",
+    "device",
+    "phase"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:find_largest_model": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 117,
+   "end": 134,
+   "doc": "",
+   "params": [
+    "checkpoints_dir"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:find_last_step": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 137,
+   "end": 143,
+   "doc": "",
+   "params": [
+    "checkpoint_dir"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:load_checkpoint": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 60,
+   "end": 73,
+   "doc": "",
+   "params": [
+    "checkpoint_dir",
+    "step",
+    "device",
+    "load_optimizer",
+    "rank"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:load_model": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 163,
+   "end": 171,
+   "doc": "",
+   "params": ["source", "*args", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:load_model_from_dir": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 148,
+   "end": 161,
+   "doc": "",
+   "params": [
+    "checkpoints_dir",
+    "device",
+    "phase",
+    "model_tag",
+    "step"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:load_optimizer_state": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 173,
+   "end": 193,
+   "doc": "Load just the optimizer shard for a given rank, without re-loading the model.",
+   "params": [
+    "source",
+    "device",
+    "rank",
+    "model_tag",
+    "step"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:log0": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 18,
+   "end": 20,
+   "doc": "",
+   "params": [
+    "message"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.checkpoint_manager:save_checkpoint": {
+   "kind": "function",
+   "file": "nanochat/checkpoint_manager.py",
+   "line": 41,
+   "end": 58,
+   "doc": "",
+   "params": [
+    "checkpoint_dir",
+    "step",
+    "model_data",
+    "optimizer_data",
+    "meta_data",
+    "rank"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:ColoredFormatter": {
+   "kind": "class",
+   "file": "nanochat/common.py",
+   "line": 34,
+   "end": 58,
+   "doc": "Custom formatter that adds colors to log messages.",
+   "bases": [
+    "logging.Formatter"
+   ],
+   "decorators": []
+  },
+  "nanochat.common:ColoredFormatter.format": {
+   "kind": "method",
+   "file": "nanochat/common.py",
+   "line": 46,
+   "end": 58,
+   "doc": "",
+   "params": ["self", "record"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:DummyWandb": {
+   "kind": "class",
+   "file": "nanochat/common.py",
+   "line": 216,
+   "end": 223,
+   "doc": "Useful if we wish to not use wandb but have all the same signatures",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.common:DummyWandb.__init__": {
+   "kind": "method",
+   "file": "nanochat/common.py",
+   "line": 218,
+   "end": 219,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:DummyWandb.finish": {
+   "kind": "method",
+   "file": "nanochat/common.py",
+   "line": 222,
+   "end": 223,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:DummyWandb.log": {
+   "kind": "method",
+   "file": "nanochat/common.py",
+   "line": 220,
+   "end": 221,
+   "doc": "",
+   "params": ["self", "*args", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:_detect_compute_dtype": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 17,
+   "end": 31,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:autodetect_device_type": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 163,
+   "end": 172,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:compute_cleanup": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 211,
+   "end": 214,
+   "doc": "Companion function to compute_init, to clean things up before script exit",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:compute_init": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 174,
+   "end": 209,
+   "doc": "Basic initialization that we keep doing over and over, so make common.",
+   "params": [
+    "device_type"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:download_file_with_lock": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 82,
+   "end": 116,
+   "doc": "Downloads a file from a URL to a local path in the base directory. Uses a lock file to prevent concurrent downloads among multiple ranks.",
+   "params": ["url", "filename", "postprocess_fn"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:get_base_dir": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 71,
+   "end": 80,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:get_dist_info": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 151,
+   "end": 161,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:get_peak_bandwidth": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 281,
+   "end": 328,
+   "doc": "Peak HBM/GDDR memory bandwidth in bytes/sec. The decode phase of inference is memory-bandwidth-bound, so this is the roofline for tokens/sec (see MBU).",
+   "params": [
+    "device_name"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:get_peak_flops": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 228,
+   "end": 279,
+   "doc": "",
+   "params": [
+    "device_name"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:is_ddp_initialized": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 144,
+   "end": 149,
+   "doc": "True if torch.distributed is available and the process group is initialized. Used at cleanup to avoid destroying a non-existent PG.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:is_ddp_requested": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 137,
+   "end": 142,
+   "doc": "True if launched by torchrun (env present), even before init. Used to decide whether we *should* initialize a PG.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:print0": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 118,
+   "end": 121,
+   "doc": "",
+   "params": ["s", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:print_banner": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 123,
+   "end": 135,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.common:setup_default_logging": {
+   "kind": "function",
+   "file": "nanochat/common.py",
+   "line": 60,
+   "end": 66,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:batch_sequences_lm": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 133,
+   "end": 141,
+   "doc": "",
+   "params": ["tokenizer", "prompts"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:batch_sequences_mc": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 113,
+   "end": 120,
+   "doc": "",
+   "params": ["tokenizer", "prompts"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:batch_sequences_schema": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 123,
+   "end": 130,
+   "doc": "",
+   "params": ["tokenizer", "prompts"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:evaluate_example": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 168,
+   "end": 241,
+   "doc": "Evaluate a single example, return True if correct, False otherwise",
+   "params": [
+    "idx",
+    "model",
+    "tokenizer",
+    "data",
+    "device",
+    "task_meta"
+   ],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.core_eval:evaluate_task": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 244,
+   "end": 262,
+   "doc": "This function is responsible for evaluating one task across many examples. It also handles dispatch to all processes if the script is run with torchrun.",
+   "params": [
+    "model",
+    "tokenizer",
+    "data",
+    "device",
+    "task_meta"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:find_common_length": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 86,
+   "end": 101,
+   "doc": "Find the length of the common prefix or suffix across token sequences - direction: 'left' for prefix, 'right' for suffix",
+   "params": ["token_sequences", "direction"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:forward_model": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 145,
+   "end": 164,
+   "doc": "Take BxT tensor of token ids, return BxT tensor of losses and argmax predictions. The last column of losses is set to nan because we don't have autoregressive targets there.",
+   "params": ["model", "input_ids"],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.core_eval:render_prompts_lm": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 56,
+   "end": 83,
+   "doc": "Render complete prompt for a language modeling task. Notice that we manually trim the context in the template, which in some datasets seems to have trailing whitespace (which we don't want).",
+   "params": ["item", "continuation_delimiter", "fewshot_examples"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:render_prompts_mc": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 17,
+   "end": 33,
+   "doc": "Render complete prompts for a multiple choice question",
+   "params": ["item", "continuation_delimiter", "fewshot_examples"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:render_prompts_schema": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 36,
+   "end": 53,
+   "doc": "Render complete prompts for a schema question",
+   "params": ["item", "continuation_delimiter", "fewshot_examples"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.core_eval:stack_sequences": {
+   "kind": "function",
+   "file": "nanochat/core_eval.py",
+   "line": 104,
+   "end": 110,
+   "doc": "Stack up a list of token sequences, pad to longest on the right",
+   "params": ["tokens", "pad_token_id"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataloader:_document_batches": {
+   "kind": "function",
+   "file": "nanochat/dataloader.py",
+   "line": 25,
+   "end": 71,
+   "doc": "Infinite iterator over document batches (list of text strings) from parquet files.",
+   "params": ["split", "resume_state_dict", "tokenizer_batch_size"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataloader:tokenizing_distributed_data_loader_bos_bestfit": {
+   "kind": "function",
+   "file": "nanochat/dataloader.py",
+   "line": 163,
+   "end": 166,
+   "doc": "Helper that omits state_dict from yields.",
+   "params": ["*args", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit": {
+   "kind": "function",
+   "file": "nanochat/dataloader.py",
+   "line": 74,
+   "end": 161,
+   "doc": "BOS-aligned dataloader with Best-Fit Cropping.",
+   "params": [
+    "tokenizer",
+    "B",
+    "T",
+    "split",
+    "tokenizer_threads",
+    "tokenizer_batch_size",
+    "device",
+    "resume_state_dict",
+    "buffer_size"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit.refill_buffer": {
+   "kind": "nested",
+   "file": "nanochat/dataloader.py",
+   "line": 104,
+   "end": 109,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataset:download_single_file": {
+   "kind": "function",
+   "file": "nanochat/dataset.py",
+   "line": 84,
+   "end": 133,
+   "doc": "Downloads a single file index, with some backoff",
+   "params": [
+    "index"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataset:list_parquet_files": {
+   "kind": "function",
+   "file": "nanochat/dataset.py",
+   "line": 32,
+   "end": 65,
+   "doc": "Looks into a data dir and returns full paths to all parquet files.",
+   "params": ["data_dir", "warn_on_legacy"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.dataset:parquets_iter_batched": {
+   "kind": "function",
+   "file": "nanochat/dataset.py",
+   "line": 67,
+   "end": 81,
+   "doc": "Iterate through the dataset, in batches of underlying row_groups for efficiency. - split can be \"train\" or \"val\". the last parquet file will be val. - start/step are useful for skipping rows in DDP. e.g. start=rank, step=world_size",
+   "params": ["split", "start", "step"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:<module>": {
+   "kind": "module",
+   "file": "nanochat/engine.py",
+   "line": 1,
+   "end": 352,
+   "doc": "Engine for efficient inference of our models.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:Engine": {
+   "kind": "class",
+   "file": "nanochat/engine.py",
+   "line": 169,
+   "end": 299,
+   "doc": "",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.engine:Engine.__init__": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 171,
+   "end": 173,
+   "doc": "",
+   "params": ["self", "model", "tokenizer"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:Engine.generate": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 176,
+   "end": 275,
+   "doc": "Same as generate, but does single prefill and then clones the KV cache.",
+   "params": [
+    "self",
+    "tokens",
+    "num_samples",
+    "max_tokens",
+    "temperature",
+    "top_k",
+    "seed"
+   ],
+   "decorators": [
+    "torch.inference_mode"
+   ],
+   "async": false
+  },
+  "nanochat.engine:Engine.generate_batch": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 277,
+   "end": 299,
+   "doc": "Non-streaming batch generation that just returns the final token sequences. Returns a list of token sequences (list of lists of ints). Terminal tokens (assistant_end, bos) are not included in the results.",
+   "params": [
+    "self",
+    "tokens",
+    "num_samples",
+    "**kwargs"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache": {
+   "kind": "class",
+   "file": "nanochat/engine.py",
+   "line": 82,
+   "end": 137,
+   "doc": "KV Cache designed for Flash Attention 3's flash_attn_with_kvcache API.",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.engine:KVCache.__init__": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 92,
+   "end": 104,
+   "doc": "",
+   "params": [
+    "self",
+    "batch_size",
+    "num_heads",
+    "seq_len",
+    "head_dim",
+    "num_layers",
+    "device",
+    "dtype"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache.advance": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 119,
+   "end": 121,
+   "doc": "Advance the cache position by num_tokens.",
+   "params": ["self", "num_tokens"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache.get_layer_cache": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 115,
+   "end": 117,
+   "doc": "Return (k_cache, v_cache) views for a specific layer.",
+   "params": ["self", "layer_idx"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache.get_pos": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 111,
+   "end": 113,
+   "doc": "Get current position (assumes all batch elements at same position).",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache.prefill": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 123,
+   "end": 137,
+   "doc": "Copy cached KV from another cache into this one. Used when we do batch=1 prefill and then want to generate multiple samples in parallel.",
+   "params": ["self", "other"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:KVCache.reset": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 106,
+   "end": 109,
+   "doc": "Reset cache to empty state.",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:RowState": {
+   "kind": "class",
+   "file": "nanochat/engine.py",
+   "line": 160,
+   "end": 167,
+   "doc": "",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.engine:RowState.__init__": {
+   "kind": "method",
+   "file": "nanochat/engine.py",
+   "line": 162,
+   "end": 167,
+   "doc": "",
+   "params": ["self", "current_tokens"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:eval_with_timeout": {
+   "kind": "function",
+   "file": "nanochat/engine.py",
+   "line": 35,
+   "end": 44,
+   "doc": "",
+   "params": ["formula", "max_time"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:sample_next_token": {
+   "kind": "function",
+   "file": "nanochat/engine.py",
+   "line": 141,
+   "end": 156,
+   "doc": "Sample a single next token from given logits of shape (B, vocab_size). Returns (B, 1).",
+   "params": [
+    "logits",
+    "rng",
+    "temperature",
+    "top_k"
+   ],
+   "decorators": [
+    "torch.inference_mode"
+   ],
+   "async": false
+  },
+  "nanochat.engine:timeout": {
+   "kind": "function",
+   "file": "nanochat/engine.py",
+   "line": 26,
+   "end": 33,
+   "doc": "",
+   "params": ["duration", "formula"],
+   "decorators": [
+    "contextmanager"
+   ],
+   "async": false
+  },
+  "nanochat.engine:timeout.timeout_handler": {
+   "kind": "nested",
+   "file": "nanochat/engine.py",
+   "line": 27,
+   "end": 28,
+   "doc": "",
+   "params": ["signum", "frame"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.engine:use_calculator": {
+   "kind": "function",
+   "file": "nanochat/engine.py",
+   "line": 46,
+   "end": 79,
+   "doc": "Evaluate a Python expression safely. Supports both math expressions and string operations like .count()",
+   "params": [
+    "expr"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.execution:ExecutionResult": {
+   "kind": "class",
+   "file": "nanochat/execution.py",
+   "line": 33,
+   "end": 40,
+   "doc": "Result of executing Python code in a sandbox.",
+   "bases": [],
+   "decorators": [
+    "dataclass"
+   ]
+  },
+  "nanochat.execution:execute_code": {
+   "kind": "function",
+   "file": "nanochat/execution.py",
+   "line": 74,
+   "end": 134,
+   "doc": "Execute Python code in a sandboxed environment.",
+   "params": ["code", "timeout", "maximum_memory_bytes"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.flash_attention:_load_flash_attention_3": {
+   "kind": "function",
+   "file": "nanochat/flash_attention.py",
+   "line": 23,
+   "end": 46,
+   "doc": "Try to load Flash Attention 3.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.flash_attention:_resolve_use_fa3": {
+   "kind": "function",
+   "file": "nanochat/flash_attention.py",
+   "line": 56,
+   "end": 69,
+   "doc": "Decide once whether to use FA3, based on availability, override, and dtype.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.flash_attention:_sdpa_attention": {
+   "kind": "function",
+   "file": "nanochat/flash_attention.py",
+   "line": 77,
+   "end": 110,
+   "doc": "SDPA attention with sliding window support. q, k, v are (B, H, T, D) format.",
+   "params": [
+    "q",
+    "k",
+    "v",
+    "window_size",
+    "enable_gqa"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.flash_attention:flash_attn_func": {
+   "kind": "function",
+   "file": "nanochat/flash_attention.py",
+   "line": 115,
+   "end": 136,
+   "doc": "Flash Attention for training (no KV cache).",
+   "params": [
+    "q",
+    "k",
+    "v",
+    "causal",
+    "window_size"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.flash_attention:flash_attn_with_kvcache": {
+   "kind": "function",
+   "file": "nanochat/flash_attention.py",
+   "line": 139,
+   "end": 185,
+   "doc": "Flash Attention with KV cache for inference.",
+   "params": [
+    "q",
+    "k_cache",
+    "v_cache",
+    "k",
+    "v",
+    "cache_seqlens",
+    "causal",
+    "window_size"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.fp8:Float8Linear": {
+   "kind": "class",
+   "file": "nanochat/fp8.py",
+   "line": 195,
+   "end": 227,
+   "doc": "Drop-in nn.Linear replacement that does FP8 compute.",
+   "bases": [
+    "nn.Linear"
+   ],
+   "decorators": []
+  },
+  "nanochat.fp8:Float8Linear.forward": {
+   "kind": "method",
+   "file": "nanochat/fp8.py",
+   "line": 202,
+   "end": 213,
+   "doc": "",
+   "params": ["self", "input"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.fp8:Float8Linear.from_float": {
+   "kind": "method",
+   "file": "nanochat/fp8.py",
+   "line": 216,
+   "end": 227,
+   "doc": "Create Float8Linear from nn.Linear, sharing the same weight and bias.",
+   "params": ["cls", "mod"],
+   "decorators": [
+    "classmethod"
+   ],
+   "async": false
+  },
+  "nanochat.fp8:Float8LinearConfig": {
+   "kind": "class",
+   "file": "nanochat/fp8.py",
+   "line": 230,
+   "end": 240,
+   "doc": "Minimal config matching torchao's API. Only tensorwise recipe is supported.",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.fp8:Float8LinearConfig.from_recipe_name": {
+   "kind": "method",
+   "file": "nanochat/fp8.py",
+   "line": 234,
+   "end": 240,
+   "doc": "",
+   "params": [
+    "recipe_name"
+   ],
+   "decorators": [
+    "staticmethod"
+   ],
+   "async": false
+  },
+  "nanochat.fp8:_Float8Matmul": {
+   "kind": "class",
+   "file": "nanochat/fp8.py",
+   "line": 125,
+   "end": 192,
+   "doc": "Custom autograd for the three FP8 GEMMs of a Linear layer.",
+   "bases": [
+    "torch.autograd.Function"
+   ],
+   "decorators": [
+    "torch._dynamo.allow_in_graph"
+   ]
+  },
+  "nanochat.fp8:_Float8Matmul.backward": {
+   "kind": "method",
+   "file": "nanochat/fp8.py",
+   "line": 157,
+   "end": 192,
+   "doc": "",
+   "params": ["ctx", "grad_output"],
+   "decorators": [
+    "staticmethod"
+   ],
+   "async": false
+  },
+  "nanochat.fp8:_Float8Matmul.forward": {
+   "kind": "method",
+   "file": "nanochat/fp8.py",
+   "line": 133,
+   "end": 154,
+   "doc": "",
+   "params": ["ctx", "input_2d", "weight"],
+   "decorators": [
+    "staticmethod"
+   ],
+   "async": false
+  },
+  "nanochat.fp8:_to_col_major": {
+   "kind": "function",
+   "file": "nanochat/fp8.py",
+   "line": 110,
+   "end": 118,
+   "doc": "Rearrange a 2D tensor's memory to column-major layout.",
+   "params": [
+    "x"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.fp8:_to_fp8": {
+   "kind": "function",
+   "file": "nanochat/fp8.py",
+   "line": 82,
+   "end": 107,
+   "doc": "Dynamically quantize a tensor to FP8 using tensorwise scaling.",
+   "params": ["x", "fp8_dtype"],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.fp8:convert_to_float8_training": {
+   "kind": "function",
+   "file": "nanochat/fp8.py",
+   "line": 243,
+   "end": 266,
+   "doc": "Replace nn.Linear layers with Float8Linear throughout a module.",
+   "params": ["module", "config", "module_filter_fn"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.fp8:convert_to_float8_training._convert": {
+   "kind": "nested",
+   "file": "nanochat/fp8.py",
+   "line": 257,
+   "end": 263,
+   "doc": "",
+   "params": ["mod", "prefix"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:Block": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 144,
+   "end": 153,
+   "doc": "",
+   "bases": [
+    "nn.Module"
+   ],
+   "decorators": []
+  },
+  "nanochat.gpt:Block.__init__": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 145,
+   "end": 148,
+   "doc": "",
+   "params": ["self", "config", "layer_idx"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:Block.forward": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 150,
+   "end": 153,
+   "doc": "",
+   "params": [
+    "self",
+    "x",
+    "ve",
+    "cos_sin",
+    "window_size",
+    "kv_cache"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:CausalSelfAttention": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 67,
+   "end": 128,
+   "doc": "",
+   "bases": [
+    "nn.Module"
+   ],
+   "decorators": []
+  },
+  "nanochat.gpt:CausalSelfAttention.__init__": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 68,
+   "end": 82,
+   "doc": "",
+   "params": ["self", "config", "layer_idx"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:CausalSelfAttention.forward": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 84,
+   "end": 128,
+   "doc": "",
+   "params": [
+    "self",
+    "x",
+    "ve",
+    "cos_sin",
+    "window_size",
+    "kv_cache"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 156,
+   "end": 555,
+   "doc": "",
+   "bases": [
+    "nn.Module"
+   ],
+   "decorators": []
+  },
+  "nanochat.gpt:GPT.__init__": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 157,
+   "end": 201,
+   "doc": "NOTE a major footgun: this __init__ function runs in meta device context (!!) Therefore, any calculations inside here are shapes and dtypes only, no actual data. => We actually initialize all data (parameters, buffers, etc.) in init_weights() instead.",
+   "params": ["self", "config", "pad_vocab_size_to"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT._compute_window_sizes": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 287,
+   "end": 314,
+   "doc": "Compute per-layer window sizes for sliding window attention.",
+   "params": ["self", "config"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT._precompute_rotary_embeddings": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 270,
+   "end": 285,
+   "doc": "",
+   "params": [
+    "self",
+    "seq_len",
+    "head_dim",
+    "base",
+    "device"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.estimate_decode_flops": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 351,
+   "end": 360,
+   "doc": "Forward FLOPs to decode one token at a given context length during inference: 2 FLOPs per matmul param, plus attention over min(context, window) per layer.",
+   "params": ["self", "context_len"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.estimate_flops": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 319,
+   "end": 339,
+   "doc": "Return the estimated FLOPs per token for the model (forward + backward). Each matmul weight parameter contributes 2 FLOPs (multiply *, accumulate +) in forward, and 2X that in backward => 2+4=6. Cleanest explanation of this: https://medium.com/@dzmitrybahdanau/the-flops-calculus-of-language-model-t…",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.estimate_prefill_flops": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 362,
+   "end": 372,
+   "doc": "Forward FLOPs to prefill a prompt: causal, so token t attends to min(t, window).",
+   "params": ["self", "num_tokens"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.forward": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 459,
+   "end": 524,
+   "doc": "",
+   "params": [
+    "self",
+    "idx",
+    "targets",
+    "kv_cache",
+    "loss_reduction"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.generate": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 527,
+   "end": 555,
+   "doc": "Naive autoregressive streaming inference. To make it super simple, let's assume: - batch size is 1 - ids and the yielded tokens are simple Python lists and ints",
+   "params": [
+    "self",
+    "tokens",
+    "max_tokens",
+    "temperature",
+    "top_k",
+    "seed"
+   ],
+   "decorators": [
+    "torch.inference_mode"
+   ],
+   "async": false
+  },
+  "nanochat.gpt:GPT.get_device": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 316,
+   "end": 317,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.init_weights": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 204,
+   "end": 268,
+   "doc": "Initialize the full model in this one function for maximum clarity.",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.gpt:GPT.kv_bytes_per_token": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 374,
+   "end": 378,
+   "doc": "Bytes to *store* one token of KV cache during inference, per row (all layers).",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.kv_read_bytes": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 380,
+   "end": 388,
+   "doc": "Bytes of KV cache *read* by one decode step at a given context length, per row. Sliding window layers only attend to (and read) the last `window` tokens.",
+   "params": ["self", "context_len"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.num_matmul_params": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 341,
+   "end": 349,
+   "doc": "The number of parameters that participate in matmuls with the token stream, i.e. contribute 2 FLOPs/param to the forward pass. Counted structurally: every matmul in this model goes through the Linear class, while non-matmul params (embeddings = lookups, per-layer scalars) are nn.Embedding or raw Pa…",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.num_scaling_params": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 390,
+   "end": 417,
+   "doc": "Return detailed parameter counts for scaling law analysis. Different papers use different conventions: - Kaplan et al. excluded embedding parameters - Chinchilla included all parameters Ref: https://arxiv.org/abs/2203.15556 (Chinchilla paper) Ref: https://arxiv.org/abs/2001.08361 (Kaplan et al. ori…",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPT.setup_optimizer": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 419,
+   "end": 457,
+   "doc": "",
+   "params": [
+    "self",
+    "unembedding_lr",
+    "embedding_lr",
+    "matrix_lr",
+    "weight_decay",
+    "scalar_lr"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:GPTConfig": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 29,
+   "end": 39,
+   "doc": "",
+   "bases": [],
+   "decorators": [
+    "dataclass"
+   ]
+  },
+  "nanochat.gpt:Linear": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 45,
+   "end": 50,
+   "doc": "nn.Linear that casts weights to match input dtype in forward. Replaces autocast: master weights stay fp32 for optimizer precision, but matmuls run in the activation dtype (typically bf16 from embeddings).",
+   "bases": [
+    "nn.Linear"
+   ],
+   "decorators": []
+  },
+  "nanochat.gpt:Linear.forward": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 49,
+   "end": 50,
+   "doc": "",
+   "params": ["self", "x"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:MLP": {
+   "kind": "class",
+   "file": "nanochat/gpt.py",
+   "line": 131,
+   "end": 141,
+   "doc": "",
+   "bases": [
+    "nn.Module"
+   ],
+   "decorators": []
+  },
+  "nanochat.gpt:MLP.__init__": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 132,
+   "end": 135,
+   "doc": "",
+   "params": ["self", "config"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:MLP.forward": {
+   "kind": "method",
+   "file": "nanochat/gpt.py",
+   "line": 137,
+   "end": 141,
+   "doc": "",
+   "params": ["self", "x"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:apply_rotary_emb": {
+   "kind": "function",
+   "file": "nanochat/gpt.py",
+   "line": 57,
+   "end": 65,
+   "doc": "",
+   "params": ["x", "cos", "sin"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:has_ve": {
+   "kind": "function",
+   "file": "nanochat/gpt.py",
+   "line": 53,
+   "end": 55,
+   "doc": "Returns True if GPT layer should have Value Embedding (alternating, last layer always included).",
+   "params": ["layer_idx", "n_layer"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.gpt:norm": {
+   "kind": "function",
+   "file": "nanochat/gpt.py",
+   "line": 42,
+   "end": 43,
+   "doc": "",
+   "params": [
+    "x"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.loss_eval:evaluate_bpb": {
+   "kind": "function",
+   "file": "nanochat/loss_eval.py",
+   "line": 9,
+   "end": 65,
+   "doc": "Instead of the naive 'mean loss', this function returns the bits per byte (bpb), which is a tokenization vocab size-independent metric, meaning you are still comparing apples:apples if you change the vocab size. The way this works is that instead of just calculating the average loss as usual, you c…",
+   "params": [
+    "model",
+    "batches",
+    "steps",
+    "token_bytes"
+   ],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW": {
+   "kind": "class",
+   "file": "nanochat/optim.py",
+   "line": 184,
+   "end": 459,
+   "doc": "Combined optimizer: Muon for 2D matrix params, AdamW for others.",
+   "bases": [
+    "torch.optim.Optimizer"
+   ],
+   "decorators": []
+  },
+  "nanochat.optim:MuonAdamW.__init__": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 260,
+   "end": 272,
+   "doc": "",
+   "params": ["self", "param_groups"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW._compute_adamw": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 320,
+   "end": 360,
+   "doc": "Wait for reduce, compute AdamW updates, launch gathers for large params.",
+   "params": [
+    "self",
+    "group",
+    "info",
+    "gather_list",
+    "rank",
+    "world_size"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW._compute_muon": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 362,
+   "end": 417,
+   "doc": "Wait for reduce, compute Muon updates, launch gather.",
+   "params": [
+    "self",
+    "group",
+    "info",
+    "gather_list",
+    "rank"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW._finish_gathers": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 419,
+   "end": 426,
+   "doc": "Wait for all gathers and copy Muon params back.",
+   "params": ["self", "gather_list"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW._reduce_adamw": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 274,
+   "end": 293,
+   "doc": "Launch async reduce ops for AdamW group. Returns info dict with per-param infos.",
+   "params": ["self", "group", "world_size"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW._reduce_muon": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 295,
+   "end": 318,
+   "doc": "Launch async reduce op for Muon group. Returns info dict.",
+   "params": ["self", "group", "world_size"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.optim:MuonAdamW.step": {
+   "kind": "method",
+   "file": "nanochat/optim.py",
+   "line": 429,
+   "end": 459,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "nanochat.optim:adamw_step_fused": {
+   "kind": "function",
+   "file": "nanochat/optim.py",
+   "line": 24,
+   "end": 63,
+   "doc": "Fused AdamW step: weight_decay -> momentum_update -> bias_correction -> param_update All in one compiled graph to eliminate Python overhead between ops. The 0-D CPU tensors avoid recompilation when hyperparameter values change.",
+   "params": [
+    "p",
+    "grad",
+    "exp_avg",
+    "exp_avg_sq",
+    "step_t",
+    "lr_t",
+    "beta1_t",
+    "beta2_t",
+    "eps_t",
+    "wd_t"
+   ],
+   "decorators": [
+    "torch.compile"
+   ],
+   "async": false
+  },
+  "nanochat.optim:muon_step_fused": {
+   "kind": "function",
+   "file": "nanochat/optim.py",
+   "line": 112,
+   "end": 180,
+   "doc": "Fused Muon step: momentum -> polar_express -> variance_reduction -> cautious_update All in one compiled graph to eliminate Python overhead between ops. Some of the constants are 0-D CPU tensors to avoid recompilation when values change.",
+   "params": [
+    "stacked_grads",
+    "stacked_params",
+    "momentum_buffer",
+    "second_momentum_buffer",
+    "momentum_t",
+    "lr_t",
+    "wd_t",
+    "beta2_t",
+    "ns_steps",
+    "red_dim"
+   ],
+   "decorators": [
+    "torch.compile"
+   ],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer": {
+   "kind": "class",
+   "file": "nanochat/tokenizer.py",
+   "line": 34,
+   "end": 259,
+   "doc": "Light wrapper around tiktoken (for efficient inference) but train with rustbpe",
+   "bases": [],
+   "decorators": []
+  },
+  "nanochat.tokenizer:RustBPETokenizer.__call__": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 123,
+   "end": 124,
+   "doc": "",
+   "params": ["self", "*args", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.__init__": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 37,
+   "end": 39,
+   "doc": "",
+   "params": ["self", "enc", "bos_token"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.decode": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 126,
+   "end": 127,
+   "doc": "",
+   "params": ["self", "ids"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.decode_single_token_bytes": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 129,
+   "end": 130,
+   "doc": "",
+   "params": ["self", "token_id"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.encode": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 96,
+   "end": 121,
+   "doc": "",
+   "params": [
+    "self",
+    "text",
+    "prepend",
+    "append",
+    "num_threads"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.encode_special": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 90,
+   "end": 91,
+   "doc": "",
+   "params": ["self", "text"],
+   "decorators": [
+    "lru_cache"
+   ],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.from_directory": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 64,
+   "end": 68,
+   "doc": "",
+   "params": ["cls", "tokenizer_dir"],
+   "decorators": [
+    "classmethod"
+   ],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.from_pretrained": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 71,
+   "end": 78,
+   "doc": "",
+   "params": ["cls", "tiktoken_name"],
+   "decorators": [
+    "classmethod"
+   ],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 93,
+   "end": 94,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.get_special_tokens": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 83,
+   "end": 84,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.get_vocab_size": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 80,
+   "end": 81,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.id_to_token": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 86,
+   "end": 87,
+   "doc": "",
+   "params": ["self", "id"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.render_conversation": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 140,
+   "end": 224,
+   "doc": "Tokenize a single Chat conversation (which we call a \"doc\" or \"document\" here). Returns: - ids: list[int] is a list of token ids of this rendered conversation - mask: list[int] of same length, mask = 1 for tokens that the Assistant is expected to train on.",
+   "params": ["self", "conversation", "max_tokens"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens": {
+   "kind": "nested",
+   "file": "nanochat/tokenizer.py",
+   "line": 149,
+   "end": 153,
+   "doc": "",
+   "params": ["token_ids", "mask_val"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.render_for_completion": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 241,
+   "end": 259,
+   "doc": "Used during Reinforcement Learning. In that setting, we want to render the conversation priming the Assistant for a completion. Unlike the Chat SFT case, we don't need to return the mask.",
+   "params": ["self", "conversation"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.save": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 132,
+   "end": 138,
+   "doc": "",
+   "params": ["self", "tokenizer_dir"],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.train_from_iterator": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 42,
+   "end": 61,
+   "doc": "",
+   "params": ["cls", "text_iterator", "vocab_size"],
+   "decorators": [
+    "classmethod"
+   ],
+   "async": false
+  },
+  "nanochat.tokenizer:RustBPETokenizer.visualize_tokenization": {
+   "kind": "method",
+   "file": "nanochat/tokenizer.py",
+   "line": 226,
+   "end": 239,
+   "doc": "Small helper function useful in debugging: visualize the tokenization of render_conversation",
+   "params": [
+    "self",
+    "ids",
+    "mask",
+    "with_token_id"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:get_token_bytes": {
+   "kind": "function",
+   "file": "nanochat/tokenizer.py",
+   "line": 270,
+   "end": 279,
+   "doc": "",
+   "params": [
+    "device"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "nanochat.tokenizer:get_tokenizer": {
+   "kind": "function",
+   "file": "nanochat/tokenizer.py",
+   "line": 264,
+   "end": 268,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_eval:evaluate_core": {
+   "kind": "function",
+   "file": "scripts/base_eval.py",
+   "line": 57,
+   "end": 123,
+   "doc": "Evaluate a base model on the CORE benchmark. Returns dict with results, centered_results, and core_metric.",
+   "params": [
+    "model",
+    "tokenizer",
+    "device",
+    "max_per_task"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_eval:main": {
+   "kind": "function",
+   "file": "scripts/base_eval.py",
+   "line": 128,
+   "end": 239,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_eval:place_eval_bundle": {
+   "kind": "function",
+   "file": "scripts/base_eval.py",
+   "line": 45,
+   "end": 54,
+   "doc": "Unzip eval_bundle.zip and place it in the base directory.",
+   "params": [
+    "file_path"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:<module>": {
+   "kind": "module",
+   "file": "scripts/base_train.py",
+   "line": 1,
+   "end": 604,
+   "doc": "Train model. From root directory of the project, run as:",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:build_model_meta": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 129,
+   "end": 143,
+   "doc": "Build a model on meta device for a given depth (shapes/dtypes only, no data).",
+   "params": [
+    "depth"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:disable_fp8": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 196,
+   "end": 240,
+   "doc": "Temporarily swap Float8Linear modules with nn.Linear for BF16 evaluation.",
+   "params": [
+    "model"
+   ],
+   "decorators": [
+    "contextmanager"
+   ],
+   "async": false
+  },
+  "scripts.base_train:fp8_module_filter": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 178,
+   "end": 185,
+   "doc": "",
+   "params": ["mod", "fqn"],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:get_lr_multiplier": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 360,
+   "end": 369,
+   "doc": "",
+   "params": [
+    "it"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:get_muon_momentum": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 372,
+   "end": 382,
+   "doc": "",
+   "params": [
+    "it"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:get_scaling_params": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 263,
+   "end": 267,
+   "doc": "",
+   "params": [
+    "m"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.base_train:get_weight_decay": {
+   "kind": "function",
+   "file": "scripts/base_train.py",
+   "line": 385,
+   "end": 386,
+   "doc": "",
+   "params": [
+    "it"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_cli:<module>": {
+   "kind": "module",
+   "file": "scripts/chat_cli.py",
+   "line": 1,
+   "end": 100,
+   "doc": "New and upgraded chat mode because a lot of the code has changed since the last one.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_eval:<module>": {
+   "kind": "module",
+   "file": "scripts/chat_eval.py",
+   "line": 1,
+   "end": 240,
+   "doc": "Evaluate the Chat model. All the generic code lives here, and all the evaluation-specific code lives in nanochat directory and is imported from here.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_eval:run_categorical_eval": {
+   "kind": "function",
+   "file": "scripts/chat_eval.py",
+   "line": 87,
+   "end": 152,
+   "doc": "",
+   "params": [
+    "task_object",
+    "tokenizer",
+    "model",
+    "batch_size",
+    "max_problems"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_eval:run_chat_eval": {
+   "kind": "function",
+   "file": "scripts/chat_eval.py",
+   "line": 156,
+   "end": 175,
+   "doc": "",
+   "params": [
+    "task_name",
+    "model",
+    "tokenizer",
+    "engine",
+    "batch_size",
+    "num_samples",
+    "max_new_tokens",
+    "temperature",
+    "top_k",
+    "max_problems"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_eval:run_generative_eval": {
+   "kind": "function",
+   "file": "scripts/chat_eval.py",
+   "line": 28,
+   "end": 80,
+   "doc": "",
+   "params": [
+    "task_object",
+    "tokenizer",
+    "model",
+    "engine",
+    "num_samples",
+    "max_new_tokens",
+    "temperature",
+    "top_k",
+    "max_problems"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_rl:<module>": {
+   "kind": "module",
+   "file": "scripts/chat_rl.py",
+   "line": 1,
+   "end": 326,
+   "doc": "Reinforcement learning on GSM8K via \"GRPO\".",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_rl:get_batch": {
+   "kind": "function",
+   "file": "scripts/chat_rl.py",
+   "line": 86,
+   "end": 146,
+   "doc": "",
+   "params": [],
+   "decorators": [
+    "torch.no_grad"
+   ],
+   "async": false
+  },
+  "scripts.chat_rl:get_lr_multiplier": {
+   "kind": "function",
+   "file": "scripts/chat_rl.py",
+   "line": 210,
+   "end": 212,
+   "doc": "",
+   "params": [
+    "it"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_rl:run_gsm8k_eval": {
+   "kind": "function",
+   "file": "scripts/chat_rl.py",
+   "line": 150,
+   "end": 191,
+   "doc": "Evaluates GSM8K task and returns a list of records of evaluation outcomes. In a distributed setting, all ranks cooperate but this function will NOT do the reduction across ranks. This is the responsibility of the caller. Because the evaluation can take a while, this function will yield records one …",
+   "params": [
+    "task",
+    "tokenizer",
+    "engine",
+    "max_examples",
+    "num_samples",
+    "max_completion_tokens",
+    "temperature",
+    "top_k"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:<module>": {
+   "kind": "module",
+   "file": "scripts/chat_sft.py",
+   "line": 1,
+   "end": 499,
+   "doc": "Supervised fine-tuning (SFT) the model. Run as:",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:centered_mean": {
+   "kind": "function",
+   "file": "scripts/chat_sft.py",
+   "line": 377,
+   "end": 378,
+   "doc": "",
+   "params": [
+    "tasks"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:get_lr_multiplier": {
+   "kind": "function",
+   "file": "scripts/chat_sft.py",
+   "line": 307,
+   "end": 314,
+   "doc": "",
+   "params": [
+    "progress"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:get_muon_momentum": {
+   "kind": "function",
+   "file": "scripts/chat_sft.py",
+   "line": 317,
+   "end": 320,
+   "doc": "",
+   "params": [
+    "it"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:sft_data_generator_bos_bestfit": {
+   "kind": "function",
+   "file": "scripts/chat_sft.py",
+   "line": 180,
+   "end": 298,
+   "doc": "BOS-aligned dataloader for SFT with bestfit-pad packing.",
+   "params": ["split", "buffer_size"],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.chat_sft:sft_data_generator_bos_bestfit.refill_buffer": {
+   "kind": "nested",
+   "file": "scripts/chat_sft.py",
+   "line": 204,
+   "end": 213,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.infer_bench:bench_generate": {
+   "kind": "function",
+   "file": "scripts/infer_bench.py",
+   "line": 55,
+   "end": 82,
+   "doc": "Run one timed generation. Returns dict of measurements.",
+   "params": [
+    "engine",
+    "prompt_tokens",
+    "batch_size",
+    "decode_tokens",
+    "temperature"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.infer_bench:build_prompt": {
+   "kind": "function",
+   "file": "scripts/infer_bench.py",
+   "line": 84,
+   "end": 93,
+   "doc": "A natural-language prompt of exactly num_tokens tokens (random ids would do for speed, but a real prompt keeps argmax decoding from degenerating).",
+   "params": ["tokenizer", "num_tokens"],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.infer_bench:main": {
+   "kind": "function",
+   "file": "scripts/infer_bench.py",
+   "line": 97,
+   "end": 243,
+   "doc": "",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.infer_bench:weight_bytes": {
+   "kind": "function",
+   "file": "scripts/infer_bench.py",
+   "line": 51,
+   "end": 53,
+   "doc": "Bytes of parameters as stored (each decode step reads all of them).",
+   "params": [
+    "model"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.tok_eval:<module>": {
+   "kind": "module",
+   "file": "scripts/tok_eval.py",
+   "line": 1,
+   "end": 243,
+   "doc": "Evaluate compression ratio of the tokenizer.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.tok_eval:print_comparison": {
+   "kind": "function",
+   "file": "scripts/tok_eval.py",
+   "line": 203,
+   "end": 239,
+   "doc": "Print comparison table between baseline tokenizer and ours.",
+   "params": [
+    "baseline_name",
+    "baseline_results",
+    "ours_results",
+    "all_text"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.tok_train:<module>": {
+   "kind": "module",
+   "file": "scripts/tok_train.py",
+   "line": 1,
+   "end": 91,
+   "doc": "Train a tokenizer using our own BPE Tokenizer library. In the style of GPT-4 tokenizer.",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "scripts.tok_train:text_iterator": {
+   "kind": "function",
+   "file": "scripts/tok_train.py",
+   "line": 28,
+   "end": 43,
+   "doc": "1) Flatten the batches into a single iterator 2) Crop every document to args.doc_cap characters 3) Break when we've seen args.max_chars characters",
+   "params": [],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.arc:ARC": {
+   "kind": "class",
+   "file": "tasks/arc.py",
+   "line": 8,
+   "end": 47,
+   "doc": "",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.arc:ARC.__init__": {
+   "kind": "method",
+   "file": "tasks/arc.py",
+   "line": 10,
+   "end": 14,
+   "doc": "",
+   "params": [
+    "self",
+    "subset",
+    "split",
+    "**kwargs"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.arc:ARC.eval_type": {
+   "kind": "method",
+   "file": "tasks/arc.py",
+   "line": 17,
+   "end": 18,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "property"
+   ],
+   "async": false
+  },
+  "tasks.arc:ARC.evaluate": {
+   "kind": "method",
+   "file": "tasks/arc.py",
+   "line": 42,
+   "end": 47,
+   "doc": "",
+   "params": ["self", "conversation", "assistant_response"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.arc:ARC.get_example": {
+   "kind": "method",
+   "file": "tasks/arc.py",
+   "line": 23,
+   "end": 40,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.arc:ARC.num_examples": {
+   "kind": "method",
+   "file": "tasks/arc.py",
+   "line": 20,
+   "end": 21,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:HubDataset": {
+   "kind": "class",
+   "file": "tasks/common.py",
+   "line": 21,
+   "end": 42,
+   "doc": "Minimal stand-in for a HuggingFace datasets Dataset: wraps a pyarrow Table and offers lazy row access and a seeded shuffle.",
+   "bases": [],
+   "decorators": []
+  },
+  "tasks.common:HubDataset.__getitem__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 39,
+   "end": 42,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:HubDataset.__init__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 27,
+   "end": 29,
+   "doc": "",
+   "params": ["self", "table", "permutation"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:HubDataset.__len__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 31,
+   "end": 32,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:HubDataset.shuffle": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 34,
+   "end": 37,
+   "doc": "",
+   "params": ["self", "seed"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task": {
+   "kind": "class",
+   "file": "tasks/common.py",
+   "line": 85,
+   "end": 126,
+   "doc": "Base class of a Task. Allows for lightweight slicing of the underlying dataset.",
+   "bases": [],
+   "decorators": []
+  },
+  "tasks.common:Task.__getitem__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 119,
+   "end": 123,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task.__init__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 90,
+   "end": 97,
+   "doc": "",
+   "params": [
+    "self",
+    "start",
+    "stop",
+    "step"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task.__len__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 110,
+   "end": 117,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task.eval_type": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 100,
+   "end": 102,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "property"
+   ],
+   "async": false
+  },
+  "tasks.common:Task.evaluate": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 125,
+   "end": 126,
+   "doc": "",
+   "params": ["self", "problem", "completion"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task.get_example": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 107,
+   "end": 108,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:Task.num_examples": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 104,
+   "end": 105,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskMixture": {
+   "kind": "class",
+   "file": "tasks/common.py",
+   "line": 129,
+   "end": 161,
+   "doc": "For SFT Training it becomes useful to train on a mixture of datasets. Fun trick: if you wish to oversample any task, just pass it in multiple times in the list.",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.common:TaskMixture.__init__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 135,
+   "end": 148,
+   "doc": "",
+   "params": ["self", "tasks", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskMixture.get_example": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 154,
+   "end": 161,
+   "doc": "Access conversations according to a deterministic shuffle of all examples. This ensures tasks are mixed throughout training, regardless of dataset size.",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskMixture.num_examples": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 151,
+   "end": 152,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskSequence": {
+   "kind": "class",
+   "file": "tasks/common.py",
+   "line": 164,
+   "end": 184,
+   "doc": "For SFT Training sometimes we want to sequentially train on a list of tasks. This is useful for cases that require a training curriculum.",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.common:TaskSequence.__init__": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 170,
+   "end": 174,
+   "doc": "",
+   "params": ["self", "tasks", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskSequence.get_example": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 179,
+   "end": 184,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:TaskSequence.num_examples": {
+   "kind": "method",
+   "file": "tasks/common.py",
+   "line": 176,
+   "end": 177,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:load_hub_dataset": {
+   "kind": "function",
+   "file": "tasks/common.py",
+   "line": 45,
+   "end": 82,
+   "doc": "Minimal stand-in for HuggingFace datasets.load_dataset(repo_id, subset, split=split). Every dataset on the hub has an auto-generated parquet export. We list the parquet shards via the hub API, download them (once) into the local cache directory, and read them with pyarrow. Under torchrun, only one …",
+   "params": ["repo_id", "subset", "split"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.common:render_mc": {
+   "kind": "function",
+   "file": "tasks/common.py",
+   "line": 187,
+   "end": 206,
+   "doc": "The common multiple choice rendering format we will use.",
+   "params": ["question", "letters", "choices"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K": {
+   "kind": "class",
+   "file": "tasks/gsm8k.py",
+   "line": 36,
+   "end": 116,
+   "doc": "",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.gsm8k:GSM8K.__init__": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 38,
+   "end": 42,
+   "doc": "",
+   "params": [
+    "self",
+    "subset",
+    "split",
+    "**kwargs"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K.eval_type": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 45,
+   "end": 46,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "property"
+   ],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K.evaluate": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 86,
+   "end": 107,
+   "doc": "Given (conversation, completion), return evaluation outcome (0 = wrong, 1 = correct) Note that: - the conversation has both user AND assistant message (containing the ground truth answer) - the assistant_response is usually the alternative assistant message achieved via sampling",
+   "params": ["self", "conversation", "assistant_response"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K.get_example": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 51,
+   "end": 84,
+   "doc": "Get a single problem from the dataset.",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K.num_examples": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 48,
+   "end": 49,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:GSM8K.reward": {
+   "kind": "method",
+   "file": "tasks/gsm8k.py",
+   "line": 109,
+   "end": 116,
+   "doc": "Used during RL. To keep things simple, just re-use the evaluation above. Later this could be made more complex (e.g. format matching etc.)",
+   "params": ["self", "conversation", "assistant_response"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.gsm8k:extract_answer": {
+   "kind": "function",
+   "file": "tasks/gsm8k.py",
+   "line": 22,
+   "end": 33,
+   "doc": "Extract the numerical answer after #### marker. Follows official code for normalization: https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/grade_school_math/dataset.py#L28",
+   "params": [
+    "completion"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:HumanEval": {
+   "kind": "class",
+   "file": "tasks/humaneval.py",
+   "line": 46,
+   "end": 97,
+   "doc": "",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.humaneval:HumanEval.__init__": {
+   "kind": "method",
+   "file": "tasks/humaneval.py",
+   "line": 48,
+   "end": 51,
+   "doc": "",
+   "params": ["self", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:HumanEval.eval_type": {
+   "kind": "method",
+   "file": "tasks/humaneval.py",
+   "line": 54,
+   "end": 55,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "property"
+   ],
+   "async": false
+  },
+  "tasks.humaneval:HumanEval.evaluate": {
+   "kind": "method",
+   "file": "tasks/humaneval.py",
+   "line": 79,
+   "end": 97,
+   "doc": "Given (conversation, completion), return boolean success of the completion.",
+   "params": ["self", "conversation", "completion"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:HumanEval.get_example": {
+   "kind": "method",
+   "file": "tasks/humaneval.py",
+   "line": 60,
+   "end": 77,
+   "doc": "Get a single problem from the dataset.",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:HumanEval.num_examples": {
+   "kind": "method",
+   "file": "tasks/humaneval.py",
+   "line": 57,
+   "end": 58,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:extract_imports": {
+   "kind": "function",
+   "file": "tasks/humaneval.py",
+   "line": 11,
+   "end": 21,
+   "doc": "Extract import statements from the beginning of a code block.",
+   "params": [
+    "prompt"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.humaneval:extract_program": {
+   "kind": "function",
+   "file": "tasks/humaneval.py",
+   "line": 23,
+   "end": 44,
+   "doc": "Extract Python code from LLM completion.",
+   "params": [
+    "completion"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.mmlu:MMLU": {
+   "kind": "class",
+   "file": "tasks/mmlu.py",
+   "line": 8,
+   "end": 54,
+   "doc": "",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.mmlu:MMLU.__init__": {
+   "kind": "method",
+   "file": "tasks/mmlu.py",
+   "line": 13,
+   "end": 19,
+   "doc": "",
+   "params": [
+    "self",
+    "subset",
+    "split",
+    "**kwargs"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.mmlu:MMLU.eval_type": {
+   "kind": "method",
+   "file": "tasks/mmlu.py",
+   "line": 22,
+   "end": 23,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [
+    "property"
+   ],
+   "async": false
+  },
+  "tasks.mmlu:MMLU.evaluate": {
+   "kind": "method",
+   "file": "tasks/mmlu.py",
+   "line": 49,
+   "end": 54,
+   "doc": "",
+   "params": ["self", "conversation", "assistant_response"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.mmlu:MMLU.get_example": {
+   "kind": "method",
+   "file": "tasks/mmlu.py",
+   "line": 28,
+   "end": 47,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.mmlu:MMLU.num_examples": {
+   "kind": "method",
+   "file": "tasks/mmlu.py",
+   "line": 25,
+   "end": 26,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.smoltalk:SmolTalk": {
+   "kind": "class",
+   "file": "tasks/smoltalk.py",
+   "line": 9,
+   "end": 45,
+   "doc": "smol-smoltalk dataset. train is 460K rows, test is 24K rows.",
+   "bases": [
+    "Task"
+   ],
+   "decorators": []
+  },
+  "tasks.smoltalk:SmolTalk.__init__": {
+   "kind": "method",
+   "file": "tasks/smoltalk.py",
+   "line": 12,
+   "end": 16,
+   "doc": "",
+   "params": ["self", "split", "**kwargs"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.smoltalk:SmolTalk.get_example": {
+   "kind": "method",
+   "file": "tasks/smoltalk.py",
+   "line": 21,
+   "end": 45,
+   "doc": "",
+   "params": ["self", "index"],
+   "decorators": [],
+   "async": false
+  },
+  "tasks.smoltalk:SmolTalk.num_examples": {
+   "kind": "method",
+   "file": "tasks/smoltalk.py",
+   "line": 18,
+   "end": 19,
+   "doc": "",
+   "params": [
+    "self"
+   ],
+   "decorators": [],
+   "async": false
+  }
+ },
+ "routes": {},
+ "calls": [
+  ["nanochat.checkpoint_manager:<module>", "nanochat.common:setup_default_logging", 16],
+  ["nanochat.checkpoint_manager:_patch_missing_config_keys", "nanochat.checkpoint_manager:log0", 27],
+  ["nanochat.checkpoint_manager:_patch_missing_keys", "nanochat.checkpoint_manager:log0", 35],
+  ["nanochat.checkpoint_manager:_patch_missing_keys", "nanochat.checkpoint_manager:log0", 39],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.checkpoint_manager:_patch_missing_config_keys", 95],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.checkpoint_manager:_patch_missing_keys", 98],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.checkpoint_manager:load_checkpoint", 85],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.checkpoint_manager:log0", 96],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.gpt:GPT", 100],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.gpt:GPT.init_weights", 103],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.gpt:GPTConfig", 97],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.tokenizer:get_tokenizer", 111],
+  ["nanochat.checkpoint_manager:load_model", "nanochat.checkpoint_manager:load_model_from_dir", 171],
+  ["nanochat.checkpoint_manager:load_model", "nanochat.common:get_base_dir", 169],
+  ["nanochat.checkpoint_manager:load_model_from_dir", "nanochat.checkpoint_manager:build_model", 160],
+  ["nanochat.checkpoint_manager:load_model_from_dir", "nanochat.checkpoint_manager:find_largest_model", 151],
+  ["nanochat.checkpoint_manager:load_model_from_dir", "nanochat.checkpoint_manager:find_last_step", 156],
+  ["nanochat.checkpoint_manager:load_model_from_dir", "nanochat.checkpoint_manager:log0", 152],
+  ["nanochat.checkpoint_manager:load_model_from_dir", "nanochat.checkpoint_manager:log0", 159],
+  ["nanochat.checkpoint_manager:load_optimizer_state", "nanochat.checkpoint_manager:find_largest_model", 183],
+  ["nanochat.checkpoint_manager:load_optimizer_state", "nanochat.checkpoint_manager:find_last_step", 186],
+  ["nanochat.checkpoint_manager:load_optimizer_state", "nanochat.checkpoint_manager:log0", 189],
+  ["nanochat.checkpoint_manager:load_optimizer_state", "nanochat.checkpoint_manager:log0", 191],
+  ["nanochat.checkpoint_manager:load_optimizer_state", "nanochat.common:get_base_dir", 180],
+  ["nanochat.common:<module>", "nanochat.common:_detect_compute_dtype", 32],
+  ["nanochat.common:<module>", "nanochat.common:setup_default_logging", 68],
+  ["nanochat.common:autodetect_device_type", "nanochat.common:print0", 171],
+  ["nanochat.common:compute_cleanup", "nanochat.common:is_ddp_initialized", 213],
+  ["nanochat.common:compute_init", "nanochat.common:get_dist_info", 197],
+  ["nanochat.common:download_file_with_lock", "nanochat.common:get_base_dir", 87],
+  ["nanochat.common:get_dist_info", "nanochat.common:is_ddp_requested", 152],
+  ["nanochat.common:print_banner", "nanochat.common:print0", 135],
+  ["nanochat.common:setup_default_logging", "nanochat.common:ColoredFormatter", 62],
+  ["nanochat.core_eval:batch_sequences_mc", "nanochat.core_eval:find_common_length", 117],
+  ["nanochat.core_eval:batch_sequences_schema", "nanochat.core_eval:find_common_length", 127],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:batch_sequences_lm", 192],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:batch_sequences_mc", 186],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:batch_sequences_schema", 189],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:forward_model", 221],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:render_prompts_lm", 191],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:render_prompts_mc", 185],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:render_prompts_schema", 188],
+  ["nanochat.core_eval:evaluate_example", "nanochat.core_eval:stack_sequences", 217],
+  ["nanochat.core_eval:evaluate_task", "nanochat.core_eval:evaluate_example", 254],
+  ["nanochat.dataloader:_document_batches", "nanochat.common:get_dist_info", 33],
+  ["nanochat.dataloader:_document_batches", "nanochat.dataset:list_parquet_files", 36],
+  ["nanochat.dataloader:tokenizing_distributed_data_loader_bos_bestfit", "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit", 165],
+  ["nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit", "nanochat.dataloader:_document_batches", 99],
+  ["nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit", "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit.refill_buffer", 128],
+  ["nanochat.dataset:<module>", "nanochat.common:get_base_dir", 26],
+  ["nanochat.dataset:parquets_iter_batched", "nanochat.dataset:list_parquet_files", 74],
+  ["nanochat.engine:<module>", "nanochat.checkpoint_manager:load_model", 312],
+  ["nanochat.engine:<module>", "nanochat.common:autodetect_device_type", 309],
+  ["nanochat.engine:<module>", "nanochat.common:compute_init", 310],
+  ["nanochat.engine:<module>", "nanochat.engine:Engine", 334],
+  ["nanochat.engine:<module>", "nanochat.engine:Engine.generate", 335],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:KVCache", 197],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:KVCache", 210],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:KVCache.prefill", 217],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:RowState", 221],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:sample_next_token", 234],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:use_calculator", 259],
+  ["nanochat.engine:Engine.generate_batch", "nanochat.engine:Engine.generate", 288],
+  ["nanochat.engine:KVCache.prefill", "nanochat.engine:KVCache.get_pos", 128],
+  ["nanochat.engine:KVCache.prefill", "nanochat.engine:KVCache.get_pos", 131],
+  ["nanochat.engine:eval_with_timeout", "nanochat.engine:timeout", 37],
+  ["nanochat.engine:use_calculator", "nanochat.engine:eval_with_timeout", 58],
+  ["nanochat.engine:use_calculator", "nanochat.engine:eval_with_timeout", 79],
+  ["nanochat.execution:execute_code", "nanochat.execution:ExecutionResult", 114],
+  ["nanochat.execution:execute_code", "nanochat.execution:ExecutionResult", 127],
+  ["nanochat.flash_attention:<module>", "nanochat.flash_attention:_load_flash_attention_3", 49],
+  ["nanochat.flash_attention:<module>", "nanochat.flash_attention:_resolve_use_fa3", 71],
+  ["nanochat.flash_attention:flash_attn_func", "nanochat.flash_attention:_sdpa_attention", 135],
+  ["nanochat.flash_attention:flash_attn_with_kvcache", "nanochat.flash_attention:_sdpa_attention", 183],
+  ["nanochat.fp8:Float8LinearConfig.from_recipe_name", "nanochat.fp8:Float8LinearConfig", 240],
+  ["nanochat.fp8:_Float8Matmul.backward", "nanochat.fp8:_to_col_major", 166],
+  ["nanochat.fp8:_Float8Matmul.backward", "nanochat.fp8:_to_col_major", 182],
+  ["nanochat.fp8:_Float8Matmul.backward", "nanochat.fp8:_to_fp8", 163],
+  ["nanochat.fp8:_Float8Matmul.forward", "nanochat.fp8:_to_fp8", 135],
+  ["nanochat.fp8:_Float8Matmul.forward", "nanochat.fp8:_to_fp8", 136],
+  ["nanochat.fp8:convert_to_float8_training", "nanochat.fp8:convert_to_float8_training._convert", 265],
+  ["nanochat.fp8:convert_to_float8_training._convert", "nanochat.fp8:Float8Linear.from_float", 263],
+  ["nanochat.fp8:convert_to_float8_training._convert", "nanochat.fp8:convert_to_float8_training._convert", 260],
+  ["nanochat.gpt:Block.__init__", "nanochat.gpt:CausalSelfAttention", 147],
+  ["nanochat.gpt:Block.__init__", "nanochat.gpt:MLP", 148],
+  ["nanochat.gpt:Block.forward", "nanochat.gpt:norm", 151],
+  ["nanochat.gpt:Block.forward", "nanochat.gpt:norm", 152],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 77],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 78],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 79],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 80],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 82],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:has_ve", 82],
+  ["nanochat.gpt:CausalSelfAttention.forward", "nanochat.gpt:apply_rotary_emb", 101],
+  ["nanochat.gpt:CausalSelfAttention.forward", "nanochat.gpt:norm", 102],
+  ["nanochat.gpt:GPT.__init__", "nanochat.common:print0", 172],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Block", 175],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:GPT._compute_window_sizes", 167],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:GPT._precompute_rotary_embeddings", 199],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Linear", 177],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Linear", 185],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:has_ve", 192],
+  ["nanochat.gpt:GPT.estimate_decode_flops", "nanochat.gpt:GPT.num_matmul_params", 359],
+  ["nanochat.gpt:GPT.estimate_flops", "nanochat.gpt:GPT.num_matmul_params", 338],
+  ["nanochat.gpt:GPT.estimate_prefill_flops", "nanochat.gpt:GPT.num_matmul_params", 371],
+  ["nanochat.gpt:GPT.forward", "nanochat.gpt:norm", 473],
+  ["nanochat.gpt:GPT.forward", "nanochat.gpt:norm", 508],
+  ["nanochat.gpt:GPT.generate", "nanochat.gpt:GPT.forward", 542],
+  ["nanochat.gpt:GPT.generate", "nanochat.gpt:GPT.get_device", 535],
+  ["nanochat.gpt:GPT.init_weights", "nanochat.gpt:GPT._precompute_rotary_embeddings", 259],
+  ["nanochat.gpt:GPT.setup_optimizer", "nanochat.common:print0", 434],
+  ["nanochat.gpt:GPT.setup_optimizer", "nanochat.optim:MuonAdamW", 454],
+  ["nanochat.gpt:MLP.__init__", "nanochat.gpt:Linear", 134],
+  ["nanochat.gpt:MLP.__init__", "nanochat.gpt:Linear", 135],
+  ["nanochat.optim:MuonAdamW._compute_adamw", "nanochat.optim:adamw_step_fused", 351],
+  ["nanochat.optim:MuonAdamW._compute_muon", "nanochat.optim:muon_step_fused", 395],
+  ["nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._compute_adamw", 452],
+  ["nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._compute_muon", 454],
+  ["nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._finish_gathers", 459],
+  ["nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._reduce_adamw", 442],
+  ["nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._reduce_muon", 444],
+  ["nanochat.tokenizer:RustBPETokenizer.__call__", "nanochat.tokenizer:RustBPETokenizer.encode", 124],
+  ["nanochat.tokenizer:RustBPETokenizer.__init__", "nanochat.tokenizer:RustBPETokenizer.encode_special", 39],
+  ["nanochat.tokenizer:RustBPETokenizer.encode", "nanochat.tokenizer:RustBPETokenizer.encode_special", 100],
+  ["nanochat.tokenizer:RustBPETokenizer.encode", "nanochat.tokenizer:RustBPETokenizer.encode_special", 102],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode", 188],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode", 196],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode", 200],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode_special", 170],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode_special", 171],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode_special", 172],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.encode_special", 173],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 169],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 176],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 189],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 190],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 191],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 193],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 197],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 203],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 206],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 207],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 208],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 212],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 213],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 214],
+  ["nanochat.tokenizer:RustBPETokenizer.render_conversation", "nanochat.tokenizer:RustBPETokenizer.render_conversation.add_tokens", 219],
+  ["nanochat.tokenizer:RustBPETokenizer.render_for_completion", "nanochat.tokenizer:RustBPETokenizer.encode_special", 257],
+  ["nanochat.tokenizer:RustBPETokenizer.render_for_completion", "nanochat.tokenizer:RustBPETokenizer.render_conversation", 254],
+  ["nanochat.tokenizer:RustBPETokenizer.visualize_tokenization", "nanochat.tokenizer:RustBPETokenizer.decode", 234],
+  ["nanochat.tokenizer:get_token_bytes", "nanochat.common:get_base_dir", 273],
+  ["nanochat.tokenizer:get_tokenizer", "nanochat.common:get_base_dir", 266],
+  ["nanochat.tokenizer:get_tokenizer", "nanochat.tokenizer:RustBPETokenizer.from_directory", 268],
+  ["scripts.base_eval:<module>", "scripts.base_eval:main", 243],
+  ["scripts.base_eval:evaluate_core", "nanochat.common:download_file_with_lock", 66],
+  ["scripts.base_eval:evaluate_core", "nanochat.common:get_base_dir", 62],
+  ["scripts.base_eval:evaluate_core", "nanochat.common:print0", 97],
+  ["scripts.base_eval:evaluate_core", "nanochat.common:print0", 115],
+  ["scripts.base_eval:evaluate_core", "nanochat.core_eval:evaluate_task", 109],
+  ["scripts.base_eval:main", "nanochat.checkpoint_manager:load_model", 150],
+  ["scripts.base_eval:main", "nanochat.common:autodetect_device_type", 147],
+  ["scripts.base_eval:main", "nanochat.common:compute_cleanup", 239],
+  ["scripts.base_eval:main", "nanochat.common:compute_init", 148],
+  ["scripts.base_eval:main", "nanochat.common:get_base_dir", 226],
+  ["scripts.base_eval:main", "nanochat.common:print0", 156],
+  ["scripts.base_eval:main", "nanochat.common:print0", 157],
+  ["scripts.base_eval:main", "nanochat.common:print0", 167],
+  ["scripts.base_eval:main", "nanochat.common:print0", 168],
+  ["scripts.base_eval:main", "nanochat.common:print0", 169],
+  ["scripts.base_eval:main", "nanochat.common:print0", 181],
+  ["scripts.base_eval:main", "nanochat.common:print0", 186],
+  ["scripts.base_eval:main", "nanochat.common:print0", 187],
+  ["scripts.base_eval:main", "nanochat.common:print0", 190],
+  ["scripts.base_eval:main", "nanochat.common:print0", 195],
+  ["scripts.base_eval:main", "nanochat.common:print0", 196],
+  ["scripts.base_eval:main", "nanochat.common:print0", 201],
+  ["scripts.base_eval:main", "nanochat.common:print0", 202],
+  ["scripts.base_eval:main", "nanochat.common:print0", 203],
+  ["scripts.base_eval:main", "nanochat.common:print0", 208],
+  ["scripts.base_eval:main", "nanochat.common:print0", 215],
+  ["scripts.base_eval:main", "nanochat.common:print0", 219],
+  ["scripts.base_eval:main", "nanochat.common:print0", 220],
+  ["scripts.base_eval:main", "nanochat.common:print0", 221],
+  ["scripts.base_eval:main", "nanochat.common:print0", 236],
+  ["scripts.base_eval:main", "nanochat.common:print0", 237],
+  ["scripts.base_eval:main", "nanochat.dataloader:tokenizing_distributed_data_loader_bos_bestfit", 212],
+  ["scripts.base_eval:main", "nanochat.engine:Engine", 180],
+  ["scripts.base_eval:main", "nanochat.engine:Engine.generate_batch", 184],
+  ["scripts.base_eval:main", "nanochat.engine:Engine.generate_batch", 192],
+  ["scripts.base_eval:main", "nanochat.loss_eval:evaluate_bpb", 213],
+  ["scripts.base_eval:main", "nanochat.tokenizer:get_token_bytes", 152],
+  ["scripts.base_eval:main", "scripts.base_eval:evaluate_core", 222],
+  ["scripts.base_eval:place_eval_bundle", "nanochat.common:get_base_dir", 47],
+  ["scripts.base_eval:place_eval_bundle", "nanochat.common:print0", 54],
+  ["scripts.base_train:<module>", "nanochat.checkpoint_manager:load_checkpoint", 160],
+  ["scripts.base_train:<module>", "nanochat.checkpoint_manager:save_checkpoint", 478],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb", 100],
+  ["scripts.base_train:<module>", "nanochat.common:autodetect_device_type", 85],
+  ["scripts.base_train:<module>", "nanochat.common:compute_cleanup", 604],
+  ["scripts.base_train:<module>", "nanochat.common:compute_init", 86],
+  ["scripts.base_train:<module>", "nanochat.common:get_base_dir", 154],
+  ["scripts.base_train:<module>", "nanochat.common:get_peak_flops", 92],
+  ["scripts.base_train:<module>", "nanochat.common:is_ddp_initialized", 533],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 93],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 96],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 106],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 108],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 110],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 112],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 113],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 115],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 116],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 117],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 124],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 149],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 159],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 170],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 192],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 253],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 255],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 258],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 284],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 294],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 304],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 326],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 343],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 347],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 351],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 355],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 356],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 357],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 411],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 412],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 413],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 427],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 446],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 473],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 567],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 597],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 598],
+  ["scripts.base_train:<module>", "nanochat.common:print0", 600],
+  ["scripts.base_train:<module>", "nanochat.common:print_banner", 37],
+  ["scripts.base_train:<module>", "nanochat.dataloader:tokenizing_distributed_data_loader_bos_bestfit", 332],
+  ["scripts.base_train:<module>", "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit", 331],
+  ["scripts.base_train:<module>", "nanochat.engine:Engine", 468],
+  ["scripts.base_train:<module>", "nanochat.engine:Engine.generate_batch", 472],
+  ["scripts.base_train:<module>", "nanochat.fp8:Float8LinearConfig.from_recipe_name", 187],
+  ["scripts.base_train:<module>", "nanochat.fp8:convert_to_float8_training", 189],
+  ["scripts.base_train:<module>", "nanochat.loss_eval:evaluate_bpb", 426],
+  ["scripts.base_train:<module>", "nanochat.tokenizer:get_token_bytes", 122],
+  ["scripts.base_train:<module>", "nanochat.tokenizer:get_tokenizer", 121],
+  ["scripts.base_train:<module>", "scripts.base_eval:evaluate_core", 445],
+  ["scripts.base_train:<module>", "scripts.base_train:build_model_meta", 146],
+  ["scripts.base_train:<module>", "scripts.base_train:build_model_meta", 272],
+  ["scripts.base_train:<module>", "scripts.base_train:disable_fp8", 425],
+  ["scripts.base_train:<module>", "scripts.base_train:disable_fp8", 444],
+  ["scripts.base_train:<module>", "scripts.base_train:disable_fp8", 471],
+  ["scripts.base_train:<module>", "scripts.base_train:get_lr_multiplier", 520],
+  ["scripts.base_train:<module>", "scripts.base_train:get_muon_momentum", 521],
+  ["scripts.base_train:<module>", "scripts.base_train:get_scaling_params", 268],
+  ["scripts.base_train:<module>", "scripts.base_train:get_scaling_params", 273],
+  ["scripts.base_train:<module>", "scripts.base_train:get_weight_decay", 522],
+  ["scripts.base_train:build_model_meta", "nanochat.gpt:GPT", 142],
+  ["scripts.base_train:build_model_meta", "nanochat.gpt:GPTConfig", 136],
+  ["scripts.base_train:disable_fp8", "nanochat.gpt:Linear", 223],
+  ["scripts.chat_cli:<module>", "nanochat.checkpoint_manager:load_model", 27],
+  ["scripts.chat_cli:<module>", "nanochat.common:autodetect_device_type", 25],
+  ["scripts.chat_cli:<module>", "nanochat.common:compute_init", 26],
+  ["scripts.chat_cli:<module>", "nanochat.engine:Engine", 35],
+  ["scripts.chat_cli:<module>", "nanochat.engine:Engine.generate", 86],
+  ["scripts.chat_eval:<module>", "nanochat.checkpoint_manager:load_model", 198],
+  ["scripts.chat_eval:<module>", "nanochat.common:autodetect_device_type", 195],
+  ["scripts.chat_eval:<module>", "nanochat.common:compute_cleanup", 240],
+  ["scripts.chat_eval:<module>", "nanochat.common:compute_init", 196],
+  ["scripts.chat_eval:<module>", "nanochat.common:print0", 226],
+  ["scripts.chat_eval:<module>", "nanochat.common:print0", 238],
+  ["scripts.chat_eval:<module>", "nanochat.engine:Engine", 199],
+  ["scripts.chat_eval:<module>", "scripts.chat_eval:run_chat_eval", 215],
+  ["scripts.chat_eval:run_categorical_eval", "nanochat.common:get_dist_info", 89],
+  ["scripts.chat_eval:run_categorical_eval", "nanochat.common:print0", 151],
+  ["scripts.chat_eval:run_chat_eval", "scripts.chat_eval:run_categorical_eval", 172],
+  ["scripts.chat_eval:run_chat_eval", "scripts.chat_eval:run_generative_eval", 170],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.common:get_dist_info", 30],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.common:print0", 76],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.common:print0", 77],
+  ["scripts.chat_rl:<module>", "nanochat.checkpoint_manager:load_model", 74],
+  ["scripts.chat_rl:<module>", "nanochat.checkpoint_manager:save_checkpoint", 314],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb", 71],
+  ["scripts.chat_rl:<module>", "nanochat.common:autodetect_device_type", 65],
+  ["scripts.chat_rl:<module>", "nanochat.common:compute_cleanup", 326],
+  ["scripts.chat_rl:<module>", "nanochat.common:compute_init", 66],
+  ["scripts.chat_rl:<module>", "nanochat.common:get_base_dir", 309],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 83],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 215],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 218],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 238],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 274],
+  ["scripts.chat_rl:<module>", "nanochat.common:print0", 289],
+  ["scripts.chat_rl:<module>", "nanochat.engine:Engine", 75],
+  ["scripts.chat_rl:<module>", "scripts.chat_rl:get_batch", 221],
+  ["scripts.chat_rl:<module>", "scripts.chat_rl:get_lr_multiplier", 297],
+  ["scripts.chat_rl:<module>", "scripts.chat_rl:run_gsm8k_eval", 228],
+  ["scripts.chat_rl:<module>", "tasks.gsm8k:GSM8K", 80],
+  ["scripts.chat_rl:<module>", "tasks.gsm8k:GSM8K", 81],
+  ["scripts.chat_rl:get_batch", "nanochat.engine:Engine.generate_batch", 106],
+  ["scripts.chat_rl:get_batch", "tasks.gsm8k:GSM8K.reward", 125],
+  ["scripts.chat_rl:run_gsm8k_eval", "nanochat.engine:Engine.generate_batch", 170],
+  ["scripts.chat_rl:run_gsm8k_eval", "tasks.gsm8k:GSM8K.evaluate", 182],
+  ["scripts.chat_sft:<module>", "nanochat.checkpoint_manager:load_model", 94],
+  ["scripts.chat_sft:<module>", "nanochat.checkpoint_manager:load_optimizer_state", 140],
+  ["scripts.chat_sft:<module>", "nanochat.checkpoint_manager:save_checkpoint", 395],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb", 87],
+  ["scripts.chat_sft:<module>", "nanochat.common:autodetect_device_type", 72],
+  ["scripts.chat_sft:<module>", "nanochat.common:compute_cleanup", 499],
+  ["scripts.chat_sft:<module>", "nanochat.common:compute_init", 73],
+  ["scripts.chat_sft:<module>", "nanochat.common:get_base_dir", 138],
+  ["scripts.chat_sft:<module>", "nanochat.common:get_peak_flops", 80],
+  ["scripts.chat_sft:<module>", "nanochat.common:is_ddp_initialized", 444],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 75],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 81],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 91],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 111],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 113],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 115],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 125],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 126],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 127],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 147],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 149],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 154],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 168],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 345],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 375],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 381],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 469],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 493],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 494],
+  ["scripts.chat_sft:<module>", "nanochat.common:print0", 495],
+  ["scripts.chat_sft:<module>", "nanochat.engine:Engine", 361],
+  ["scripts.chat_sft:<module>", "nanochat.loss_eval:evaluate_bpb", 344],
+  ["scripts.chat_sft:<module>", "nanochat.tokenizer:get_token_bytes", 128],
+  ["scripts.chat_sft:<module>", "scripts.chat_eval:run_chat_eval", 372],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:centered_mean", 379],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:centered_mean", 380],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:get_lr_multiplier", 436],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:get_muon_momentum", 437],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:sft_data_generator_bos_bestfit", 300],
+  ["scripts.chat_sft:<module>", "scripts.chat_sft:sft_data_generator_bos_bestfit", 301],
+  ["scripts.chat_sft:<module>", "tasks.common:TaskMixture", 167],
+  ["scripts.chat_sft:<module>", "tasks.common:TaskMixture", 169],
+  ["scripts.chat_sft:<module>", "tasks.gsm8k:GSM8K", 165],
+  ["scripts.chat_sft:<module>", "tasks.gsm8k:GSM8K", 172],
+  ["scripts.chat_sft:<module>", "tasks.mmlu:MMLU", 164],
+  ["scripts.chat_sft:<module>", "tasks.mmlu:MMLU", 171],
+  ["scripts.chat_sft:<module>", "tasks.smoltalk:SmolTalk", 163],
+  ["scripts.chat_sft:<module>", "tasks.smoltalk:SmolTalk", 170],
+  ["scripts.chat_sft:sft_data_generator_bos_bestfit", "scripts.chat_sft:sft_data_generator_bos_bestfit.refill_buffer", 227],
+  ["scripts.infer_bench:<module>", "scripts.infer_bench:main", 246],
+  ["scripts.infer_bench:bench_generate", "nanochat.engine:Engine.generate", 61],
+  ["scripts.infer_bench:main", "nanochat.checkpoint_manager:load_model", 113],
+  ["scripts.infer_bench:main", "nanochat.common:autodetect_device_type", 108],
+  ["scripts.infer_bench:main", "nanochat.common:compute_cleanup", 243],
+  ["scripts.infer_bench:main", "nanochat.common:compute_init", 110],
+  ["scripts.infer_bench:main", "nanochat.common:get_peak_bandwidth", 127],
+  ["scripts.infer_bench:main", "nanochat.common:get_peak_flops", 128],
+  ["scripts.infer_bench:main", "nanochat.engine:Engine", 115],
+  ["scripts.infer_bench:main", "scripts.infer_bench:bench_generate", 185],
+  ["scripts.infer_bench:main", "scripts.infer_bench:bench_generate", 186],
+  ["scripts.infer_bench:main", "scripts.infer_bench:bench_generate", 207],
+  ["scripts.infer_bench:main", "scripts.infer_bench:bench_generate", 209],
+  ["scripts.infer_bench:main", "scripts.infer_bench:build_prompt", 122],
+  ["scripts.infer_bench:main", "scripts.infer_bench:weight_bytes", 130],
+  ["scripts.tok_eval:<module>", "nanochat.dataset:parquets_iter_batched", 147],
+  ["scripts.tok_eval:<module>", "nanochat.dataset:parquets_iter_batched", 149],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:RustBPETokenizer.from_pretrained", 170],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:RustBPETokenizer.from_pretrained", 172],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:get_tokenizer", 174],
+  ["scripts.tok_eval:<module>", "scripts.tok_eval:print_comparison", 242],
+  ["scripts.tok_eval:<module>", "scripts.tok_eval:print_comparison", 243],
+  ["scripts.tok_train:<module>", "nanochat.common:get_base_dir", 56],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.train_from_iterator", 49],
+  ["scripts.tok_train:<module>", "scripts.tok_train:text_iterator", 44],
+  ["scripts.tok_train:text_iterator", "nanochat.dataset:parquets_iter_batched", 35],
+  ["tasks.arc:ARC.__init__", "tasks.common:HubDataset.shuffle", 14],
+  ["tasks.arc:ARC.__init__", "tasks.common:Task.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.common:load_hub_dataset", 14],
+  ["tasks.arc:ARC.get_example", "tasks.common:render_mc", 31],
+  ["tasks.common:<module>", "tasks.mmlu:MMLU", 213],
+  ["tasks.common:<module>", "tasks.mmlu:MMLU", 218],
+  ["tasks.common:HubDataset.shuffle", "tasks.common:HubDataset", 37],
+  ["tasks.common:Task.__getitem__", "tasks.common:Task.get_example", 122],
+  ["tasks.common:Task.__len__", "tasks.common:Task.num_examples", 112],
+  ["tasks.common:TaskMixture.__init__", "tasks.common:Task.__init__", 136],
+  ["tasks.common:TaskSequence.__init__", "tasks.common:Task.__init__", 171],
+  ["tasks.common:load_hub_dataset", "nanochat.common:get_base_dir", 52],
+  ["tasks.common:load_hub_dataset", "tasks.common:HubDataset", 82],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.common:HubDataset.shuffle", 42],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.common:Task.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.common:load_hub_dataset", 42],
+  ["tasks.gsm8k:GSM8K.evaluate", "tasks.gsm8k:extract_answer", 103],
+  ["tasks.gsm8k:GSM8K.evaluate", "tasks.gsm8k:extract_answer", 104],
+  ["tasks.gsm8k:GSM8K.reward", "tasks.gsm8k:GSM8K.evaluate", 114],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.common:HubDataset.shuffle", 51],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.common:Task.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.common:load_hub_dataset", 51],
+  ["tasks.humaneval:HumanEval.evaluate", "nanochat.execution:execute_code", 95],
+  ["tasks.humaneval:HumanEval.evaluate", "tasks.humaneval:extract_imports", 82],
+  ["tasks.humaneval:HumanEval.evaluate", "tasks.humaneval:extract_program", 85],
+  ["tasks.mmlu:MMLU.__init__", "tasks.common:HubDataset.shuffle", 19],
+  ["tasks.mmlu:MMLU.__init__", "tasks.common:Task.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.common:load_hub_dataset", 19],
+  ["tasks.mmlu:MMLU.get_example", "tasks.common:render_mc", 36],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.common:HubDataset.shuffle", 15],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.common:Task.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.common:load_hub_dataset", 15]
+ ],
+ "refs": [
+  ["nanochat.common:compute_init", "nanochat.common:is_ddp_requested", 198],
+  ["nanochat.common:compute_init", "nanochat.common:is_ddp_requested", 209],
+  ["nanochat.dataset:<module>", "nanochat.dataset:download_single_file", 156],
+  ["nanochat.engine:timeout", "nanochat.engine:timeout.timeout_handler", 30],
+  ["nanochat.flash_attention:<module>", "nanochat.flash_attention:flash_attn_func", 193],
+  ["nanochat.flash_attention:<module>", "nanochat.flash_attention:flash_attn_with_kvcache", 194],
+  ["nanochat.fp8:Float8Linear.forward", "nanochat.fp8:_Float8Matmul", 209],
+  ["nanochat.fp8:convert_to_float8_training._convert", "nanochat.fp8:Float8Linear", 261],
+  ["nanochat.fp8:convert_to_float8_training._convert", "nanochat.fp8:Float8Linear", 263],
+  ["nanochat.gpt:GPT.num_matmul_params", "nanochat.gpt:Linear", 348],
+  ["nanochat.tokenizer:get_tokenizer", "nanochat.tokenizer:RustBPETokenizer", 268],
+  ["scripts.base_eval:evaluate_core", "scripts.base_eval:place_eval_bundle", 66],
+  ["scripts.base_train:<module>", "nanochat.fp8:Float8LinearConfig", 187],
+  ["scripts.base_train:<module>", "scripts.base_train:fp8_module_filter", 189],
+  ["scripts.chat_eval:run_chat_eval", "tasks.arc:ARC", 163],
+  ["scripts.chat_eval:run_chat_eval", "tasks.arc:ARC", 164],
+  ["scripts.chat_eval:run_chat_eval", "tasks.gsm8k:GSM8K", 165],
+  ["scripts.chat_eval:run_chat_eval", "tasks.humaneval:HumanEval", 161],
+  ["scripts.chat_eval:run_chat_eval", "tasks.mmlu:MMLU", 162],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:RustBPETokenizer", 170],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:RustBPETokenizer", 172],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer", 49],
+  ["tasks.arc:ARC", "tasks.common:Task", 8],
+  ["tasks.common:TaskMixture", "tasks.common:Task", 129],
+  ["tasks.common:TaskSequence", "tasks.common:Task", 164],
+  ["tasks.gsm8k:GSM8K", "tasks.common:Task", 36],
+  ["tasks.humaneval:HumanEval", "tasks.common:Task", 46],
+  ["tasks.mmlu:MMLU", "tasks.common:Task", 8],
+  ["tasks.smoltalk:SmolTalk", "tasks.common:Task", 9]
+ ],
+ "constructs": [
+  ["nanochat.checkpoint_manager:build_model", "nanochat.gpt:GPT", 100],
+  ["nanochat.checkpoint_manager:build_model", "nanochat.gpt:GPTConfig", 97],
+  ["nanochat.common:setup_default_logging", "nanochat.common:ColoredFormatter", 62],
+  ["nanochat.engine:<module>", "nanochat.engine:Engine", 334],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:KVCache", 197],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:KVCache", 210],
+  ["nanochat.engine:Engine.generate", "nanochat.engine:RowState", 221],
+  ["nanochat.execution:execute_code", "nanochat.execution:ExecutionResult", 114],
+  ["nanochat.execution:execute_code", "nanochat.execution:ExecutionResult", 127],
+  ["nanochat.fp8:Float8LinearConfig.from_recipe_name", "nanochat.fp8:Float8LinearConfig", 240],
+  ["nanochat.gpt:Block.__init__", "nanochat.gpt:CausalSelfAttention", 147],
+  ["nanochat.gpt:Block.__init__", "nanochat.gpt:MLP", 148],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 77],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 78],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 79],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 80],
+  ["nanochat.gpt:CausalSelfAttention.__init__", "nanochat.gpt:Linear", 82],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Block", 175],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Linear", 177],
+  ["nanochat.gpt:GPT.__init__", "nanochat.gpt:Linear", 185],
+  ["nanochat.gpt:GPT.setup_optimizer", "nanochat.optim:MuonAdamW", 454],
+  ["nanochat.gpt:MLP.__init__", "nanochat.gpt:Linear", 134],
+  ["nanochat.gpt:MLP.__init__", "nanochat.gpt:Linear", 135],
+  ["scripts.base_eval:main", "nanochat.engine:Engine", 180],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb", 100],
+  ["scripts.base_train:<module>", "nanochat.engine:Engine", 468],
+  ["scripts.base_train:build_model_meta", "nanochat.gpt:GPT", 142],
+  ["scripts.base_train:build_model_meta", "nanochat.gpt:GPTConfig", 136],
+  ["scripts.base_train:disable_fp8", "nanochat.gpt:Linear", 223],
+  ["scripts.chat_cli:<module>", "nanochat.engine:Engine", 35],
+  ["scripts.chat_eval:<module>", "nanochat.engine:Engine", 199],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb", 71],
+  ["scripts.chat_rl:<module>", "nanochat.engine:Engine", 75],
+  ["scripts.chat_rl:<module>", "tasks.gsm8k:GSM8K", 80],
+  ["scripts.chat_rl:<module>", "tasks.gsm8k:GSM8K", 81],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb", 87],
+  ["scripts.chat_sft:<module>", "nanochat.engine:Engine", 361],
+  ["scripts.chat_sft:<module>", "tasks.common:TaskMixture", 167],
+  ["scripts.chat_sft:<module>", "tasks.common:TaskMixture", 169],
+  ["scripts.chat_sft:<module>", "tasks.gsm8k:GSM8K", 165],
+  ["scripts.chat_sft:<module>", "tasks.gsm8k:GSM8K", 172],
+  ["scripts.chat_sft:<module>", "tasks.mmlu:MMLU", 164],
+  ["scripts.chat_sft:<module>", "tasks.mmlu:MMLU", 171],
+  ["scripts.chat_sft:<module>", "tasks.smoltalk:SmolTalk", 163],
+  ["scripts.chat_sft:<module>", "tasks.smoltalk:SmolTalk", 170],
+  ["scripts.infer_bench:main", "nanochat.engine:Engine", 115],
+  ["tasks.common:<module>", "tasks.mmlu:MMLU", 213],
+  ["tasks.common:<module>", "tasks.mmlu:MMLU", 218],
+  ["tasks.common:HubDataset.shuffle", "tasks.common:HubDataset", 37],
+  ["tasks.common:load_hub_dataset", "tasks.common:HubDataset", 82]
+ ],
+ "inferred_calls": [
+  ["nanochat.checkpoint_manager:build_model", "nanochat.tokenizer:RustBPETokenizer.get_vocab_size", 113],
+  ["nanochat.core_eval:batch_sequences_lm", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 135],
+  ["nanochat.core_eval:batch_sequences_mc", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 115],
+  ["nanochat.core_eval:batch_sequences_schema", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 125],
+  ["nanochat.core_eval:evaluate_example", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 216],
+  ["nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 100],
+  ["nanochat.engine:<module>", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 313],
+  ["nanochat.engine:Engine.generate", "nanochat.gpt:GPT.get_device", 179],
+  ["nanochat.engine:Engine.generate", "nanochat.tokenizer:RustBPETokenizer.encode_special", 186],
+  ["nanochat.engine:Engine.generate", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 192],
+  ["nanochat.engine:Engine.generate_batch", "nanochat.tokenizer:RustBPETokenizer.encode_special", 283],
+  ["nanochat.engine:Engine.generate_batch", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 284],
+  ["nanochat.gpt:CausalSelfAttention.forward", "nanochat.engine:KVCache.advance", 123],
+  ["nanochat.gpt:CausalSelfAttention.forward", "nanochat.engine:KVCache.get_layer_cache", 113],
+  ["nanochat.gpt:GPT.forward", "nanochat.engine:KVCache.get_pos", 467],
+  ["nanochat.loss_eval:evaluate_bpb", "nanochat.gpt:GPT.get_device", 28],
+  ["nanochat.loss_eval:evaluate_bpb", "nanochat.gpt:GPT.get_device", 29],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb.finish", 603],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb.log", 430],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb.log", 447],
+  ["scripts.base_train:<module>", "nanochat.common:DummyWandb.log", 580],
+  ["scripts.base_train:<module>", "nanochat.fp8:_Float8Matmul.backward", 517],
+  ["scripts.base_train:<module>", "nanochat.gpt:GPT.init_weights", 151],
+  ["scripts.base_train:<module>", "nanochat.tokenizer:RustBPETokenizer.get_vocab_size", 123],
+  ["scripts.base_train:get_scaling_params", "nanochat.gpt:GPT.num_scaling_params", 265],
+  ["scripts.chat_cli:<module>", "nanochat.tokenizer:RustBPETokenizer.encode_special", 31],
+  ["scripts.chat_cli:<module>", "nanochat.tokenizer:RustBPETokenizer.encode_special", 32],
+  ["scripts.chat_cli:<module>", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 30],
+  ["scripts.chat_eval:run_categorical_eval", "nanochat.gpt:GPT.get_device", 90],
+  ["scripts.chat_eval:run_categorical_eval", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 91],
+  ["scripts.chat_eval:run_categorical_eval", "nanochat.tokenizer:RustBPETokenizer.render_for_completion", 106],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.engine:Engine.generate_batch", 43],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.gpt:GPT.get_device", 31],
+  ["scripts.chat_eval:run_generative_eval", "nanochat.tokenizer:RustBPETokenizer.render_for_completion", 41],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb.finish", 325],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb.log", 240],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb.log", 290],
+  ["scripts.chat_rl:<module>", "nanochat.common:DummyWandb.log", 302],
+  ["scripts.chat_rl:<module>", "nanochat.fp8:_Float8Matmul.backward", 273],
+  ["scripts.chat_rl:<module>", "nanochat.gpt:GPT.setup_optimizer", 197],
+  ["scripts.chat_rl:<module>", "nanochat.optim:MuonAdamW.step", 300],
+  ["scripts.chat_rl:get_batch", "nanochat.tokenizer:RustBPETokenizer.encode_special", 87],
+  ["scripts.chat_rl:get_batch", "nanochat.tokenizer:RustBPETokenizer.render_for_completion", 96],
+  ["scripts.chat_rl:run_gsm8k_eval", "nanochat.tokenizer:RustBPETokenizer.render_for_completion", 166],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb.finish", 498],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb.log", 348],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb.log", 382],
+  ["scripts.chat_sft:<module>", "nanochat.common:DummyWandb.log", 471],
+  ["scripts.chat_sft:<module>", "nanochat.fp8:_Float8Matmul.backward", 432],
+  ["scripts.chat_sft:<module>", "nanochat.tokenizer:RustBPETokenizer.get_vocab_size", 405],
+  ["scripts.chat_sft:sft_data_generator_bos_bestfit", "nanochat.tokenizer:RustBPETokenizer.get_bos_token_id", 195],
+  ["scripts.chat_sft:sft_data_generator_bos_bestfit.refill_buffer", "nanochat.tokenizer:RustBPETokenizer.render_conversation", 208],
+  ["scripts.infer_bench:bench_generate", "nanochat.gpt:GPT.get_device", 57],
+  ["scripts.infer_bench:main", "nanochat.gpt:GPT.estimate_decode_flops", 173],
+  ["scripts.infer_bench:main", "nanochat.gpt:GPT.estimate_decode_flops", 221],
+  ["scripts.infer_bench:main", "nanochat.gpt:GPT.estimate_prefill_flops", 188],
+  ["scripts.infer_bench:main", "nanochat.gpt:GPT.kv_bytes_per_token", 132],
+  ["scripts.infer_bench:main", "nanochat.gpt:GPT.kv_read_bytes", 134],
+  ["scripts.tok_eval:<module>", "nanochat.tokenizer:RustBPETokenizer.get_vocab_size", 176],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.decode_single_token_bytes", 85],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.encode_special", 77],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.get_special_tokens", 77],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.get_vocab_size", 76],
+  ["scripts.tok_train:<module>", "nanochat.tokenizer:RustBPETokenizer.save", 58]
+ ],
+ "override_calls": [
+  ["tasks.arc:ARC.__init__", "tasks.common:TaskMixture.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.common:TaskSequence.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.gsm8k:GSM8K.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.humaneval:HumanEval.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.mmlu:MMLU.__init__", 11],
+  ["tasks.arc:ARC.__init__", "tasks.smoltalk:SmolTalk.__init__", 11],
+  ["tasks.common:Task.__getitem__", "tasks.arc:ARC.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.common:TaskMixture.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.common:TaskSequence.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.gsm8k:GSM8K.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.humaneval:HumanEval.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.mmlu:MMLU.get_example", 122],
+  ["tasks.common:Task.__getitem__", "tasks.smoltalk:SmolTalk.get_example", 122],
+  ["tasks.common:Task.__len__", "tasks.arc:ARC.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.common:TaskMixture.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.common:TaskSequence.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.gsm8k:GSM8K.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.humaneval:HumanEval.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.mmlu:MMLU.num_examples", 112],
+  ["tasks.common:Task.__len__", "tasks.smoltalk:SmolTalk.num_examples", 112],
+  ["tasks.common:TaskMixture.__init__", "tasks.arc:ARC.__init__", 136],
+  ["tasks.common:TaskMixture.__init__", "tasks.common:TaskSequence.__init__", 136],
+  ["tasks.common:TaskMixture.__init__", "tasks.gsm8k:GSM8K.__init__", 136],
+  ["tasks.common:TaskMixture.__init__", "tasks.humaneval:HumanEval.__init__", 136],
+  ["tasks.common:TaskMixture.__init__", "tasks.mmlu:MMLU.__init__", 136],
+  ["tasks.common:TaskMixture.__init__", "tasks.smoltalk:SmolTalk.__init__", 136],
+  ["tasks.common:TaskSequence.__init__", "tasks.arc:ARC.__init__", 171],
+  ["tasks.common:TaskSequence.__init__", "tasks.common:TaskMixture.__init__", 171],
+  ["tasks.common:TaskSequence.__init__", "tasks.gsm8k:GSM8K.__init__", 171],
+  ["tasks.common:TaskSequence.__init__", "tasks.humaneval:HumanEval.__init__", 171],
+  ["tasks.common:TaskSequence.__init__", "tasks.mmlu:MMLU.__init__", 171],
+  ["tasks.common:TaskSequence.__init__", "tasks.smoltalk:SmolTalk.__init__", 171],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.arc:ARC.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.common:TaskMixture.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.common:TaskSequence.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.humaneval:HumanEval.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.mmlu:MMLU.__init__", 39],
+  ["tasks.gsm8k:GSM8K.__init__", "tasks.smoltalk:SmolTalk.__init__", 39],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.arc:ARC.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.common:TaskMixture.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.common:TaskSequence.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.gsm8k:GSM8K.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.mmlu:MMLU.__init__", 49],
+  ["tasks.humaneval:HumanEval.__init__", "tasks.smoltalk:SmolTalk.__init__", 49],
+  ["tasks.mmlu:MMLU.__init__", "tasks.arc:ARC.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.common:TaskMixture.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.common:TaskSequence.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.gsm8k:GSM8K.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.humaneval:HumanEval.__init__", 14],
+  ["tasks.mmlu:MMLU.__init__", "tasks.smoltalk:SmolTalk.__init__", 14],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.arc:ARC.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.common:TaskMixture.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.common:TaskSequence.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.gsm8k:GSM8K.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.humaneval:HumanEval.__init__", 13],
+  ["tasks.smoltalk:SmolTalk.__init__", "tasks.mmlu:MMLU.__init__", 13]
+ ],
+ "binds": [],
+ "sql": [],
+ "gateways": [],
+ "external": [
+  {
+   "symbol": "nanochat.common:compute_cleanup",
+   "line": 214,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.destroy_process_group"
+  },
+  {
+   "symbol": "nanochat.common:compute_init",
+   "line": 201,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.init_process_group"
+  },
+  {
+   "symbol": "nanochat.common:compute_init",
+   "line": 202,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.barrier"
+  },
+  {
+   "symbol": "nanochat.common:download_file_with_lock",
+   "line": 104,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen"
+  },
+  {
+   "symbol": "nanochat.common:download_file_with_lock",
+   "line": 105,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen().read"
+  },
+  {
+   "symbol": "nanochat.common:is_ddp_initialized",
+   "line": 149,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_available"
+  },
+  {
+   "symbol": "nanochat.common:is_ddp_initialized",
+   "line": 149,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_initialized"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 249,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.get_rank"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 249,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_initialized"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 250,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.get_world_size"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 250,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_initialized"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 258,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.barrier"
+  },
+  {
+   "symbol": "nanochat.core_eval:evaluate_task",
+   "line": 259,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_lm",
+   "line": 68,
+   "service": "Jinja",
+   "call": "jinja2.Template"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_lm",
+   "line": 76,
+   "service": "Jinja",
+   "call": "jinja2.Template().render"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_lm",
+   "line": 77,
+   "service": "Jinja",
+   "call": "jinja2.Template().render"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_lm",
+   "line": 82,
+   "service": "Jinja",
+   "call": "jinja2.Template().render().strip().strip"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_mc",
+   "line": 25,
+   "service": "Jinja",
+   "call": "jinja2.Template"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_mc",
+   "line": 32,
+   "service": "Jinja",
+   "call": "jinja2.Template().render"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_schema",
+   "line": 44,
+   "service": "Jinja",
+   "call": "jinja2.Template"
+  },
+  {
+   "symbol": "nanochat.core_eval:render_prompts_schema",
+   "line": 51,
+   "service": "Jinja",
+   "call": "jinja2.Template().render"
+  },
+  {
+   "symbol": "nanochat.dataset:download_single_file",
+   "line": 102,
+   "service": "HTTP (requests)",
+   "call": "requests.get"
+  },
+  {
+   "symbol": "nanochat.dataset:download_single_file",
+   "line": 103,
+   "service": "HTTP (requests)",
+   "call": "requests.get().raise_for_status"
+  },
+  {
+   "symbol": "nanochat.dataset:download_single_file",
+   "line": 107,
+   "service": "HTTP (requests)",
+   "call": "requests.get().iter_content"
+  },
+  {
+   "symbol": "nanochat.execution:execute_code",
+   "line": 103,
+   "service": "Subprocess",
+   "call": "subprocess.run"
+  },
+  {
+   "symbol": "nanochat.execution:execute_code",
+   "line": 125,
+   "service": "Subprocess",
+   "call": "subprocess.run().stderr.strip"
+  },
+  {
+   "symbol": "nanochat.execution:execute_code",
+   "line": 125,
+   "service": "Subprocess",
+   "call": "subprocess.run().stderr.strip().splitlines"
+  },
+  {
+   "symbol": "nanochat.loss_eval:evaluate_bpb",
+   "line": 55,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.get_world_size"
+  },
+  {
+   "symbol": "nanochat.loss_eval:evaluate_bpb",
+   "line": 55,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_initialized"
+  },
+  {
+   "symbol": "nanochat.loss_eval:evaluate_bpb",
+   "line": 57,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "nanochat.loss_eval:evaluate_bpb",
+   "line": 58,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._compute_adamw",
+   "line": 359,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_gather_into_tensor"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._compute_adamw",
+   "line": 359,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_gather_into_tensor().get_future"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._compute_muon",
+   "line": 416,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_gather_into_tensor"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._compute_muon",
+   "line": 416,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_gather_into_tensor().get_future"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_adamw",
+   "line": 284,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_adamw",
+   "line": 284,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce().get_future"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_adamw",
+   "line": 291,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.reduce_scatter_tensor"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_adamw",
+   "line": 291,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.reduce_scatter_tensor().get_future"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_muon",
+   "line": 316,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.reduce_scatter_tensor"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW._reduce_muon",
+   "line": 316,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.reduce_scatter_tensor().get_future"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW.step",
+   "line": 431,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_available"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW.step",
+   "line": 431,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.is_initialized"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW.step",
+   "line": 432,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.get_rank"
+  },
+  {
+   "symbol": "nanochat.optim:MuonAdamW.step",
+   "line": 433,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.get_world_size"
+  },
+  {
+   "symbol": "scripts.base_train:<module>",
+   "line": 535,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_eval:run_categorical_eval",
+   "line": 145,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_eval:run_categorical_eval",
+   "line": 146,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_eval:run_generative_eval",
+   "line": 71,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_eval:run_generative_eval",
+   "line": 72,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_rl:<module>",
+   "line": 234,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_rl:<module>",
+   "line": 235,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_rl:<module>",
+   "line": 285,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_rl:<module>",
+   "line": 286,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_sft:<module>",
+   "line": 336,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "scripts.chat_sft:<module>",
+   "line": 446,
+   "service": "Distributed (torch)",
+   "call": "torch.distributed.all_reduce"
+  },
+  {
+   "symbol": "tasks.common:load_hub_dataset",
+   "line": 64,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen"
+  },
+  {
+   "symbol": "tasks.common:load_hub_dataset",
+   "line": 65,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen().read"
+  },
+  {
+   "symbol": "tasks.common:load_hub_dataset",
+   "line": 70,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen"
+  },
+  {
+   "symbol": "tasks.common:load_hub_dataset",
+   "line": 71,
+   "service": "HTTP (urllib)",
+   "call": "urllib.request.urlopen().read"
+  }
+ ],
+ "import_cycles": [
+  ["tasks.common", "tasks.mmlu"]
+ ],
+ "lazy_import_cycles": [],
+ "dead_candidates": [
+  "nanochat.tokenizer:RustBPETokenizer.id_to_token",
+  "nanochat.tokenizer:RustBPETokenizer.visualize_tokenization",
+  "tasks.common:TaskMixture.get_example",
+  "tasks.common:TaskMixture.num_examples",
+  "tasks.common:TaskSequence.get_example",
+  "tasks.common:TaskSequence.num_examples"
+ ],
+ "test_only": [
+  "nanochat.engine:KVCache.reset"
+ ],
+ "test_files": 6,
+ "duplicate_names": {
+  "get_lr_multiplier": ["scripts.base_train:get_lr_multiplier", "scripts.chat_rl:get_lr_multiplier", "scripts.chat_sft:get_lr_multiplier"],
+  "get_muon_momentum": ["scripts.base_train:get_muon_momentum", "scripts.chat_sft:get_muon_momentum"]
+ },
+ "parse_errors": [],
+ "profiles": {
+  "llm": []
+ },
+ "console_scripts": {}
+}

@@ -1,0 +1,1021 @@
+# Narrative for the code-flow report — the only hand-written input.
+#
+# Structure (modules, functions, call edges, routes, SQL access, boundaries) comes from code_map.json.
+# This file adds the explanation around it. Every `symbol` / `module` / `table` named here is checked
+# against the code on every build; a name that no longer exists fails the build and the staleness test.
+# Never write line numbers — the builder adds file:line from the code map.
+#
+# Proposed by `codeflow.py draft`. Replace every "TODO: …" (the report shows how many are left).
+# Severities: high | medium | low | info.  Stages: born | transform | update | store | archive | restore | read | delete.
+# A finding with a `check` retires itself: once the code no longer shows it, it moves to the page's Fixed list.
+# Layer `modules` may use "pkg.*" patterns. With [[layers]] present, every module must match one.
+# [module_notes."pkg.mod"]: purpose / does / flow (+ optional note) per module — written from the code, never a copied docstring.
+
+
+[meta]
+title = "nanochat"
+lede = "nanochat builds a small ChatGPT end to end on your own GPUs: it trains a BPE tokenizer, pretrains a GPT on web text, fine-tunes it on conversations, optionally sharpens it with RL on GSM8K math, evaluates it, and lets you chat with it in a terminal. Each stage is a script in scripts/ that loads the previous stage's checkpoint from the base directory (~/.cache/nanochat by default) through nanochat.checkpoint_manager, runs the shared GPT model, tokenizer, data loaders and optimizer from nanochat/, scores itself with the datasets in tasks/, and writes the next checkpoint."
+audience = "learning the code"
+
+[module_notes."dev.repackage_data_reference"]
+purpose = "Records how the pretraining corpus hosted on Hugging Face was built, so the shards nanochat downloads can be reproduced or rebuilt for a different source dataset."
+does = "Shuffles a source dataset (FineWeb-Edu or Nemotron-ClimbMix, GPT-2-detokenized for ClimbMix) and cuts it into ~250M-character zstd parquet shards with 1024-row row groups; optionally uploads the folder to the karpathy/<tag> dataset repo."
+flow = "Run by hand, never imported. datasets.load_dataset → shuffle(seed=42) → shard_NNNNN.parquet under a hardcoded /home/ubuntu/.cache/nanochat/base_data_<name> → HfApi.upload_large_folder (token from HF_TOKEN). nanochat.dataset later downloads these shards from BASE_URL."
+note = "Documentation only: it needs the `datasets` package, which is not a project dependency. Documents left over after the last full shard are never written out, because a shard is flushed only when it is both large enough and a multiple of 1024 rows."
+
+[module_notes.nanochat]
+purpose = "Makes nanochat/ an importable package so scripts can say `from nanochat.gpt import GPT`."
+does = "Nothing at runtime; the file is empty."
+flow = "Imported implicitly whenever any nanochat.* module is imported by a script under scripts/ or tasks/."
+
+[module_notes."nanochat.checkpoint_manager"]
+purpose = "One place that knows the on-disk checkpoint layout, so every stage can hand its model to the next stage by name (base → sft → rl) instead of by path."
+does = "Saves a step as model_<step>.pt + meta_<step>.json (rank 0) plus one optim_<step>_rank<r>.pt per rank. Rebuilds a GPT from a checkpoint: patches config keys and parameters missing from older checkpoints, strips torch.compile's _orig_mod. prefix, upcasts bf16 on CPU/MPS, and checks the tokenizer vocab matches. Picks the model tag (largest d<N>, else newest directory) and the last step when none is given. Loads one rank's optimizer shard on its own for warm starts."
+flow = "pretrain, finetune and reinforce call save_checkpoint at the end (and every --save-every); finetune, reinforce, evaluate, serve-chat and infer_bench call load_model(\"base\"|\"sft\"|\"rl\") → get_base_dir()/{base,chatsft,chatrl}_checkpoints/<tag>/ → build_model (GPT on meta device → to_empty → init_weights → load_state_dict) → nanochat.tokenizer.get_tokenizer."
+note = "load_model accepts only base, sft and rl; any other source string is a KeyError. RL checkpoints store only model_config in meta, so code that reads meta[\"step\"] (scripts.infer_bench) fails on them."
+
+[module_notes."nanochat.common"]
+purpose = "The shared setup every script repeats: where files live, which device and dtype to compute in, and whether this process is one rank of a torchrun job."
+does = "Picks the compute dtype once at import (bf16 on SM80+ CUDA, fp32 elsewhere, overridable by NANOCHAT_DTYPE). Resolves the base directory (NANOCHAT_BASE_DIR or ~/.cache/nanochat) and downloads a file into it under a file lock so only one rank fetches. Initialises and tears down the device, seeds and NCCL process group from torchrun's RANK/LOCAL_RANK/WORLD_SIZE. Supplies rank-0 printing, coloured logging, a no-op wandb stand-in, and peak FLOPS / memory-bandwidth tables used for MFU and MBU."
+flow = "Imported first by every script in scripts/: compute_init at start, compute_cleanup at exit. COMPUTE_DTYPE is read by nanochat.gpt, nanochat.engine, nanochat.optim, nanochat.fp8 and nanochat.flash_attention; get_base_dir by checkpoint_manager, dataset, tokenizer and tasks.common; download_file_with_lock by scripts.base_eval for the CORE eval bundle."
+note = "An unknown GPU name returns infinite peak FLOPS/bandwidth on purpose, so MFU/MBU print as 0% instead of a wrong number."
+
+[module_notes."nanochat.core_eval"]
+purpose = "Implements the CORE benchmark (from the DCLM paper) so a base model's in-context-learning ability can be scored without any fine-tuning."
+does = "Renders few-shot prompts from Jinja templates for three task types: multiple choice, schema (varying context, same continuation) and language modelling. Scores an example by running the model once over the batched candidates: lowest mean loss over the answer span wins for choice tasks, exact argmax match for LM tasks. Strides examples across ranks and all-reduces the per-example results into one accuracy."
+flow = "evaluate journey: scripts.base_eval:evaluate_core (also called from pretrain every --core-metric-every steps) loads each task's JSONL from the eval bundle → evaluate_task → evaluate_example → model forward. Returns accuracy; base_eval centres it against the random baseline and writes the CSV."
+note = "Few-shot examples are sampled with a seed derived from the example index, so results are reproducible across runs and rank counts."
+
+[module_notes."nanochat.dataloader"]
+purpose = "Turns the parquet text shards into fixed-shape (B, T) token batches on the GPU fast enough to keep training compute-bound."
+does = "Streams documents row group by row group, giving each rank a disjoint stride and looping forever over epochs. Packs every row to start with BOS using best-fit: the largest buffered document that fits goes in, and when nothing fits the shortest is cropped to fill the row exactly, so there is no padding. Stages each batch in pinned memory and makes one host-to-device copy. Yields a (pq_idx, rg_idx, epoch) state so a resumed run skips data it already trained on."
+flow = "pretrain: scripts.base_train builds the train loader with resume state from the checkpoint meta and a fresh val loader for each nanochat.loss_eval:evaluate_bpb; scripts.base_eval uses the stateless variant for train/val bpb. Reads shards via nanochat.dataset:list_parquet_files and tokenizes with nanochat.tokenizer:RustBPETokenizer.encode."
+note = "The last parquet file on disk is always the validation split. Resume is approximate: it restarts at the next row group after the saved one."
+
+[module_notes."nanochat.dataset"]
+purpose = "Gets the pretraining corpus (ClimbMix-400B, 6,543 parquet shards) onto disk and offers a plain iterator over its text."
+does = "Downloads shards from Hugging Face in parallel with retries, exponential backoff and write-to-.tmp-then-rename, always including the last shard as validation. Lists the shards present on disk, falling back to the legacy FineWeb-Edu directory with a warning. Iterates document batches per row group for the train or val split."
+flow = "Run as `python -m nanochat.dataset -n <shards>` before anything else → <base_dir>/base_data_climbmix/shard_NNNNN.parquet. train-tokenizer reads it through parquets_iter_batched; nanochat.dataloader and scripts.tok_eval read the same files."
+
+[module_notes."nanochat.engine"]
+purpose = "Fast sampling for everything that generates text, with a KV cache and the calculator tool the chat model was taught to call."
+does = "Prefills the prompt once at batch 1, then copies that KV cache into a cache for N parallel samples. Samples each token with temperature and top-k from a seeded generator, streaming one column of tokens per step with a mask marking sampled (1) versus forced (0) tokens. Runs a per-row tool state machine: text between <|python_start|> and <|python_end|> is evaluated as a calculator expression and the result is forced back in between <|output_start|> and <|output_end|>. Stops a row on <|assistant_end|> or <|bos|>."
+flow = "serve-chat streams Engine.generate; reinforce, evaluate (generative tasks), finetune's ChatCORE, base_train/base_eval samples and infer_bench call generate or generate_batch. Each step calls nanochat.gpt:GPT.forward with the KVCache, which passes layer caches to nanochat.flash_attention:flash_attn_with_kvcache."
+note = "The calculator runs Python eval() with empty builtins, only on pure arithmetic (no **) or string .count() calls, under a 3-second SIGALRM timeout, so the Engine must run on the main thread."
+
+[module_notes."nanochat.execution"]
+purpose = "Runs model-written Python so HumanEval can count a completion as passing or failing without letting an accident damage the machine."
+does = "Executes code in a fresh interpreter subprocess inside a temporary directory, with a scrubbed environment, no stdin and a hard timeout (5 s default). Before the code runs, a guard sets rlimits (256 MB default, skipped on macOS) and replaces destructive functions such as os.system, os.remove, shutil.rmtree and subprocess.Popen with None. Returns success, stdout, stderr, the last traceback line, and timeout/memory flags."
+flow = "evaluate journey: scripts.chat_eval:run_generative_eval → tasks.humaneval:HumanEval.evaluate builds imports + completion + tests + check(entry_point) → execute_code → subprocess.run([sys.executable, \"-c\", program])."
+note = "Not a security sandbox: network access and ctypes are not blocked. Fine for evaluating your own model's output, not for adversarial code."
+
+[module_notes."nanochat.flash_attention"]
+purpose = "Lets the model call one attention API everywhere, using Flash Attention 3 kernels where the GPU supports them and PyTorch SDPA everywhere else."
+does = "At import, tries to load an FA3 kernel from the Hugging Face kernels hub (a Hopper-specific build on SM90, a community build otherwise) and uses it only when the compute dtype is bf16. Provides training attention with causal sliding windows. Provides KV-cache attention that writes new keys and values into the cache in place, matching FA3's contract. In the SDPA fallback, builds explicit masks for sliding windows and chunked prefill."
+flow = "nanochat.gpt:CausalSelfAttention.forward calls flash_attn.flash_attn_func during training and flash_attn.flash_attn_with_kvcache when nanochat.engine passes a KVCache. scripts.base_train and scripts.chat_sft read HAS_FA3/USE_FA3 only to print warnings."
+note = "Without FA3, sliding-window layers ('S' in window_pattern) go through a masked SDPA path that is much slower; base_train recommends --window-pattern L in that case."
+
+[module_notes."nanochat.fp8"]
+purpose = "Speeds up pretraining matmuls on H100-class GPUs with FP8 without depending on torchao."
+does = "Replaces selected nn.Linear layers in place with a Float8Linear that shares the original weight. Wraps the forward and both backward matmuls in one autograd function: scale each operand by max-abs to a tensor-wide scalar, cast to e4m3 (inputs, weights) or e5m2 (gradients), and call torch._scaled_mm. Supports only the tensorwise scaling recipe."
+flow = "pretrain only, behind --fp8 on CUDA: scripts.base_train builds Float8LinearConfig.from_recipe_name(--fp8-recipe) → convert_to_float8_training with a filter (dims divisible by 16 and at least 128) before torch.compile; base_train's disable_fp8 swaps the layers back to bf16 Linear around evaluation and sampling."
+note = "base_train's --fp8-recipe still offers `rowwise`, but Float8LinearConfig.from_recipe_name raises ValueError for anything other than `tensorwise`."
+
+[module_notes."nanochat.gpt"]
+purpose = "The Transformer itself: the one model every stage trains, evaluates and samples from."
+does = "Defines a GPT with rotary embeddings, QK-norm, parameter-free RMSNorm, ReLU² MLPs, GQA, per-layer sliding windows from a pattern string, value embeddings on alternating layers, learnable residual and x0 mixing scalars, a previous-token 'smear' gate and a mid-network 'backout' subtraction. Returns logits soft-capped at ±15, or cross-entropy loss with -1 as the ignore index. Splits parameters into AdamW groups (embeddings, lm_head, scalars) and shape-grouped Muon groups, with LRs scaled by 1/√(d_model/768). Counts parameters, training FLOPs and inference FLOPs/KV bytes for scaling laws and benchmarks."
+flow = "Built on the meta device and materialised with init_weights by scripts.base_train:build_model_meta or nanochat.checkpoint_manager:build_model. GPT.forward runs in pretrain, finetune, reinforce (per-token log-probs), evaluate and, through nanochat.engine, in every sampling path; attention goes through nanochat.flash_attention; setup_optimizer returns a nanochat.optim:MuonAdamW."
+note = "__init__ runs under torch.device(\"meta\"), so it may compute only shapes; real values are set in init_weights. The vocab is padded to a multiple of 64 and logits are sliced back."
+
+[module_notes."nanochat.loss_eval"]
+purpose = "Gives a validation number that stays comparable when the tokenizer or vocab size changes."
+does = "Computes bits per byte: summed per-token loss divided by ln 2 times the summed UTF-8 byte length of the target tokens. Excludes special tokens (byte length 0) and ignored targets (-1). Sums across ranks before dividing."
+flow = "pretrain and finetune call evaluate_bpb every --eval-every steps with a fresh val loader; scripts.base_eval calls it for train and val. Reads per-token byte lengths from token_bytes.pt via nanochat.tokenizer:get_token_bytes; calls GPT.forward with loss_reduction='none'."
+
+[module_notes."nanochat.optim"]
+purpose = "The optimizer used by every training stage: Muon for 2-D weight matrices, AdamW for everything else, in one object that also does the distributed gradient sync."
+does = "Runs fused, torch.compile'd AdamW and Muon steps (Muon takes Nesterov momentum, orthogonalises it with Polar Express iterations in bf16, renormalises it, applies factored second-moment variance reduction and cautious weight decay), feeding hyperparameters as 0-D CPU tensors so changing them does not recompile. On multiple ranks, replaces DDP: reduce-scatters gradients, updates only this rank's shard (ZeRO-2 style state sharding), then all-gathers the parameters, overlapping communication with compute in three phases. Degenerates to plain full-tensor updates on one rank."
+flow = "Created by nanochat.gpt:GPT.setup_optimizer; MuonAdamW.step is called once per optimisation step by scripts.base_train, scripts.chat_sft and scripts.chat_rl after they set each group's lr (and Muon momentum/weight decay) from their schedules. Its state_dict is saved per rank by nanochat.checkpoint_manager:save_checkpoint."
+note = "Large AdamW parameters need shape[0] divisible by the world size, and every Muon group must hold parameters of one shape (setup_optimizer groups them that way)."
+
+[module_notes."nanochat.tokenizer"]
+purpose = "Converts between text and token ids, and between conversations and the exact token sequences the chat model is trained and prompted with."
+does = "Trains a GPT-4-style byte-level BPE with rustbpe (numbers split at most two digits) and serves it through tiktoken with nine special tokens appended (<|bos|>, user/assistant/python/output start and end). Encodes single strings or batches in parallel threads, optionally prepending BOS. Renders a conversation into ids plus a training mask that is 1 only on assistant tokens, merging a leading system message into the first user turn, wrapping tool calls, and leaving tool outputs unsupervised. Renders a conversation minus its last answer, ending in <|assistant_start|>, as a generation prompt."
+flow = "train-tokenizer: scripts.tok_train → RustBPETokenizer.train_from_iterator → save → <base_dir>/tokenizer/tokenizer.pkl (token_bytes.pt is written by tok_train). Every other stage calls get_tokenizer (from checkpoint_manager, base_train, tok_eval). render_conversation feeds scripts.chat_sft; render_for_completion feeds scripts.chat_rl and scripts.chat_eval; get_token_bytes feeds nanochat.loss_eval."
+note = "render_conversation silently truncates to 2048 tokens and asserts that roles strictly alternate user/assistant."
+
+[module_notes."scripts.base_eval"]
+purpose = "Answers 'how good is this base checkpoint?' in one command, and provides the CORE scorer that pretraining also calls."
+does = "Downloads and unpacks the CORE eval bundle once (locked across ranks), runs every ICL task in core.yaml, centres each accuracy against its random baseline and averages them into the CORE metric. Measures bits per byte on the train and val shards. Prints greedy completions of fixed prompts and eight unconditioned samples."
+flow = "evaluate journey: `python -m scripts.base_eval [--eval core,bpb,sample]` → nanochat.checkpoint_manager:load_model(\"base\") → evaluate_core → nanochat.core_eval:evaluate_task, plus nanochat.loss_eval:evaluate_bpb and nanochat.engine:Engine.generate_batch → <base_dir>/base_eval/base_model_<step>.csv. scripts.base_train imports evaluate_core directly."
+note = "Only loads base checkpoints; use scripts.chat_eval for sft/rl models."
+
+[module_notes."scripts.base_train"]
+purpose = "Pretraining: turns the tokenizer and parquet shards into a base GPT checkpoint, with every size-dependent hyperparameter derived from --depth."
+does = "Sizes the model (width = depth × aspect ratio rounded to the head dim) and derives the token budget, batch size (Power Lines, ∝ D^0.383 against a d12 reference), LR scaling (√batch) and weight-decay scaling from scaling-law rules. Trains with gradient accumulation, warmup/constant/warmdown LR, a Muon momentum ramp and cosine weight decay, under torch.compile and optional FP8. Periodically measures val bpb and CORE, prints samples, and saves resumable checkpoints that include the dataloader position and loop state. Logs throughput, MFU and loss to wandb when --run is set."
+flow = "pretrain journey: `torchrun -m scripts.base_train --depth N` → nanochat.common:compute_init → build_model_meta → nanochat.gpt:GPT.setup_optimizer → nanochat.dataloader train loader → GPT.forward / backward → nanochat.optim:MuonAdamW.step → nanochat.loss_eval:evaluate_bpb and scripts.base_eval:evaluate_core → nanochat.checkpoint_manager:save_checkpoint to <base_dir>/base_checkpoints/d<N>/."
+note = "--total-batch-size must be a multiple of device_batch_size × max_seq_len × world_size, or the run asserts at start. The horizon comes from --num-iterations, else --target-flops, else --target-param-data-ratio (default 12)."
+
+[module_notes."scripts.chat_cli"]
+purpose = "The way to talk to a trained chat model: a terminal loop, or a single answer with --prompt."
+does = "Keeps the whole conversation as one token list, wrapping each user line in user start/end tokens and opening an assistant turn. Streams up to 256 reply tokens from the Engine, printing each as it is decoded, and closes the turn with <|assistant_end|> even if the reply was cut off. Handles quit/exit and clear."
+flow = "serve-chat journey: `python -m scripts.chat_cli -i sft|rl` → nanochat.checkpoint_manager:load_model → nanochat.tokenizer encode → nanochat.engine:Engine.generate (KV-cache prefill of the full conversation, then token-by-token decode with the calculator tool) → stdout. Nothing is written to disk."
+note = "Every turn re-prefills the entire conversation from scratch, and nothing trims it, so long chats get slower each turn."
+
+[module_notes."scripts.chat_eval"]
+purpose = "Scores a chat model on the five ChatCORE tasks, as a command and as a function finetuning calls while it trains."
+does = "Categorical tasks (ARC-Easy, ARC-Challenge, MMLU): one batched forward pass per batch of prompts, then pick the answer letter with the highest logit at the last prompt position. Generative tasks (GSM8K, HumanEval): sample completions with the Engine and pass if any of them satisfies the task's check. Splits problems across ranks and all-reduces the counts. When all five ran, reports the baseline-centred mean as the ChatCORE metric."
+flow = "evaluate journey: `python -m scripts.chat_eval -i sft|rl [-a TASK]` → nanochat.checkpoint_manager:load_model → run_chat_eval → run_categorical_eval or run_generative_eval → tasks.* get_example / evaluate (HumanEval runs code through nanochat.execution). scripts.chat_sft calls run_chat_eval every --chatcore-every steps. Results are printed only."
+
+[module_notes."scripts.chat_rl"]
+purpose = "Optional third stage: improves the SFT model's GSM8K accuracy by rewarding it for correct final answers it found itself."
+does = "For each training question, samples --num-samples answers with the Engine (calculator included) and scores each 1 or 0 against the reference number. Uses reward minus the group mean as the advantage, with no KL penalty, no reference model and no PPO clipping, and normalises the policy-gradient loss per valid token. Decays the LR linearly to zero over the run. Every --eval-every steps measures pass@1..k on the GSM8K test split."
+flow = "reinforce journey: `torchrun -m scripts.chat_rl` → nanochat.checkpoint_manager:load_model(\"sft\") → get_batch (tokenizer.render_for_completion → nanochat.engine:Engine.generate_batch → tasks.gsm8k:GSM8K.reward) → GPT.forward per-token loss → nanochat.optim:MuonAdamW.step → save_checkpoint to <base_dir>/chatrl_checkpoints/d<N>/ (model weights only, no optimizer state)."
+note = "Rank 0 alone writes RL checkpoints, and their meta holds only model_config: no step, no val_bpb."
+
+[module_notes."scripts.chat_sft"]
+purpose = "Second stage: teaches the base model the chat format, multiple-choice answering and calculator tool use."
+does = "Inherits sequence length, batch sizes and LRs from the pretraining checkpoint unless overridden, and warm-starts the optimizer from the base run's state. Trains on a seeded shuffle of SmolTalk plus repeated epochs of MMLU and GSM8K. Packs conversations into BOS-started rows with best-fit and pads instead of cropping, so no conversation is cut; targets are -1 except on assistant tokens. Stops after one pass over the mixture (or --num-iterations), measuring val bpb and ChatCORE along the way."
+flow = "finetune journey: `torchrun -m scripts.chat_sft` → nanochat.checkpoint_manager:load_model(\"base\") and load_optimizer_state → tasks.common:TaskMixture.get_example → nanochat.tokenizer:render_conversation → sft_data_generator_bos_bestfit → GPT.forward → MuonAdamW.step → scripts.chat_eval:run_chat_eval → save_checkpoint to <base_dir>/chatsft_checkpoints/d<N>/."
+note = "Ranks agree on the last step through an all-reduce MAX of the last_step flag, because each rank consumes the dataset at its own pace."
+
+[module_notes."scripts.infer_bench"]
+purpose = "Measures what a checkpoint costs to run, as opposed to how smart it is."
+does = "Times one prefill (tokens/s, MFU) and then sweeps decode batch sizes, recording time to first token, median time per output token, throughput, memory-bandwidth utilisation, MFU and peak VRAM. Estimates a batch-1 tokens/s ceiling and how many full-context KV rows fit in VRAM. Prints a readable table and, as the last stdout line, the same data as one JSON document for scripts."
+flow = "Run by hand on one CUDA GPU: `python -m scripts.infer_bench -i base -g d12` → nanochat.checkpoint_manager:load_model → nanochat.engine:Engine.generate per batch size; reads GPT FLOP/KV-byte estimators and nanochat.common peak tables. Writes only to stdout."
+note = "The --source help text lists base|mid|sft, but load_model knows no `mid` (KeyError), and `-i rl` fails on meta[\"step\"], which RL checkpoints do not store."
+
+[module_notes."scripts.tok_eval"]
+purpose = "Shows whether the trained tokenizer compresses text as well as GPT-2's and GPT-4's tokenizers."
+does = "Encodes fixed samples (news, Korean, code, math, science) plus one row group each of the train and val shards with GPT-2, GPT-4 (cl100k_base) and the local tokenizer, asserting each round-trips. Prints bytes-per-token ratios and the relative difference, coloured by which tokenizer wins."
+flow = "Run after train-tokenizer: `python -m scripts.tok_eval` → nanochat.tokenizer:get_tokenizer and RustBPETokenizer.from_pretrained → nanochat.dataset:parquets_iter_batched for corpus text. Writes only to stdout."
+
+[module_notes."scripts.tok_train"]
+purpose = "First stage: produces the tokenizer that every later stage loads."
+does = "Feeds up to --max-chars characters of training-shard text, each document capped at --doc-cap characters, to the BPE trainer at --vocab-size. Saves the tiktoken encoding and checks that a mixed sample round-trips. Writes a per-token byte-length table (0 for special tokens) that the bits-per-byte metric needs."
+flow = "train-tokenizer journey: `python -m scripts.tok_train` → text_iterator → nanochat.dataset:parquets_iter_batched(\"train\") → nanochat.tokenizer:RustBPETokenizer.train_from_iterator → save → <base_dir>/tokenizer/tokenizer.pkl and token_bytes.pt."
+note = "Byte lengths come from decode_single_token_bytes, not from decoding to a string, because a token that is not valid UTF-8 on its own would be miscounted."
+
+[module_notes."tasks.arc"]
+purpose = "Wraps the AI2 ARC science questions (Easy and Challenge) as a multiple-choice chat task."
+does = "Turns each row into a user message listing the choices in the shared render_mc format and an assistant reply that is just the answer letter, keeping the allowed letters on the conversation. Grades a predicted letter by exact match."
+flow = "Loaded through tasks.common:load_hub_dataset(\"allenai/ai2_arc\") and shuffled with seed 42. Used by scripts.chat_eval (categorical path) and by scripts.chat_sft's ChatCORE checks; not part of the SFT training mixture."
+
+[module_notes."tasks.common"]
+purpose = "The shared shape of every dataset the chat stages use: a sliceable list of conversations with an optional grader, plus a downloader that needs no `datasets` library."
+does = "Downloads a Hugging Face dataset's auto-generated parquet export once into <base_dir>/task_data/, locked so one rank downloads, and wraps it with a shuffle that reproduces datasets.shuffle(seed) row order. Defines the Task base class with start/stop/step slicing. Mixes several tasks into one deterministically shuffled index (TaskMixture; repeat a task to oversample it). Provides the shared multiple-choice prompt format, with the letter after each choice and no space before it."
+flow = "finetune journey: scripts.chat_sft builds a TaskMixture of SmolTalk, MMLU and GSM8K and calls get_example per row. Every tasks.* module subclasses Task and calls load_hub_dataset; tasks.arc and tasks.mmlu call render_mc."
+note = "The manifest.json is written last, so its presence means a download finished. TaskSequence is defined but nothing uses it."
+
+[module_notes."tasks.gsm8k"]
+purpose = "Grade-school math word problems, used to teach calculator tool use in SFT, as the reward in RL and as a generative eval."
+does = "Converts each reference solution's <<expr=result>> annotations into python and python_output parts, so SFT learns to emit tool calls and the Engine can run them. Grades a completion by comparing the number after '####' (commas removed) with the reference. Exposes the same check as a 0.0/1.0 reward."
+flow = "finetune: in scripts.chat_sft's TaskMixture (--gsm8k-epochs copies). reinforce: scripts.chat_rl:get_batch calls GSM8K.reward on every sample and run_gsm8k_eval calls evaluate. evaluate: scripts.chat_eval:run_generative_eval. Data comes from load_hub_dataset(\"openai/gsm8k\")."
+note = "An answer with no '####' line scores 0 even if the number is right."
+
+[module_notes."tasks.humaneval"]
+purpose = "The coding benchmark: does the model's function pass the hidden unit tests?"
+does = "Presents each prompt (signature plus docstring) as the user message. Pulls the first fenced code block out of a completion (or takes the whole text), prepends the prompt's imports, appends the tests and check(entry_point), and runs the result in the sandbox."
+flow = "evaluate journey: scripts.chat_eval:run_generative_eval → HumanEval.evaluate → nanochat.execution:execute_code. Also part of ChatCORE in scripts.chat_sft. Data from load_hub_dataset(\"openai/openai_humaneval\")."
+
+[module_notes."tasks.mmlu"]
+purpose = "Broad-knowledge multiple choice over 57 subjects, used both to teach the answer-with-a-letter format in SFT and as an eval."
+does = "Renders each question with the shared multiple-choice format and the fixed letters A-D, records the subject, and grades a predicted letter by exact match."
+flow = "finetune: scripts.chat_sft adds --mmlu-epochs copies of the auxiliary_train split to its TaskMixture and 5,200 test rows to validation. evaluate: scripts.chat_eval categorical path on the test split. Data from load_hub_dataset(\"cais/mmlu\", \"all\")."
+
+[module_notes."tasks.smoltalk"]
+purpose = "General conversation data, the bulk of SFT, so the model learns ordinary multi-turn chat and not only quizzes."
+does = "Returns smol-smoltalk conversations as they are, after checking that roles alternate user/assistant (with an optional leading system message) and that every content is a string. Has no grader."
+flow = "finetune journey only: scripts.chat_sft puts SmolTalk(split=\"train\") (~460K rows) in the training mixture and the test split in validation; nanochat.tokenizer:render_conversation later merges any system message into the first user turn. Data from load_hub_dataset(\"HuggingFaceTB/smol-smoltalk\")."
+
+[[layers]]
+id = "scripts"
+name = "Scripts (entry points)"
+owns = "One `python -m scripts.<name>` per pipeline stage: tokenizer train/eval, base train/eval, SFT, RL, chat eval, inference benchmark. They parse flags, wire library pieces together and own the training loops."
+modules = ["scripts.tok_train", "scripts.tok_eval", "scripts.base_train", "scripts.base_eval", "scripts.chat_sft", "scripts.chat_rl", "scripts.chat_eval", "scripts.infer_bench"]
+
+[[layers]]
+id = "tasks"
+name = "Eval & tasks"
+owns = "Metrics (CORE, bits-per-byte), the code sandbox, and the conversation datasets used both as SFT/RL data and for chat evaluation."
+modules = ["nanochat.core_eval", "nanochat.loss_eval", "nanochat.execution", "tasks.*"]
+
+[[layers]]
+id = "dev"
+name = "Dev tools"
+owns = "Reference code not used at runtime: how the pretraining shards were repackaged and uploaded."
+modules = ["dev.*"]
+
+[[layers]]
+id = "model"
+name = "Model & engine"
+owns = "The GPT transformer, its attention kernel choice (FA3 or SDPA), optional fp8 linear layers, and the KV-cache inference engine with the calculator tool."
+modules = ["nanochat.gpt", "nanochat.flash_attention", "nanochat.fp8", "nanochat.engine"]
+
+[[layers]]
+id = "tokenizer"
+name = "Tokenizer"
+owns = "BPE training (rustbpe) and inference (tiktoken), special tokens, and rendering chat conversations into token ids with a training mask."
+modules = ["nanochat.tokenizer"]
+
+[[layers]]
+id = "data"
+name = "Data loading"
+owns = "Downloading and listing the pretraining parquet shards, and turning them into packed, BOS-aligned token batches per rank (resumable)."
+modules = ["nanochat.dataset", "nanochat.dataloader"]
+
+[[layers]]
+id = "training"
+name = "Training utilities & optimizers"
+owns = "Device/distributed setup, dtype choice, base directory and downloads, the Muon+AdamW optimizer, and checkpoint save/load."
+modules = ["nanochat", "nanochat.common", "nanochat.optim", "nanochat.checkpoint_manager"]
+
+[[layers]]
+id = "ui"
+name = "Chat interface"
+owns = "Talking to a finished model. This tree has no web server; the terminal chat (scripts.chat_cli) is the only user interface."
+modules = ["scripts.chat_cli"]
+
+[[journeys]]
+id = "train-tokenizer"
+title = "Train the BPE tokenizer"
+actor = "operator (CLI)"
+trigger = "python -m scripts.tok_train [--max-chars N --doc-cap N --vocab-size N]"
+summary = "Streams documents out of the downloaded pretraining parquet shards, trains a GPT-4-style byte-level BPE with the rustbpe library and wraps the result in a tiktoken Encoding with nine special tokens appended. Ends with two files under <base_dir>/tokenizer/: tokenizer.pkl (the pickled Encoding) and token_bytes.pt (bytes per token id, used later for bits-per-byte)."
+  [[journeys.steps]]
+  symbol = "scripts.tok_train:<module>"
+  actor = "operator (CLI)"
+  action = "Parses --max-chars (default 2B), --doc-cap (10,000 chars per document) and --vocab-size (32768), then runs the whole script top to bottom"
+  receives = "command-line flags"
+  returns = "nothing; prints the training time and the save paths"
+  payload = '''
+python -m scripts.tok_train --max-chars=2000000000 --doc-cap=10000 --vocab-size=32768
+
+'''
+  [[journeys.steps]]
+  symbol = "scripts.tok_train:text_iterator"
+  action = "Flattens batches of documents into one stream, crops each document to doc_cap characters and stops once max_chars have been yielded"
+  receives = "row-group batches from parquets_iter_batched(split=\"train\")"
+  returns = "a generator of document strings"
+  payload = '''
+"The Eiffel Tower was completed in 1889 for the World's Fair ..."  (cropped to <= 10,000 chars)
+
+'''
+  note = "Cropping long documents keeps one huge page from dominating the merge statistics; the char budget bounds training time."
+  [[journeys.steps]]
+  symbol = "nanochat.dataset:parquets_iter_batched"
+  action = "Opens every parquet file except the last (the last one is reserved as the val split) and yields the 'text' column one row group at a time"
+  receives = "split=\"train\", start=0, step=1"
+  returns = "lists of strings, one list per row group"
+  stores = "reads <base_dir>/base_data_climbmix/shard_*.parquet (falls back to the legacy base_data/ directory)"
+  payload = '''
+["doc one text ...", "doc two text ...", ...]   # ~1 row group
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.train_from_iterator"
+  action = "Trains rustbpe for vocab_size minus the 9 special tokens using SPLIT_PATTERN, then builds a tiktoken Encoding from the learned merge ranks and appends the special tokens after the last merge id"
+  receives = "the text iterator, vocab_size=32768"
+  returns = "a RustBPETokenizer wrapping the tiktoken Encoding, with bos_token_id resolved for <|bos|>"
+  payload = '''
+mergeable_ranks: {b"a": 97, b"th": 256, ...}   # 32759 entries
+special_tokens:  {"<|bos|>": 32759, "<|user_start|>": 32760, ..., "<|output_end|>": 32767}
+
+'''
+  note = "Training happens in Rust (rustbpe); inference always goes through tiktoken. SPLIT_PATTERN groups digits in runs of 1-2 instead of GPT-4's 1-3, which the code comment says worked best at a 32K vocab."
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.save"
+  action = "Pickles the tiktoken Encoding to disk"
+  receives = "tokenizer_dir = <base_dir>/tokenizer"
+  returns = "nothing"
+  stores = "<base_dir>/tokenizer/tokenizer.pkl (read back by get_tokenizer → RustBPETokenizer.from_directory)"
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.decode_single_token_bytes"
+  action = "Back in the script: after an encode/decode round-trip assert on a fixed test string, every token id is measured in raw bytes; special tokens get 0 so they never count"
+  receives = "each token id 0..vocab_size-1"
+  returns = "the raw bytes of that token"
+  stores = "<base_dir>/tokenizer/token_bytes.pt — an int32 tensor of shape (vocab_size,), loaded later by get_token_bytes"
+  payload = '''
+token_bytes = tensor([1, 1, 1, ..., 2, 3, ..., 0, 0, 0, 0, 0, 0, 0, 0, 0], dtype=torch.int32)
+
+'''
+  note = "Raw bytes are used instead of len(decode(id)) because a lone byte >= 0x80 is not valid UTF-8 and would decode to a replacement character of the wrong length."
+
+[[journeys]]
+id = "pretrain"
+title = "Pretrain the base model"
+actor = "operator (CLI / torchrun)"
+trigger = "python -m scripts.base_train  or  torchrun --nproc_per_node=8 -m scripts.base_train"
+summary = "Builds a GPT whose width, batch size, learning rates and weight decay are all derived from --depth via scaling-law rules, streams BOS-aligned packed token rows from the parquet shards, and steps a combined Muon (matrices) + AdamW (everything else) optimizer with gradient accumulation. Periodically measures validation bits-per-byte and the CORE score, and ends by writing model, metadata and per-rank optimizer shards to <base_dir>/base_checkpoints/d<depth>/."
+  [[journeys.steps]]
+  symbol = "scripts.base_train:<module>"
+  actor = "operator (CLI / torchrun)"
+  action = "Parses architecture, horizon, optimizer and eval flags; the whole training run is top-level code in this file"
+  receives = "command-line flags; torchrun sets RANK / LOCAL_RANK / WORLD_SIZE"
+  returns = "nothing; logs to stdout and, when --run is not 'dummy', to wandb from rank 0 only"
+  payload = '''
+torchrun --nproc_per_node=8 -m scripts.base_train -- --depth=20 --run=d20-test --save-every=1000
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.common:compute_init"
+  action = "Checks the device type, seeds torch with 42, enables TF32 matmuls on CUDA and, when launched by torchrun on CUDA, binds this process to its local GPU and joins an NCCL process group"
+  receives = "device_type from --device-type or autodetect_device_type (cuda > mps > cpu)"
+  returns = "(ddp, ddp_rank, ddp_local_rank, ddp_world_size, device)"
+  stores = "process group state (torch.distributed)"
+  payload = '''
+(True, 3, 3, 8, device(type='cuda', index=3))
+
+'''
+  note = "Rank 0 is the 'master process': it alone logs to wandb and writes the model file; every rank writes its own optimizer shard."
+  [[journeys.steps]]
+  symbol = "scripts.base_train:build_model_meta"
+  action = "Turns --depth into a GPTConfig (model_dim = depth × aspect_ratio rounded up to a multiple of head_dim) and builds the GPT on the meta device; the script then calls to_empty(device) and init_weights(), and optionally overwrites weights from load_checkpoint when --resume-from-step is set"
+  receives = "depth (also called with 12 to size the d12 reference model)"
+  returns = "a GPT with shapes but no data"
+  payload = '''
+GPTConfig(sequence_len=2048, vocab_size=32768, n_layer=20, n_head=10, n_kv_head=10, n_embd=1280, window_pattern="SSSL")
+
+'''
+  note = "Hyperparameters were tuned at d12; the script computes the token horizon (target_param_data_ratio × scaling params), batch size (∝ D^0.383), LR scale (√(B/B_ref)) and weight decay relative to that reference instead of asking the user for them."
+  [[journeys.steps]]
+  symbol = "nanochat.gpt:GPT.setup_optimizer"
+  action = "Splits parameters into groups: AdamW for lm_head, token and value embeddings and the per-layer scalars (LR scaled ∝1/√(d_model/768)); Muon for the transformer matrices, one group per tensor shape so they can be stacked"
+  receives = "unembedding_lr, embedding_lr, scalar_lr, matrix_lr (each × batch_lr_scale), weight_decay_scaled"
+  returns = "a MuonAdamW optimizer; each group remembers initial_lr for the schedulers"
+  payload = '''
+[{"kind": "adamw", "lr": 0.0062, "betas": (0.8, 0.96)}, ..., {"kind": "muon", "lr": 0.02, "momentum": 0.95, "ns_steps": 5}]
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.dataloader:tokenizing_distributed_data_loader_with_state_bos_bestfit"
+  action = "Reads row groups strided by rank, tokenizes documents with a prepended <|bos|>, and packs each row of T+1 tokens best-fit from a 1000-document buffer (largest document that fits; when none fits, crops the shortest to fill exactly)"
+  receives = "tokenizer, B=device_batch_size, T=max_seq_len, split=\"train\", optional resume_state_dict"
+  returns = "an infinite generator of (inputs (B,T), targets (B,T), state_dict)"
+  stores = "reads <base_dir>/base_data_climbmix/*.parquet"
+  payload = '''
+inputs[0][:6]  = [32759, 464, 3139, 286, 4881, 318]   # starts with <|bos|>
+targets[0][:6] = [464, 3139, 286, 4881, 318, 6342]
+state_dict     = {"pq_idx": 4, "rg_idx": 17, "epoch": 1}
+
+'''
+  note = "No padding, so every token is trained on, at the cost of roughly 35% of tokens cropped (module docstring). The state_dict is saved in checkpoints so a resumed run skips data it has already seen (approximately)."
+  [[journeys.steps]]
+  symbol = "nanochat.gpt:GPT.forward"
+  action = "Inside the training loop, for each of grad_accum_steps micro-batches: embeds tokens, runs the blocks, soft-caps the logits at ±15 and returns mean cross-entropy (ignore_index=-1); the loop divides by grad_accum_steps and calls backward"
+  receives = "x, y from the loader (the compiled model, torch.compile(dynamic=False))"
+  returns = "a scalar loss tensor"
+  payload = '''
+loss = tensor(3.412, device='cuda:0')
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.optim:MuonAdamW.step"
+  action = "After the script sets this step's LR multiplier (warmup → constant → linear warmdown), Muon momentum and cosine-decayed weight decay: reduce-scatters gradients across ranks, updates only this rank's shard (AdamW, or Muon with Newton-Schulz orthogonalization), then all-gathers the new weights"
+  receives = "param_groups with fresh lr / momentum / weight_decay"
+  returns = "nothing; parameters updated in place"
+  stores = "sharded optimizer state on each rank (ZeRO-2 style)"
+  note = "nanochat does not wrap the model in DDP: gradient synchronization happens inside this optimizer. On a single rank all communication is skipped."
+  [[journeys.steps]]
+  symbol = "nanochat.loss_eval:evaluate_bpb"
+  action = "Every --eval-every steps and at the end: sums per-token loss and the byte length of each target (from token_bytes.pt; special and ignored tokens count 0) over eval_tokens of the val split, all-reduces both sums, and divides"
+  receives = "model, a fresh val loader, steps, token_bytes"
+  returns = "val bpb as a float (inf if no bytes were counted)"
+  payload = '''
+Step 01000 | Validation bpb: 0.912345
+
+'''
+  note = "Bits per byte does not change meaning when the vocabulary changes, so runs with different tokenizers stay comparable. The --core-metric-every branch calls scripts.base_eval:evaluate_core in the same loop (see the evaluate journey)."
+  [[journeys.steps]]
+  symbol = "nanochat.checkpoint_manager:save_checkpoint"
+  action = "At the last step (and every --save-every steps): rank 0 writes the uncompiled model's state_dict and a JSON of metadata; every rank writes its own optimizer shard"
+  receives = "checkpoint_dir, step, orig_model.state_dict(), optimizer.state_dict(), meta (step, val_bpb, model_config, user_config, batch sizes, dataloader_state_dict, loop_state), rank"
+  returns = "nothing"
+  stores = "<base_dir>/base_checkpoints/d20/model_<step>.pt, meta_<step>.json, optim_<step>_rank<r>.pt"
+  payload = '''
+meta_005568.json: {"step": 5568, "val_bpb": 0.8123, "model_config": {"n_layer": 20, "n_embd": 1280, ...},
+                   "dataloader_state_dict": {"pq_idx": 41, "rg_idx": 9, "epoch": 1},
+                   "loop_state": {"min_val_bpb": 0.8123, "smooth_train_loss": 2.71, "total_training_time": 10234.5}}
+
+'''
+  note = "The loop runs num_iterations+1 times so the final pass can evaluate and save without training. compute_cleanup destroys the process group afterwards."
+
+[[journeys]]
+id = "finetune"
+title = "Supervised fine-tuning on conversations"
+actor = "operator (CLI / torchrun)"
+trigger = "python -m scripts.chat_sft  or  torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft"
+summary = "Loads the latest base checkpoint, inherits its batch sizes and learning rates, and trains on a shuffled mixture of SmolTalk chats, MMLU multiple-choice and GSM8K math-with-calculator conversations. Each conversation is rendered with special tokens and a mask so only assistant tokens carry loss; the run ends after one pass over the mixture with a checkpoint in <base_dir>/chatsft_checkpoints/d<depth>/. There is no separate midtraining script in this version."
+  [[journeys.steps]]
+  symbol = "scripts.chat_sft:<module>"
+  actor = "operator (CLI / torchrun)"
+  action = "Parses flags (most default to None = inherit from the pretrained checkpoint), runs compute_init, and drives the whole SFT run as top-level code"
+  receives = "command-line flags"
+  returns = "nothing; logs to stdout / wandb project nanochat-sft"
+  payload = '''
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16 --mmlu-epochs=3 --gsm8k-epochs=4
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.checkpoint_manager:load_model"
+  action = "Maps source 'base' to <base_dir>/base_checkpoints, picks the largest d<N> tag and the highest step unless given, rebuilds GPT from meta_<step>.json, strips torch.compile's _orig_mod. prefix and checks the tokenizer vocab size matches"
+  receives = "\"base\", device, phase=\"train\", model_tag, step"
+  returns = "(model, tokenizer, meta)"
+  stores = "reads model_<step>.pt and meta_<step>.json"
+  note = "max_seq_len, device_batch_size, total_batch_size and the three LRs are then taken from meta / meta['user_config'] unless overridden. load_optimizer_state reloads this rank's optim shard for momentum buffers, but the fresh SFT LRs are restored afterwards because pretraining ended with LRs near zero."
+  [[journeys.steps]]
+  symbol = "tasks.common:TaskMixture.get_example"
+  action = "Serves conversations from SmolTalk (train), MMLU auxiliary_train × mmlu_epochs and GSM8K train × gsm8k_epochs through one index map shuffled with seed 42, so tasks are interleaved throughout training"
+  receives = "a global index (cursor starts at ddp_rank and advances by world_size)"
+  returns = "one conversation dict"
+  stores = "the task datasets are downloaded once by load_hub_dataset into <base_dir>/task_data/"
+  payload = '''
+{"messages": [
+  {"role": "user", "content": "Tom has 3 boxes of 12 pens. How many pens?"},
+  {"role": "assistant", "content": [
+     {"type": "text", "text": "He has 3*12 = "},
+     {"type": "python", "text": "3*12"},
+     {"type": "python_output", "text": "36"},
+     {"type": "text", "text": "36 pens.\n#### 36"}]}]}
+
+'''
+  note = "GSM8K.get_example turns the dataset's <<expr=result>> annotations into python / python_output parts — this is how the model learns to call the calculator."
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.render_conversation"
+  action = "Renders the conversation as <|bos|> <|user_start|>…<|user_end|> <|assistant_start|>…<|assistant_end|>, with a parallel mask: 1 on assistant text, python calls and <|assistant_end|>; 0 on BOS, user turns and python outputs. A leading system message is merged into the first user message"
+  receives = "conversation, max_tokens=2048"
+  returns = "(ids, mask), both truncated to 2048"
+  payload = '''
+ids  = [32759, 32760, 22717, 468, ..., 32761, 32762, 1544, ..., 32764, 18, 9, 1065, 32765, 32766, 2623, 32767, ..., 32763]
+mask = [0,     0,     0,     0,   ..., 0,     0,     1,    ..., 1,     1, 1, 1,    1,     0,     0,    0,     ..., 1]
+
+'''
+  note = "Python outputs are masked out because at inference time the Engine, not the model, writes them."
+  [[journeys.steps]]
+  symbol = "scripts.chat_sft:sft_data_generator_bos_bestfit"
+  action = "Packs rendered conversations into rows of max_seq_len+1 tokens best-fit from a 100-conversation buffer; when nothing fits it pads the rest of the row with BOS instead of cropping. Targets are set to -1 wherever the mask is 0 and on padding; it also flips the global last_step once the whole mixture has been consumed"
+  receives = "split (\"train\" or \"val\")"
+  returns = "an infinite generator of (inputs int32 (B,T), targets int64 (B,T))"
+  payload = '''
+targets[0][:10] = [-1, -1, -1, -1, -1, -1, 1544, 318, 6342, 13]   # -1 = no loss on the user turn
+
+'''
+  note = "Unlike pretraining, nothing is cropped, so no assistant reply is cut mid-sentence; the price is padding."
+  [[journeys.steps]]
+  symbol = "nanochat.gpt:GPT.forward"
+  action = "Computes cross-entropy with ignore_index=-1, so only assistant tokens contribute; the loop accumulates gradients and steps MuonAdamW with a progress-based LR schedule (constant, then linear warmdown over the last half) and weight decay 0"
+  receives = "inputs, masked targets"
+  returns = "a scalar loss"
+  [[journeys.steps]]
+  symbol = "scripts.chat_eval:run_chat_eval"
+  action = "Every --chatcore-every steps and at the end: runs ARC-Easy, ARC-Challenge, MMLU, GSM8K and HumanEval (capped per task) with an Engine over the uncompiled model and logs ChatCORE, the mean accuracy rescaled so random = 0 and perfect = 1"
+  receives = "task name, orig_model, tokenizer, engine, batch_size, max_problems"
+  returns = "accuracy per task"
+  payload = '''
+Step 00800 | ChatCORE: 0.2412 | ChatCORE_cat: 0.3105
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.checkpoint_manager:save_checkpoint"
+  action = "When last_step is reached (all-reduced with MAX so every rank stops together): saves model, optimizer shards and a metadata JSON whose model_config records the SFT sequence length"
+  receives = "checkpoint_dir, step, orig_model.state_dict(), optimizer.state_dict(), {step, val_bpb, model_config, user_config}, rank"
+  returns = "nothing"
+  stores = "<base_dir>/chatsft_checkpoints/d<depth>/model_<step>.pt, meta_<step>.json, optim_<step>_rank<r>.pt"
+
+[[journeys]]
+id = "reinforce"
+title = "Reinforcement learning on GSM8K"
+actor = "operator (CLI / torchrun)"
+trigger = "python -m scripts.chat_rl  or  torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl"
+summary = "Loads the SFT model, samples several answers per GSM8K training question with the Engine (calculator included), scores each answer 1 or 0 against the reference number, and pushes up the log-probability of above-average answers. It is on-policy REINFORCE with a mean baseline: no reference model, no KL term, no PPO clipping. Checkpoints go to <base_dir>/chatrl_checkpoints/d<depth>/ without optimizer state."
+  [[journeys.steps]]
+  symbol = "scripts.chat_rl:<module>"
+  actor = "operator (CLI / torchrun)"
+  action = "Parses sampling and optimizer flags, runs compute_init, loads the 'sft' checkpoint with load_model, wraps it in an Engine and builds the optimizer with setup_optimizer (LRs × init_lr_frac=0.05, linear ramp to zero over num_steps)"
+  receives = "command-line flags"
+  returns = "nothing; logs pass@k, mean reward and sequence length to stdout / wandb project nanochat-rl"
+  stores = "reads <base_dir>/chatsft_checkpoints/<tag>/model_<step>.pt"
+  payload = '''
+python -m scripts.chat_rl --examples-per-step=16 --num-samples=16 --max-new-tokens=256 --temperature=1.0 --top-k=50
+
+'''
+  [[journeys.steps]]
+  symbol = "scripts.chat_rl:get_batch"
+  action = "Cycles through this rank's share of GSM8K train; for each question renders the prompt, samples num_samples answers in chunks of device_batch_size, rewards each, pads the sequences with <|assistant_end|> and builds inputs/targets with -1 on prompt, padding and calculator-forced tokens"
+  receives = "the module-level step (used to vary the sampling seed)"
+  returns = "yields (sequences, inputs (N,T), targets (N,T), rewards (N,), advantages (N,))"
+  payload = '''
+rewards    = [1., 0., 0., 1., 1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.]
+advantages = rewards - 0.3125
+
+'''
+  note = "The advantage is reward minus the group mean, not a z-score."
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.render_for_completion"
+  action = "Drops the reference assistant answer, renders the rest with render_conversation and appends <|assistant_start|> so the model continues as the assistant"
+  receives = "the GSM8K conversation"
+  returns = "prompt token ids"
+  payload = '''
+[32759, 32760, 22717, 468, 513, ..., 32761, 32762]   # ends with <|assistant_start|>
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.engine:Engine.generate_batch"
+  action = "Calls Engine.generate (one prefill, KV cache copied per sample, calculator tool handled in the loop) and collects each row until <|assistant_end|> or <|bos|>, which are left out; mask is 1 for sampled tokens and 0 for prompt and forced tokens"
+  receives = "prompt ids, num_samples=device_batch_size, max_tokens, temperature, top_k, seed"
+  returns = "(token sequences incl. prompt, masks)"
+  note = "Engine.generate is described step by step in the serve-chat journey."
+  [[journeys.steps]]
+  symbol = "tasks.gsm8k:GSM8K.reward"
+  action = "Reuses evaluate: extracts the number after '#### ' from the reference and from the decoded sample (commas removed) and compares them as strings"
+  receives = "conversation, the decoded generated text"
+  returns = "1.0 if the numbers match, else 0.0"
+  payload = '''
+generated: "He buys 3*12 = <<3*12=36>>36 pens.\n#### 36"  →  1.0
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.gpt:GPT.forward"
+  action = "Per pass of device_batch_size sequences: returns per-token NLL (loss_reduction='none'); the script negates it to log-probs, multiplies by the advantage, sums, normalizes by valid tokens × passes × examples_per_rank, and backpropagates the negative"
+  receives = "inputs, targets (with -1 ignored), loss_reduction='none'"
+  returns = "(B,T) per-token losses"
+  note = "Gradients accumulate over examples_per_rank questions before one optimizer.step(); MuonAdamW all-reduces them across ranks."
+  [[journeys.steps]]
+  symbol = "scripts.chat_rl:run_gsm8k_eval"
+  action = "Every --eval-every steps: samples device_batch_size answers for up to eval_examples test questions and yields per-question outcomes; the loop turns them into pass@1..pass@k and all-reduces across ranks"
+  receives = "val_task (GSM8K test), tokenizer, engine, num_samples, max_examples, temperature=1.0"
+  returns = "a generator of {idx, outcomes: [{is_correct}, ...]}"
+  payload = '''
+Step 60 | Pass@1: 0.0950, Pass@2: 0.1500, ..., Pass@8: 0.3125
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.checkpoint_manager:save_checkpoint"
+  action = "Rank 0, every --save-every steps and at the final step: writes the model and a metadata JSON holding only model_config; optimizer_data is None"
+  receives = "checkpoint_dir, step, model.state_dict(), None, {model_config}"
+  returns = "nothing"
+  stores = "<base_dir>/chatrl_checkpoints/d<depth>/model_<step>.pt and meta_<step>.json (no optim_*.pt)"
+
+[[journeys]]
+id = "evaluate"
+title = "Evaluate a base or chat model"
+actor = "operator (CLI / torchrun)"
+trigger = "python -m scripts.base_eval [--eval core,bpb,sample]  ·  python -m scripts.chat_eval -i sft|rl [-a TASK]"
+summary = "Two commands share the same pattern. base_eval scores a base checkpoint on bits-per-byte and on the CORE suite (few-shot prompts from a downloaded eval bundle, judged by lowest loss) and writes a CSV. chat_eval scores a chat checkpoint on ARC/MMLU (compare the logits of the answer letters) and GSM8K/HumanEval (generate, then check the number or run the code in a subprocess), and prints ChatCORE; it writes no file."
+  [[journeys.steps]]
+  symbol = "scripts.base_eval:main"
+  actor = "operator (CLI / torchrun)"
+  action = "Validates --eval modes, runs compute_init, loads the 'base' checkpoint, then runs sample, bpb (train and val splits via evaluate_bpb) and core in turn"
+  receives = "--eval, --model-tag, --step, --max-per-task, --device-batch-size, --split-tokens"
+  returns = "nothing; prints samples and scores"
+  payload = '''
+torchrun --nproc_per_node=8 -m scripts.base_eval -- --model-tag d20 --eval core,bpb --max-per-task 500
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.checkpoint_manager:load_model"
+  action = "Resolves source to its checkpoint directory (base_checkpoints, chatsft_checkpoints or chatrl_checkpoints), guesses tag and step if not given, and rebuilds the model in eval mode"
+  receives = "source, device, phase=\"eval\", model_tag, step"
+  returns = "(model, tokenizer, meta)"
+  stores = "reads model_<step>.pt and meta_<step>.json"
+  [[journeys.steps]]
+  symbol = "scripts.base_eval:evaluate_core"
+  action = "Downloads eval_bundle.zip once (file-locked so only one rank fetches it), reads core.yaml and the random baselines, shuffles each task's examples with seed 1337 and caps them at max_per_task"
+  receives = "model, tokenizer, device, max_per_task"
+  returns = "{results, centered_results, core_metric} — core_metric is the mean of (acc − baseline)/(1 − baseline)"
+  stores = "<base_dir>/eval_bundle/ (downloaded once by download_file_with_lock + place_eval_bundle)"
+  payload = '''
+{"results": {"hellaswag_zeroshot": 0.412, "arc_easy": 0.588, ...}, "core_metric": 0.2219}
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.core_eval:evaluate_task"
+  action = "Strides examples across ranks, evaluates each, then all-reduces a 0/1 correctness vector and takes the mean"
+  receives = "model, tokenizer, data (list of JSON items), device, task_meta {task_type, num_fewshot, continuation_delimiter}"
+  returns = "accuracy as a float"
+  [[journeys.steps]]
+  symbol = "nanochat.core_eval:evaluate_example"
+  action = "Samples few-shot examples (seed 1234+idx), renders one prompt per option with a Jinja template, tokenizes with BOS and runs one batched forward pass. Multiple-choice/schema: picks the option with the lowest mean loss over its continuation. Language modeling: correct only if greedy argmax reproduces every continuation token"
+  receives = "idx, model, tokenizer, data, device, task_meta"
+  returns = "True / False"
+  payload = '''
+prompts = ["Q: The sun rises in the ... A: east", "Q: The sun rises in the ... A: west"]
+mean_losses = [1.92, 3.47]  →  pred 0 == gold 0  →  True
+
+'''
+  [[journeys.steps]]
+  symbol = "scripts.chat_eval:run_chat_eval"
+  actor = "operator (CLI / torchrun) via scripts.chat_eval"
+  action = "The chat side: scripts.chat_eval's __main__ loads an 'sft' or 'rl' checkpoint, builds an Engine and calls this per task; it instantiates the task and dispatches on eval_type"
+  receives = "task_name (ARC-Easy | ARC-Challenge | MMLU | GSM8K | HumanEval), model, tokenizer, engine, batch_size, num_samples, max_new_tokens, temperature, top_k, max_problems"
+  returns = "accuracy"
+  payload = '''
+python -m scripts.chat_eval -i sft -a "GSM8K|HumanEval" -n 1 -t 0.0
+
+'''
+  [[journeys.steps]]
+  symbol = "scripts.chat_eval:run_categorical_eval"
+  action = "For ARC and MMLU: renders batches of prompts with render_for_completion, pads with BOS, runs one forward pass, and takes the argmax over only the logits of the allowed answer letters at the last prompt position"
+  receives = "task_object, tokenizer, model, batch_size, max_problems"
+  returns = "accuracy (all-reduced across ranks)"
+  payload = '''
+letters ["A","B","C","D"] → focus_logits [2.1, 5.7, 0.3, 1.0] → "B" == reference "B" → pass
+
+'''
+  note = "Restricting to the letter logits makes the task easier than free generation; the code comment says this matches how evaluations are usually run."
+  [[journeys.steps]]
+  symbol = "scripts.chat_eval:run_generative_eval"
+  action = "For GSM8K and HumanEval: per problem, generates num_samples completions with Engine.generate_batch, decodes the part after the prompt, and counts the problem passed if any completion passes task.evaluate"
+  receives = "task_object, tokenizer, model, engine, num_samples, max_new_tokens, temperature, top_k, max_problems"
+  returns = "pass rate (all-reduced across ranks)"
+  [[journeys.steps]]
+  symbol = "tasks.humaneval:HumanEval.evaluate"
+  action = "Builds a program from the prompt's import lines, the first ``` code block of the completion (or the whole completion), the dataset's test code and check(entry_point)"
+  receives = "conversation (with test and entry_point), completion text"
+  returns = "True if the program exits with code 0"
+  payload = '''
+import math
+
+def add(a, b):
+    return a + b
+
+def check(candidate):
+    assert candidate(2, 3) == 5
+
+check(add)
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.execution:execute_code"
+  action = "Runs the program in a fresh python -c subprocess in a temporary directory, with a scrubbed environment, stdin closed, a 5 s timeout and a 256 MB rlimit; a guard prelude nulls destructive os/shutil/subprocess functions first"
+  receives = "code string, timeout=5.0, maximum_memory_bytes=256MB"
+  returns = "ExecutionResult {success, stdout, stderr, error, timeout, memory_exceeded}"
+  stores = "nothing that survives: writes land in the temp dir, deleted afterwards"
+  note = "The module docstring is explicit that this is not a security sandbox: network access is not blocked and ctypes could bypass the guard. It protects against accidents, not adversarial code."
+
+[[journeys]]
+id = "serve-chat"
+title = "Chat with the model in the terminal"
+actor = "user (terminal)"
+trigger = "python -m scripts.chat_cli [-i sft|rl] [-p \"prompt\"]"
+summary = "The only chat front end in this version is a terminal loop (there is no chat_web / FastAPI server). Each user line is appended to one running token list with user/assistant special tokens, the Engine streams the reply token by token with a KV cache, and a calculator tool runs whenever the model writes a <|python_start|>…<|python_end|> block. Nothing is saved: the conversation lives only in memory until 'clear' or exit."
+  [[journeys.steps]]
+  symbol = "scripts.chat_cli:<module>"
+  actor = "user (terminal)"
+  action = "Loads the 'sft' (default) or 'rl' checkpoint with load_model, starts conversation_tokens = [<|bos|>], and reads a line from input() (or takes -p once); 'quit'/'exit' stop, 'clear' resets to [<|bos|>]"
+  receives = "a typed line"
+  returns = "the streamed reply printed to stdout"
+  payload = '''
+User: What is 17*23?
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.tokenizer:RustBPETokenizer.encode"
+  action = "Encodes the user text with encode_ordinary (special-token strings typed by the user are not turned into control tokens); the script wraps it in <|user_start|>…<|user_end|> and appends <|assistant_start|>"
+  receives = "user_input string"
+  returns = "list of token ids"
+  payload = '''
+conversation_tokens = [32759, 32760, 2061, 318, 1596, 9, 1954, 30, 32761, 32762]
+
+'''
+  [[journeys.steps]]
+  symbol = "nanochat.engine:Engine.generate"
+  action = "Prefills the whole conversation once into a batch-1 KVCache, copies it into a decode cache sized prompt+max_tokens (256), then loops: sample a token, run one-token forward with the cache, yield it"
+  receives = "conversation_tokens, num_samples=1, max_tokens=256, temperature=0.6, top_k=50"
+  returns = "a generator of (token_column, token_masks) — one token per row per step"
+  stores = "KV cache tensors on the device for the duration of this reply only"
+  note = "The whole conversation is re-prefilled on every turn; the cache is not kept between turns."
+  [[journeys.steps]]
+  symbol = "nanochat.engine:KVCache.prefill"
+  action = "Copies the prefill cache's keys/values and position into the decode cache, and expands the smear prev_embedding to every sample row"
+  receives = "the batch-1 prefill cache"
+  returns = "nothing; the decode cache now holds the prompt"
+  [[journeys.steps]]
+  symbol = "nanochat.gpt:GPT.forward"
+  action = "With a kv_cache: offsets the rotary embeddings to the cache position, reads/writes keys and values through the cache, and returns logits instead of a loss"
+  receives = "ids (1,T) on prefill or (B,1) on decode, kv_cache"
+  returns = "logits (B, T, vocab_size), soft-capped at ±15"
+  [[journeys.steps]]
+  symbol = "nanochat.engine:sample_next_token"
+  action = "Greedy argmax at temperature 0; otherwise keeps the top_k logits, divides by temperature and samples with a seeded torch.Generator"
+  receives = "logits (B, vocab), rng, temperature, top_k"
+  returns = "next token ids (B, 1)"
+  [[journeys.steps]]
+  symbol = "nanochat.engine:use_calculator"
+  action = "When a row emits <|python_end|> after <|python_start|>, Engine.generate decodes the tokens in between and calls this; a non-None result is queued as forced tokens <|output_start|> result <|output_end|>, which are emitted next with mask 0"
+  receives = "the expression text"
+  returns = "the evaluated value, or None if refused or failed"
+  payload = '''
+"17*23"            → 391
+"'strawberry'.count('r')" → 3
+"__import__('os')" → None
+
+'''
+  note = "Only digits/arithmetic (no **) or a .count() string call are allowed; everything else returns None. eval runs with empty __builtins__ and a 3 s SIGALRM timeout."
+  [[journeys.steps]]
+  symbol = "scripts.chat_cli:<module>"
+  action = "Back in the loop: decodes and prints each token as it arrives (forced calculator tokens included), stops on <|assistant_end|>/<|bos|> or 256 tokens, appends <|assistant_end|> if generation was cut off, and extends conversation_tokens with the reply for the next turn"
+  receives = "the token stream"
+  returns = "printed reply; updated in-memory conversation_tokens"
+  payload = '''
+Assistant: 17*23 = <|python_start|>17*23<|python_end|><|output_start|>391<|output_end|>391.
+
+'''
+
+[[roles]]
+id = "distributed-torch"
+name = "Multi-GPU training (torch.distributed / NCCL)"
+kind = "external"
+symbols = ["nanochat.common:compute_init", "nanochat.common:get_dist_info", "nanochat.optim:MuonAdamW.step", "nanochat.optim:MuonAdamW._reduce_adamw", "nanochat.loss_eval:evaluate_bpb", "nanochat.core_eval:evaluate_task"]
+purpose = "Lets one script run as 8 cooperating processes on one node: gradients are averaged across GPUs inside the optimizer, and eval counters are summed so every rank reports the same number."
+input = "Gradients after backward (optimizer), and per-rank counters such as total nats/bytes, correct answers, pass@k and rewards (eval and RL)."
+message = ["init_process_group(backend='nccl') + barrier at startup", "optimizer step: all_reduce (AVG) for small params; reduce_scatter (AVG) of grads and all_gather of the updated slices for large params and stacked Muon matrices", "eval: all_reduce (SUM) of counters; training loops: all_reduce (MAX) for flags such as last step or fp16 inf detection"]
+config = "Launched with torchrun (`torchrun --standalone --nproc_per_node=8 -m scripts.<name>`); detection reads the env vars RANK, LOCAL_RANK, WORLD_SIZE. Without them, or on a non-CUDA device, the same code runs single-process (gradient accumulation makes up the batch)."
+output = "Averaged gradients / gathered parameters in place; summed or averaged tensors for metrics."
+validation = "No explicit timeouts (NCCL defaults). Asserts: CUDA must be available for device 'cuda'; the AdamW reduce_scatter asserts shape[0] is divisible by the world size. A crashed rank leaves the others blocked in a collective."
+logging = "compute_init logs the world size on rank 0; print0 and log0 print only on rank 0."
+cost = "Interconnect bandwidth; not measured."
+result_use = "Every rank applies the same update, so the model copies stay identical; rank 0 alone saves the model and logs metrics."
+
+[[roles]]
+id = "http-urllib"
+name = "Task datasets (Hugging Face hub parquet export)"
+kind = "external"
+symbols = ["tasks.common:load_hub_dataset", "tasks.common:HubDataset"]
+purpose = "Gets the SFT/eval datasets (SmolTalk, MMLU, ARC, GSM8K, HumanEval) without the `datasets` library, by downloading the hub's auto-generated parquet export once into the local cache."
+input = "repo_id, subset and split from each Task constructor (e.g. tasks.gsm8k:GSM8K asks for openai/gsm8k)."
+message = ["GET the hub API listing of parquet shard URLs for repo/subset/split", "GET each shard URL in turn (urllib.request.urlopen, whole body read into memory)"]
+config = "Cache location from NANOCHAT_BASE_DIR (task_data/<repo>/<subset>/<split>); repo ids are hard-coded in the tasks.* modules. No token is sent."
+output = "Parquet shards plus a manifest.json listing them; returns a HubDataset wrapping one concatenated pyarrow table, with a seeded shuffle that mirrors datasets.Dataset.shuffle."
+validation = "No timeout and no retry. manifest.json is written last, so an interrupted download leaves no manifest and is simply redone next time. A FileLock lets one torchrun rank download while the others wait and then re-check the manifest."
+logging = "print of each shard URL while downloading."
+cost = "Bandwidth only; not measured."
+result_use = "Task subclasses index rows lazily via HubDataset.__getitem__ and turn them into conversations for SFT (scripts.chat_sft), RL (scripts.chat_rl) and evaluation (scripts.chat_eval)."
+
+[[roles]]
+id = "http-requests"
+name = "Pretraining data shards (Hugging Face)"
+kind = "external"
+symbols = ["nanochat.dataset:download_single_file", "nanochat.dataset:list_parquet_files", "nanochat.dataset:parquets_iter_batched"]
+purpose = "Fetches the pretraining corpus (ClimbMix-400B, repackaged into ~100MB parquet shards) from a Hugging Face dataset repo, so tokenizer training and base pretraining have text to read."
+input = "A shard index; the URL is BASE_URL plus a file name built by index_to_filename (shard_00000.parquet …). The validation shard is always the last one, MAX_SHARD."
+message = ["HTTP GET of one shard file, streamed in 1MB chunks (requests, stream=True)"]
+config = "Run as `python -m nanochat.dataset -n <shards> -w <workers>`; the target directory comes from NANOCHAT_BASE_DIR (via get_base_dir) under base_data_climbmix; BASE_URL and MAX_SHARD are constants in nanochat.dataset."
+output = "A parquet file in DATA_DIR. Success = raise_for_status passed and the temp file was renamed into place; the function returns True/False."
+validation = "30s timeout per request, 5 attempts with exponential backoff (2^attempt seconds). Writes to <name>.tmp first and renames, so a half-written shard never looks complete; on failure both the .tmp and the final path are deleted. A shard that still fails after 5 attempts returns False and the run carries on."
+logging = "print to stdout per shard (Downloading / Skipping / Attempt n failed); a final 'Downloaded x/y shards' summary. The exit code is 0 even when some shards failed."
+cost = "Bandwidth only (public dataset, no token); not measured."
+result_use = "list_parquet_files lists the .parquet files sorted by name; parquets_iter_batched treats the last one as the val split and the rest as train. tok_train, tok_eval and the dataloader read from there."
+
+[[roles]]
+id = "subprocess"
+name = "Code-execution sandbox (HumanEval)"
+kind = "external"
+symbols = ["nanochat.execution:execute_code", "tasks.humaneval:HumanEval.evaluate"]
+purpose = "Runs Python the model wrote, together with the task's unit tests, to decide whether a HumanEval answer is correct."
+input = "HumanEval.evaluate builds the program: imports from the prompt + the code extracted from the completion + the task's test code + check(entry_point)."
+message = ["python -c <guard + exec(compile(code))> in a fresh interpreter, cwd = a temp dir, env = PATH only, stdin closed"]
+config = "Arguments only: timeout (default 5s) and maximum_memory_bytes (default 256MB, None disables). Nothing from env."
+output = "ExecutionResult: success = return code 0, plus stdout, stderr, the last traceback line as error, and timeout / memory_exceeded flags."
+validation = "subprocess.run kills the child on timeout. The guard sets rlimits (skipped on macOS) and nulls destructive os/shutil/subprocess functions. It is not a security sandbox: network and absolute-path file access stay open (the module docstring says so)."
+logging = "None; the result is returned, not logged."
+cost = "One Python process per sample; not measured."
+result_use = "success becomes the pass/fail of one HumanEval sample in scripts.chat_eval:run_generative_eval, summed across ranks."
+
+[[roles]]
+id = "eval-bundle"
+name = "CORE eval bundle download"
+kind = "external"
+symbols = ["nanochat.common:download_file_with_lock", "scripts.base_eval:evaluate_core", "scripts.base_eval:place_eval_bundle"]
+purpose = "Downloads the zipped DCLM CORE evaluation data (task YAML, data files, random-baseline CSV) the first time a base model's CORE score is computed."
+input = "EVAL_BUNDLE_URL (constant in scripts.base_eval) and the local file name eval_bundle.zip."
+message = ["HTTP GET of the zip (urllib.request.urlopen, whole body read into memory)"]
+config = "Destination under NANOCHAT_BASE_DIR (eval_bundle.zip, then the unzipped eval_bundle/ directory). The URL is a code constant."
+output = "eval_bundle.zip on disk; the postprocess place_eval_bundle unzips it into a temp dir and moves eval_bundle/ into the base dir."
+validation = "A FileLock (eval_bundle.zip.lock) makes one rank download while the others wait. No timeout, no retry, no checksum. The 'already done' test is only whether the zip exists — see the finding about a zip without its directory."
+logging = "print 'Downloading …' / 'Downloaded to …' and print0 'Placed eval_bundle directory …'."
+cost = "Bandwidth only; not measured."
+result_use = "evaluate_core reads core.yaml and the per-task data and calls nanochat.core_eval:evaluate_task for each; base_train calls evaluate_core every --core-metric-every steps."
+
+[[roles]]
+id = "wandb"
+name = "Weights & Biases run logging"
+kind = "external"
+symbols = ["scripts.base_train", "scripts.chat_sft", "scripts.chat_rl", "nanochat.common:DummyWandb"]
+purpose = "Streams training curves (loss, val_bpb, CORE, MFU, tokens/sec, RL rewards) to a wandb project so runs can be compared — the README's way of judging whether a change helped."
+input = "The parsed command-line args as run config, then a dict of metrics per logging step."
+message = ["wandb.init(project, name=--run, config=args) once", "wandb_run.log({...}) per logging/eval step", "wandb_run.finish() at the end"]
+config = "--run flag on base_train / chat_sft / chat_rl ('dummy', the default, disables it); runs/speedrun.sh passes the WANDB_RUN env var. Projects are fixed per script (nanochat, nanochat-sft, nanochat-rl). Credentials come from wandb's own login, not from nanochat."
+output = "Nothing the code reads back."
+validation = "Only the master process logs; every other rank, and any --run=dummy, gets DummyWandb whose log/finish do nothing."
+logging = "wandb's own console summary at finish (quoted in dev/LEADERBOARD.md)."
+cost = "Not measured."
+result_use = "None in code; people read the plots."
+
+[[roles]]
+id = "checkpoints"
+name = "Model checkpoints on disk"
+kind = "record"
+symbols = ["nanochat.checkpoint_manager:save_checkpoint", "nanochat.checkpoint_manager:load_checkpoint", "nanochat.checkpoint_manager:load_model", "nanochat.checkpoint_manager:load_optimizer_state", "nanochat.checkpoint_manager:build_model"]
+purpose = "The hand-off between stages: base_train writes base_checkpoints, chat_sft reads them and writes chatsft_checkpoints, chat_rl writes chatrl_checkpoints, and eval/CLI/bench load whichever source they are told."
+input = "model state_dict, optimizer state (sharded: one file per rank), and a meta dict with model_config, the step and, for base training, the dataloader/loop state needed to resume."
+message = ["model_<step>.pt (rank 0)", "meta_<step>.json (rank 0)", "optim_<step>_rank<r>.pt (every rank)"]
+config = "Root from NANOCHAT_BASE_DIR (default ~/.cache/nanochat); per run <source>_checkpoints/<model_tag>/. Chosen by the --model-tag / --step (or --model-step) flags; --save-every and --resume-from-step on the training scripts."
+output = "build_model returns an uncompiled GPT built on the meta device then filled with strict=True weights, the tokenizer, and the meta dict."
+validation = "Old checkpoints are patched for missing config keys and parameters (_patch_missing_config_keys, _patch_missing_keys); the tokenizer's vocab size must equal the checkpoint's. No checksums; files are written in place, not atomically."
+logging = "logger.info for each saved file; log0 for the guessed tag/step and any patching."
+cost = "Disk only; not measured."
+result_use = "The next stage's starting weights; resuming base training (weights, optimizer shard, dataloader position)."
+
+[[roles]]
+id = "tokenizer-files"
+name = "Tokenizer files on disk"
+kind = "record"
+symbols = ["nanochat.tokenizer:RustBPETokenizer.save", "nanochat.tokenizer:get_tokenizer", "nanochat.tokenizer:get_token_bytes", "nanochat.tokenizer:RustBPETokenizer.from_directory"]
+purpose = "Keeps the trained BPE merges and a per-token byte count, which every later stage needs to encode text and to compute bits-per-byte."
+input = "scripts.tok_train trains a RustBPETokenizer on up to --max-chars of the training shards."
+message = ["tokenizer/tokenizer.pkl (pickled tiktoken Encoding)", "tokenizer/token_bytes.pt (int32 tensor: bytes per token id, 0 for special tokens)"]
+config = "NANOCHAT_BASE_DIR/tokenizer; --vocab-size, --max-chars, --doc-cap on tok_train."
+output = "get_tokenizer returns a RustBPETokenizer; get_token_bytes a tensor on the requested device."
+validation = "tok_train round-trips a test string after saving. get_token_bytes asserts the file exists. Checkpoints do not store their tokenizer — only the vocab size is compared (see the finding)."
+logging = "print of the saved paths."
+cost = "Disk only."
+result_use = "Encoding/decoding everywhere (dataloader, engine, tasks) and the denominator of val_bpb in nanochat.loss_eval:evaluate_bpb."
+
+[[decisions]]
+decision = "Model size and training horizon"
+by = "people"
+how = "One dial, --depth, on scripts.base_train; width (depth × --aspect-ratio rounded up to --head-dim), heads and the token budget (--target-param-data-ratio × scaling params, or --target-flops / --num-iterations) are derived from it in code by build_model_meta and get_scaling_params."
+symbol = "scripts.base_train:get_scaling_params"
+
+[[decisions]]
+decision = "Learning-rate and momentum schedule over steps"
+by = "code"
+how = "Linear warmup (--warmup-steps), constant, then linear warmdown over --warmdown-ratio of the run to --final-lr-frac; Muon momentum ramps 0.85→0.97 over the first 400 steps and down to 0.90 in warmdown. The shapes are fixed in code; people set only the ratios."
+symbol = "scripts.base_train:get_lr_multiplier"
+
+[[decisions]]
+decision = "Compute precision (bf16 / fp16 / fp32)"
+by = "code"
+how = "Auto-detected at import from the GPU (SM 80+ → bfloat16, otherwise float32); a person can override it with the NANOCHAT_DTYPE env var. fp16 turns on a GradScaler in base_train and chat_sft."
+symbol = "nanochat.common:_detect_compute_dtype"
+
+[[decisions]]
+decision = "Sampling temperature and top-k when generating"
+by = "people"
+how = "Command-line flags: chat_cli --temperature (default 0.6) / --top-k (50); chat_rl --temperature (1.0) / --top-k; chat_eval likewise. The engine only applies what it is given."
+symbol = "nanochat.engine:Engine.generate"
+
+[[decisions]]
+decision = "RL reward for an answer"
+by = "code"
+how = "GSM8K.reward re-uses evaluate: 1.0 if the number after the final #### marker matches the reference answer, else 0.0. No format or length shaping."
+symbol = "tasks.gsm8k:GSM8K.reward"
+
+[[decisions]]
+decision = "When to call the calculator tool during generation"
+by = "model"
+how = "The model emits <|python_start|> … <|python_end|>; the engine then evaluates the expression with use_calculator (arithmetic, or string .count() only) and force-feeds the result between output tokens."
+symbol = "nanochat.engine:use_calculator"
+
+[[decisions]]
+decision = "Which checkpoint a stage loads"
+by = "code"
+how = "Unless --model-tag / --step are given, find_largest_model picks the highest d<N> tag and find_last_step the highest saved step."
+symbol = "nanochat.checkpoint_manager:find_largest_model"
+
+[[decisions]]
+decision = "Which shard is validation data"
+by = "code"
+how = "The last parquet file in sorted order is val and all others are train; the downloader always fetches shard MAX_SHARD so that it sorts last."
+symbol = "nanochat.dataset:parquets_iter_batched"
+
+[[layer_rules]]
+text = "The nanochat library never imports the entry scripts or dev tools."
+from_layers = ["model", "tokenizer", "data", "training", "tasks"]
+forbid = ["scripts.", "dev."]
+
+[[layer_rules]]
+text = "The nanochat package never imports tasks.* — tasks depend on the library, not the other way round."
+from_layers = ["model", "tokenizer", "data", "training"]
+from = ["nanochat.core_eval", "nanochat.loss_eval", "nanochat.execution"]
+forbid = ["tasks."]
+
+[[layer_rules]]
+text = "The model and engine never import the data loading layer."
+from_layers = ["model"]
+forbid = ["nanochat.dataset", "nanochat.dataloader"]
+
+[[layer_rules]]
+text = "The tokenizer depends on nothing in nanochat except common."
+from_layers = ["tokenizer"]
+forbid = ["nanochat.gpt", "nanochat.engine", "nanochat.dataset", "nanochat.dataloader", "nanochat.optim", "nanochat.checkpoint_manager", "nanochat.core_eval", "nanochat.loss_eval"]
+
+[[layer_rules]]
+text = "Only entry scripts talk to wandb; the library and tasks never import it."
+from_layers = ["model", "tokenizer", "data", "training", "tasks", "ui", "dev"]
+forbid = ["wandb"]
+
+[[layer_rules]]
+text = "Scripts that do their work at import time are never imported; only base_eval and chat_eval (guarded by __main__) are reused by other scripts."
+from_layers = ["model", "tokenizer", "data", "training", "tasks", "scripts", "ui", "dev"]
+forbid = ["scripts.base_train", "scripts.chat_sft", "scripts.chat_rl", "scripts.chat_cli", "scripts.tok_train", "scripts.tok_eval", "scripts.infer_bench"]
+
+[[findings]]
+id = "stale-gradscaler-comment"
+severity = "low"
+category = "doc vs code"
+title = "common.py says the fp16 GradScaler is 'not yet implemented'; base_train and chat_sft implement it"
+detail = "True now: the comment in _detect_compute_dtype explains the fp32 fallback on pre-Ampere GPUs with 'fp16 training requires GradScaler (not yet implemented)', while scripts.base_train and scripts.chat_sft create torch.amp.GradScaler when COMPUTE_DTYPE is float16 (the README describes exactly that). Trigger: a reader of common.py concludes NANOCHAT_DTYPE=float16 training is unsupported. Reach: one comment; behaviour is unaffected. Only chat_rl lacks a scaler, as the README says."
+symbols = ["nanochat.common:_detect_compute_dtype"]
+evidence = "Read nanochat.common:_detect_compute_dtype; grep -n GradScaler scripts/*.py shows torch.amp.GradScaler() in base_train.py and chat_sft.py and none in chat_rl.py."
+check = {kind = "text_in", pattern = "not yet implemented"}
+
+[[findings]]
+id = "readme-dev-group-transformers"
+severity = "low"
+category = "doc vs code"
+title = "README says the dev group adds transformers; pyproject's dev group does not"
+detail = "True now: the README Setup section says `uv sync --extra gpu --group dev` 'adds pytest, matplotlib, ipykernel, transformers, etc.'; [dependency-groups].dev in pyproject.toml lists ipykernel, matplotlib, pytest and python-dotenv only. Trigger: someone relies on transformers being installed (e.g. for a notebook comparison). Reach: dev setup only; no runtime code imports transformers."
+symbols = ["tasks.common:load_hub_dataset"]
+evidence = "Read README.md (Setup) and pyproject.toml ([dependency-groups]); grep for 'transformers' in pyproject.toml returns nothing and no .py file under nanochat/, scripts/, tasks/ or dev/ imports it. symbols[0] is only an anchor; this finding has no automatic check."
+
+[[findings]]
+id = "val-shard-silent-fallback"
+severity = "medium"
+category = "risk"
+title = "If the validation shard fails to download, the last training shard silently becomes 'val'"
+detail = "True now: parquets_iter_batched defines val as the last parquet file in sorted order and train as everything before it; download_single_file returns False after 5 failed attempts and the downloader still exits normally with a 'Downloaded x/y' line. Trigger: shard MAX_SHARD fails while other shards succeed. The highest-numbered training shard is then used as validation and removed from training, so val_bpb is measured on in-distribution training data with no warning. Reach: every val_bpb in base_train, base_eval and tok_eval for that data directory, and any comparison against the leaderboard."
+symbols = ["nanochat.dataset:parquets_iter_batched", "nanochat.dataset:download_single_file", "nanochat.dataset:list_parquet_files"]
+evidence = "Read nanochat.dataset: parquets_iter_batched slices parquet_paths[:-1] / [-1:]; the __main__ block appends MAX_SHARD to ids_to_download and only prints the success count; download_single_file returns False on final failure."
+check = {kind = "text_in", pattern = "parquet_paths\\[-1:\\]"}
+
+[[findings]]
+id = "tokenizer-overwrite-breaks-old-checkpoints"
+severity = "medium"
+category = "risk"
+title = "Re-training the tokenizer overwrites it in place; old checkpoints still load if the vocab size matches"
+detail = "True now: scripts.tok_train saves to NANOCHAT_BASE_DIR/tokenizer unconditionally, checkpoints do not carry their tokenizer, and build_model only asserts tokenizer vocab size == checkpoint vocab_size. Trigger: re-running tok_train with the same --vocab-size on different data — which list_parquet_files' dataset-upgrade message explicitly tells users to do. Every existing checkpoint in that base dir then loads without error but encodes/decodes with different merges, producing garbage until the old tokenizer.pkl is restored (nothing backs it up). Reach: every script that loads an older checkpoint (chat_sft, chat_rl, chat_eval, chat_cli, base_eval, infer_bench)."
+symbols = ["nanochat.checkpoint_manager:build_model", "nanochat.tokenizer:RustBPETokenizer.save", "nanochat.tokenizer:get_tokenizer"]
+evidence = "Read scripts/tok_train.py (tokenizer.save(tokenizer_dir) with no existence check), nanochat.tokenizer:RustBPETokenizer.save (opens tokenizer.pkl with 'wb'), nanochat.checkpoint_manager:build_model (get_tokenizer() then only the vocab-size assert), and the warning text in nanochat.dataset:list_parquet_files."
+check = {kind = "text_in", pattern = "get_vocab_size\\(\\) == model_config_kwargs"}
+
+[[findings]]
+id = "eval-bundle-zip-without-dir"
+severity = "low"
+category = "risk"
+title = "An interrupted eval-bundle unzip is never retried: the zip's existence counts as done"
+detail = "True now: download_file_with_lock returns early whenever eval_bundle.zip exists, before the postprocess that unzips it; evaluate_core calls it only when the eval_bundle/ directory is missing. Trigger: the first CORE eval is killed after the zip was written but before place_eval_bundle moved the directory (or someone deletes eval_bundle/ to refresh it). Every later run then fails opening eval_bundle/core.yaml until eval_bundle.zip is deleted by hand. The same early return means a zip truncated by a crash mid-write is trusted. Reach: base_eval CORE and base_train's periodic CORE metric. tasks.common:load_hub_dataset avoids this by writing a manifest last."
+symbols = ["nanochat.common:download_file_with_lock", "scripts.base_eval:evaluate_core", "scripts.base_eval:place_eval_bundle"]
+evidence = "Read nanochat.common:download_file_with_lock (two os.path.exists(file_path) early returns; postprocess_fn is called only after a fresh download) and scripts.base_eval:evaluate_core / place_eval_bundle."
+check = {kind = "text_in", pattern = "if os\\.path\\.exists\\(file_path\\):\\s*return file_path"}
+
+[[findings]]
+id = "checkpoint-save-not-atomic"
+severity = "low"
+category = "risk"
+title = "A crash during save leaves a model file that find_last_step will pick but cannot load"
+detail = "True now: save_checkpoint writes model_<step>.pt, then meta_<step>.json, then the optimizer shards, each directly to its final name; find_last_step picks the highest step among model_*.pt files only. Trigger: the process dies (OOM, spot-instance preemption) mid-save. The next load without --step picks that step and fails on a truncated .pt or a missing meta json. Reach: the run's latest checkpoint for that model tag; earlier steps are intact and can be chosen with --step."
+symbols = ["nanochat.checkpoint_manager:save_checkpoint", "nanochat.checkpoint_manager:find_last_step", "nanochat.checkpoint_manager:load_checkpoint"]
+evidence = "Read nanochat.checkpoint_manager:save_checkpoint (torch.save to model_path, json.dump to meta_path, no temp file or rename), find_last_step (matches model_<n>.pt only) and load_checkpoint (opens the meta json unconditionally)."
+check = {kind = "text_in", pattern = "torch\\.save\\(model_data, model_path\\)"}
+
+[[findings]]
+id = "largest-model-guess"
+severity = "low"
+category = "risk"
+title = "Without --model-tag, stages load the deepest model in the directory, not the one just trained"
+detail = "True now: find_largest_model sorts tags matching d<N> by N and returns the largest. Trigger: a base dir holding several runs (runs/miniseries.sh trains many depths; or yesterday's d26 next to today's d12 experiment) followed by chat_sft / chat_eval / chat_cli without --model-tag. The deepest model is fine-tuned or evaluated instead, and only a log0 line says which tag was guessed. Reach: the one command run without the flag."
+symbols = ["nanochat.checkpoint_manager:find_largest_model", "nanochat.checkpoint_manager:load_model_from_dir"]
+evidence = "Read nanochat.checkpoint_manager:find_largest_model and load_model_from_dir; scripts.chat_cli and scripts.chat_rl default --model-tag to None."
+check = {kind = "text_in", pattern = "candidates\\.sort\\(key=lambda x: x\\[0\\], reverse=True\\)"}
+
+[[findings]]
+id = "sandbox-not-isolating"
+severity = "info"
+category = "risk"
+title = "The HumanEval sandbox blocks accidents, not network or absolute-path file access"
+detail = "True now: execute_code runs model-written code in a fresh interpreter with a temp cwd, a scrubbed env, a 5s timeout and rlimits, and nulls destructive os/shutil functions; builtins.open, sockets and ctypes remain usable, and rlimits are skipped on macOS. The module docstring states all of this. Trigger: running chat_eval on HumanEval with a model (or fine-tune data) you do not trust, on a machine holding credentials or data you care about. Reach: only HumanEval evaluation calls it (tasks.humaneval:HumanEval.evaluate); the engine's calculator tool is a separate, much narrower eval()."
+symbols = ["nanochat.execution:execute_code", "tasks.humaneval:HumanEval.evaluate"]
+evidence = "Read nanochat.execution (the GUARD string and execute_code) and tasks.humaneval:HumanEval.evaluate; grep shows tasks/humaneval.py as the only importer of nanochat.execution."
+check = {kind = "text_in", pattern = "subprocess\\.run"}
+
+[[findings]]
+id = "infer-bench-mid-source"
+severity = "low"
+category = "doc vs code"
+title = "infer_bench offers --source mid, which the checkpoint loader does not know"
+detail = "The help text of scripts/infer_bench.py lists base|mid|sft, but checkpoint_manager.load_model maps only base, sft and rl to a checkpoint folder. Trigger: running the benchmark with -i mid. Reach: that one command stops with a KeyError; no training or checkpoint is affected."
+symbols = ["scripts.infer_bench:main", "nanochat.checkpoint_manager:load_model"]
+evidence = "Read the --source help string in scripts/infer_bench.py and the model_dir mapping in nanochat/checkpoint_manager.py:load_model."
+check = {kind = "text_in", pattern = "base\\|mid\\|sft"}
+
+[[findings]]
+id = "fp8-rowwise-choice-rejected"
+severity = "low"
+category = "doc vs code"
+title = "--fp8-recipe offers rowwise, which nanochat's FP8 layer always rejects"
+detail = "scripts/base_train.py accepts choices=[\"rowwise\", \"tensorwise\"] and describes rowwise as more accurate, but nanochat.fp8:Float8LinearConfig.from_recipe_name raises ValueError for anything other than tensorwise. Trigger: --fp8 --fp8-recipe rowwise. Reach: pretraining stops at start-up, before any step; nothing is written."
+symbols = ["scripts.base_train:<module>", "nanochat.fp8:Float8LinearConfig.from_recipe_name"]
+evidence = "Read the --fp8-recipe argument in scripts/base_train.py and from_recipe_name in nanochat/fp8.py."
+check = {kind = "text_in", pattern = "choices=\\[\"rowwise\""}
