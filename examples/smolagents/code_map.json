@@ -36,6 +36,9 @@
    "llm": 8,
    "ui": 2
   },
+  "infra_resources": 0,
+  "infra_lambdas": 0,
+  "infra_lambdas_linked": 0,
   "top_unresolved_names": [
    ["get", 35],
    ["log", 32],
@@ -9476,5 +9479,6 @@
  "console_scripts": {
   "smolagent": "smolagents.cli:main",
   "webagent": "smolagents.vision_web_browser:main"
- }
+ },
+ "infra": {}
 }

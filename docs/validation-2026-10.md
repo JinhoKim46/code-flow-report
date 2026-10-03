@@ -106,7 +106,7 @@ Gaps it reported, and what changed (each has a test in `tests/test_draft.py`):
 | Repository | Map time | Graph coverage | All call sites |
 |---|---|---|---|
 | fastapi/full-stack-fastapi-template | 0.1 s | 98.4 % | 98.1 % |
-| the Streamlit app | 1.7 s | 95.1 % | 94.2 % |
+| the Streamlit app | 1.7 s | 95.0 % | 94.2 % |
 | huggingface/smolagents | 0.7 s | 88.5 % | 88.7 % |
 | lfnovo/open-notebook | 1.0 s | 87.9 % | 89.1 % |
 | httpie/cli | 0.5 s | 84.7 % | 83.6 % |
@@ -120,3 +120,23 @@ Gaps it reported, and what changed (each has a test in `tests/test_draft.py`):
 - the page renders with no errors and no horizontal scroll at 390 and 1440 px.
 
 Every medium finding was re-read in the code by the dispatching session before publishing.
+
+## v0.6.0: infrastructure as code
+
+**Test suite:** **73 tests, OK**. New fixtures:
+
+- `cdk_ts_app` (TypeScript CDK): an import alias (`Function as LambdaFunction`); `path.join(__dirname, …)` assets; a construct property (`storage.ordersTable`); a helper parameter; an API route with its path; an SQS event source; grants; environment variables; and a construct in a comment that must not count.
+- `cdk_py_app` (Python CDK): an S3 notification, `grant_read`, and an environment dict.
+- `llm_app` now also holds a package `adapters/openai.py`, which must not capture `import openai`.
+
+**On aws-samples/aws-genai-llm-chatbot** (TypeScript CDK, 50 files; Python Lambdas, 155 modules):
+
+- **Resources:** 93, linked by 181 wiring edges.
+- **Lambda → Python links:** 17 of 20 Lambdas link to the exact Python function they run, which is every Python Lambda; the other 3 run Node.js.
+- **Unresolved references:** 2 of 181 edges, a CodeBuild project and a CloudFront access identity; both classes have since been added.
+- **Triggers:**
+  - S3 UploadBucket → SQS IngestionQueue → UploadHandler;
+  - SNS MessagesTopic → SQS → the request handlers;
+  - EventBridge schedules → the RSS Lambdas;
+  - Step Functions tasks → the workspace Lambdas.
+- **Checks:** the report built at `standard` depth passes the same checks as the other examples (`build` and `check` clean, 20 of 20 edges, no false "fixed", renders at 390 and 1440 px).

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 — 2026-10
+
+The whole stack: infrastructure as code.
+
+- **AWS CDK, TypeScript or Python.** A new scanner (`scripts/infra.py`, standard library only, comments and strings respected, brackets matched) reads the infrastructure and adds an "Infrastructure" section to the page:
+  - **Resources:** Lambda, API Gateway, AppSync, SQS, SNS, EventBridge, Step Functions, DynamoDB, S3, Aurora/RDS, OpenSearch, Kendra, Cognito, IAM roles, KMS, Secrets Manager, SSM, CloudFront, ECS, SageMaker, CodeBuild.
+  - **Wiring:** API routes with their paths, event sources, S3 notifications to Lambda, SQS or SNS, subscriptions, EventBridge targets and schedules, AppSync data sources, Step Functions `LambdaInvoke` tasks, `grant*` permissions, and environment variables that name a resource.
+- **Lambda → Python.** Each Lambda's `handler` and code asset (`Code.fromAsset(path.join(__dirname, …))`, `from_asset("…")`, `PythonFunction(entry, index, handler)`) resolve to the Python function it runs.
+  - That function becomes a journey entry whose trigger reads like "S3 UploadBucket (S3 event) → SQS IngestionQueue (Sqs) → Lambda UploadHandler".
+  - The draft makes one card per Lambda, prefilled with what invokes it, what it may use and what its environment names.
+  - On aws-samples/aws-genai-llm-chatbot: 93 resources, 181 wiring edges, and all 17 Python Lambdas linked (the other 3 run Node.js).
+- **References are followed the way CDK code passes them:**
+  - import aliases (`Function as LambdaFunction`);
+  - properties of the repo's own constructs (`storage.ordersTable`) and nested chains (`ragEngines.auroraPgVector.createAuroraWorkspaceWorkflow`), including instances created behind a condition;
+  - `this.x = y` aliases;
+  - `props.x` back to what the parent passed, `...props` spreads included;
+  - a helper's parameter back to the argument it is called with.
+- `codeflow.py infra [filter]` prints the resources and the wiring for whoever writes the narrative; `[infra] enabled = false` switches the scanner off.
+- A bare `import openai` never resolves to a module inside another package (`…/adapters/openai.py`): the third-party package wins.
+- Drafted layers no longer put a subpackage's `__init__` in two layers.
+- `integtests/`, `integration_tests/` and `e2e/` are test folders.
+- New example: [aws-genai-llm-chatbot](examples/aws-genai-llm-chatbot).
+
 ## 0.5.0 — 2026-10
 
 Found by running the skill on a Streamlit + SQLModel app, comparing it with a report built by a 1,633-line extractor written for that app, and probing ten trending public repos. On that app the generic skill now matches the hand-built map on model calls (9 sites, 7 roles), injected callables, table access and test-only functions.

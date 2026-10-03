@@ -116,6 +116,7 @@ You rarely need these: Claude runs them for you. After `init` they are all `pyth
 | `draft --depth quick\|standard\|deep` | propose the narrative skeleton |
 | `candidates` | every entry point ranked as a journey candidate |
 | `query SYMBOL` · `find TEXT` · `module NAME` | callers, callees, tables and boundaries of a function or module, for whoever writes the prose |
+| `infra [filter]` | CDK resources, the Python function each Lambda runs, and the wiring between them |
 | `todo` | what is still unwritten |
 | `merge [--check] [FILE…]` | fold writers' fragments into the narrative (`--check` validates without writing) |
 | `build` | validate the narrative and write the page |
@@ -166,6 +167,7 @@ Reports built by the skill on popular open-source repositories, each at a pinned
 | [huggingface/smolagents](https://github.com/huggingface/smolagents) | LLM agent library | Entry points from its public API (`CodeAgent().run()`), the agent loop past virtual calls, 5 model-call sites behind a model gateway, what the local code executor does and does not isolate. 6 journeys · 15 cards · 18 module notes · 24 findings | [examples/smolagents](examples/smolagents) |
 | [lfnovo/open-notebook](https://github.com/lfnovo/open-notebook) | Web app: FastAPI + LangGraph + SurrealDB | 116 routes with their real prefixes, 16 SurrealDB tables read from SurrealQL migrations, active-record models, a background command queue, LangChain/esperanto model roles. 6 journeys · 18 cards · 15 entities · 84 module notes · 31 findings | [examples/open-notebook](examples/open-notebook) |
 | [karpathy/nanochat](https://github.com/karpathy/nanochat) | ML training pipeline | Tokenizer → pretraining → SFT → RL → eval → chat, with scripts whose work is top-level code, and checkpoints on disk instead of a database. 6 journeys · 8 cards · 30 module notes · 15 findings | [examples/nanochat](examples/nanochat) |
+| [aws-samples/aws-genai-llm-chatbot](https://github.com/aws-samples/aws-genai-llm-chatbot) | Serverless app: TypeScript CDK + Python Lambdas | The whole stack. 93 CDK resources and 181 wiring edges, with all 17 Python Lambdas linked to the function they run. Journeys cross AppSync, SNS, SQS, Step Functions and EventBridge into the next Lambda. Each Lambda card lists what invokes it, its grants and its environment. 6 journeys · 40 cards · 155 module notes · 29 findings | [examples/aws-genai-llm-chatbot](examples/aws-genai-llm-chatbot) |
 | [`examples/demo-shop`](examples/demo-shop) (invented) | Small Flask app | Flask routes, SQL, a background job, an LLM call | [report](examples/demo-shop/docs/code-flow/code-flow-report.html) |
 
 Each folder holds the page (`code-flow-report.html`; download it and open it in a browser), everything Claude wrote (`narrative.toml`), and the extracted map. Findings describe the code at that commit as the writers verified it. They are not reports filed with those projects, and some describe deliberate design choices.
@@ -177,11 +179,12 @@ Maps built with zero configuration:
 | Repository | Kind | Size | Map time | Function calls resolved (graph coverage) | All call sites resolved |
 |---|---|---|---|---|---|
 | fastapi/full-stack-fastapi-template | API + ORM | 27 files · 1.7k lines | 0.1 s | **98.4 %** | 98.1 % |
-| a Streamlit + SQLModel LLM app | app with an LLM layer | 53 files · 7.6k lines | 1.7 s | **95.1 %** | 94.2 % |
+| a Streamlit + SQLModel LLM app | app with an LLM layer | 53 files · 7.6k lines | 1.7 s | **95.0 %** | 94.2 % |
 | huggingface/smolagents | agent library | 18 files · 12.8k lines | 0.7 s | **88.5 %** | 88.7 % |
 | lfnovo/open-notebook | FastAPI + SurrealDB app | 84 files · 21k lines | 1.0 s | **87.9 %** | 89.1 % |
 | httpie/cli | class-heavy CLI library | 86 files · 10.6k lines | 0.5 s | **84.7 %** | 83.6 % |
 | karpathy/nanochat | PyTorch training pipeline | 30 files · 6.7k lines | 0.4 s | **80.2 %** | 83.7 % |
+| aws-samples/aws-genai-llm-chatbot | serverless app + TypeScript CDK | 155 files · 15.7k lines (+ 50 CDK files) | 1.2 s | **88.0 %** | 78.8 % |
 
 Library-heavy code resolves less: calls on tensors and other library values whose type the source does not state (`x.view(...)`, `logits.size()`) have no target to find.
 
@@ -210,6 +213,8 @@ What static analysis cannot see, and what the report does about it:
 **Does it run my code?** No. It parses the source with `ast` and never imports it.
 
 **Does it cover infrastructure?** AWS CDK, in TypeScript or Python. The report gets an "Infrastructure" section, each Lambda gets a card, and its Python handler becomes a journey entry, so a journey can cross from an API route through a queue into the next Lambda. See the [aws-genai-llm-chatbot example](examples/aws-genai-llm-chatbot).
+
+![The Infrastructure section of the aws-genai-llm-chatbot report: resources read from the TypeScript CDK code, what invokes each one, what it may use, and the Python function a Lambda runs](docs/screenshot-infra.png)
 
 **How long does it take?** The map takes seconds. Writing takes about 10 minutes at `quick`, 30 at `standard`, and longer at `deep`, mostly spent reading functions.
 

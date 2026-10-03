@@ -379,7 +379,7 @@ def infra_roles(cm: dict) -> list[dict]:
                       "name": f"Lambda {r['id']}", "symbols": [r["handler_symbol"]],
                       "purpose": "TODO: what this function is for, in one sentence",
                       "message": [f"invoked by: {x}" for x in inbound] or ["TODO: what invokes it (no trigger found in the CDK code)"],
-                      "config": f"defined in {r['file']}:{r['line']}" + (f" · environment: {'; '.join(env)}" if env else ""),
+                      "config": f"defined in {r['file']}" + (f" · environment: {'; '.join(env)}" if env else ""),
                       "output": "TODO: what it returns or writes",
                       "validation": "TODO: retries, timeouts, dead-letter handling",
                       "logging": "TODO: where a failure is noticed",
