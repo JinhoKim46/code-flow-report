@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0 — 2026-10
+
+A system map that explains any repo at a glance, as a reusable component, and a report that opens with a choice of what to include.
+
+- **System map from the repo's own structure** (`scripts/architecture.py`). No framework or project names: a module's role comes from what the code shows. Entry points are routes, UI pages (including pages registered by path, such as Streamlit's `st.Page`, and the file that registers them), jobs and cloud functions. The other roles are scripts, data access (reads or writes a table), core logic (reached from an entry point) and support (reached from none). A library with no entry point uses its roots. Parts are packages split by role, plus one part per external service. Connections are counted from the call graph; a large repo drops one-off calls from the overview. Every part carries a job and facts taken from the narrative's module notes, or says it is not described yet.
+- **Reusable component** (`scripts/system_map.py`, `system_map.js`, `system_map.css`). One spec renders as an interactive HTML block, a standalone page, a Mermaid flowchart and a Markdown page for PR descriptions. A hand-written `system_map.json` replaces the derived map and is validated at build time, its inside views included.
+- **Drill-down.** A part opens onto its modules, with the parts that call into it above and the parts and services it calls below. A trail above the map goes back up.
+- **Readable at any size.** The view zooms to the selected part and its neighbours, keeping the map's shape so the page never moves. A layer with more than six parts wraps onto further rows. Lit edge labels are placed again on every selection, heaviest first, so they cover no box and no other label. Names are unique, cut to fit a box, and the full package shows in the panel. Data, external and support parts have their own colours.
+- **Back and Forward stay in the report.** Every in-page jump (a symbol, a module, a journey, a table, a search result) and every drill-down step is a history entry that restores the scroll position and what was selected. The map adds only its own field to an entry and emits `sysmap:navigate` so a host page can keep its own.
+- **Steadier report.** Clicking a module no longer moves the map under the pointer, and the fade slider now reaches the system map as well.
+- **Feature selection.** `codeflow.py features` lists what a report can contain, each with a preview. `codeflow.py plan --select … --save` shows the planned report as a tree and stores the choice in `[features]`. The skill asks one question per feature, shows the plan, and builds on a yes. Unticked sections are hidden; PR files follow `pr_output`.
+- **Commands:** `features`, `plan`, `system-map` (with `--format all|html|md|mermaid` and `--write-spec`).
+- **Reference:** `references/system-map.md` documents the spec.
+- Behaviour checked in headless Chrome (selection, tags, walkthrough, zoom, label overlaps, drill-down, Back and Forward); 136 tests.
+
 ## 0.7.0 — 2026-10
 
 Terraform (AWS, Google Cloud, Azure), and containers as infrastructure (Docker Compose, Kubernetes, Helm).

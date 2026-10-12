@@ -75,6 +75,7 @@ pre { margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 
 .results .k { font-family: var(--font-mono); font-size: 11px; color: var(--muted); padding-top: 1px; }
 .results small { display: block; color: var(--muted); font-size: 12px; }
 
+section[hidden] { display: none; }
 section { padding-block: 34px 8px; border-top: 1px solid var(--line); margin-top: 26px; display: grid; gap: 16px; min-width: 0; }
 .section-head { display: grid; gap: 6px; }
 .section-head p { color: var(--muted); }
@@ -288,6 +289,7 @@ footer pre { background: var(--surface); border: 1px solid var(--line); border-r
 
   <section id="arch">
     <div class="section-head"><h2 data-i="arch_h"></h2><p data-i="arch_p"></p></div>
+    <!--__SYSTEM_MAP__-->
     <div class="toolbar"><div class="legend" id="layer-legend"></div></div>
     <div class="fadebar"><label for="fade" data-i="fade_label"></label><input type="range" id="fade" min="0.05" max="0.8" step="0.05"><span id="fade-val"></span><span data-i="fade_hint"></span></div>
     <div class="arch-layout">
@@ -531,7 +533,55 @@ function symLink(key, label) {
   return h("button", { class: "symlink", type: "button", title: key, onclick: () => (D.modules[key] ? selectModule(key, true) : openInGraph(key)) }, (label || key) + (known ? "" : " ⚠"));
 }
 function flash(el) { if (!el) return; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
-function goto(id) { const el = document.getElementById(id); if (el) { el.scrollIntoView({ behavior: "smooth", block: "start" }); flash(el); } }
+function goto(id) { const el = document.getElementById(id); if (el) { remember(id); el.scrollIntoView({ behavior: "smooth", block: "start" }); flash(el); } }
+
+// ---------------------------------------------------------------- in-page history
+// Every jump inside the report (a symbol, a module, a journey, a table, a search result) is one step in
+// the browser's history, so Back and Forward move between places in the report instead of leaving it.
+// Each step remembers the scroll position and what was selected there, and Back puts both back.
+function viewState() {
+  const row = document.querySelector("#table-matrix tr.sel");
+  return { codeflow: 1, y: Math.round(window.scrollY), arch: A.sel, graph: G.sel, journey: [J.j, J.cur], table: row ? row.dataset.t : null };
+}
+let restoring = false, leaving = null;
+// Click handlers change the selection before they call goto, so the place being left is read first,
+// in the capture phase, before any handler runs.
+const noteLeaving = () => { if (!restoring) leaving = viewState(); };
+document.addEventListener("click", noteLeaving, true);
+document.addEventListener("keydown", noteLeaving, true);
+function remember(id) {
+  if (restoring) return;
+  try {
+    // keep fields others wrote into the entry (the system map records which part is open)
+    history.replaceState({ ...(history.state || {}), ...(leaving || viewState()) }, "");
+    history.pushState({ ...(history.state || {}), ...viewState(), y: null, target: id }, "", "#" + id);
+  } catch (e) { /* no history here (a sandboxed frame): the jump still works, Back just leaves the page */ }
+}
+// The system map records its own steps (opening a part). Before it does, bring this entry's scroll
+// position and selection up to date, and give the new entry the same, so Back lands where the reader was.
+document.addEventListener("sysmap:navigate", (ev) => {
+  // the entry being left gets the place as it was before the click (read in the capture phase);
+  // the new entry gets the place as it is now, with the part open
+  try { history.replaceState({ ...(history.state || {}), ...(leaving || viewState()) }, ""); } catch (e) { /* no history */ }
+  Object.assign(ev.detail.state, viewState());
+});
+function restoreView(state) {
+  restoring = true;
+  try {
+    if (state.arch !== A.sel) { A.sel = state.arch; drawArch(); renderModPanel(); }
+    if (state.graph !== G.sel) { G.sel = state.graph; renderGraph(); }
+    if (state.journey && D.journeys.length && (state.journey[0] !== J.j || state.journey[1] !== J.cur)) { [J.j, J.cur] = state.journey; renderJourney(); }
+    if (state.table) showTable(state.table);
+  } finally { restoring = false; }
+  // scroll after the other Back handlers (the system map redraws its part on the same event), so the
+  // position is applied to the page as it will look, not as it looked a moment before
+  setTimeout(() => {
+    if (state.y != null) window.scrollTo({ top: state.y, behavior: "instant" });
+    else { const el = document.getElementById(state.target); if (el) el.scrollIntoView({ block: "start" }); }
+  }, 0);
+}
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";  // the report puts the reader back itself
+window.addEventListener("popstate", (ev) => { if (ev.state && ev.state.codeflow) restoreView(ev.state); });  // a plain #link: the browser's own
 
 // ---------------------------------------------------------------- theme + fade level
 function effectiveDark() {
@@ -581,7 +631,19 @@ function effectiveDark() {
 
 // ---------------------------------------------------------------- structure (with fade)
 const A = { sel: null };
-function selectModule(mod, scroll) { A.sel = mod; drawArch(); renderModPanel(); if (scroll) goto("arch"); }
+// The panel sits above the map on narrow screens and changes height with each module, which would push
+// the map up or down under the pointer. Re-render, then scroll back by however far the map moved.
+function steadyArch(change) {
+  const frame = document.getElementById("arch-frame");
+  const before = frame.getBoundingClientRect().top;
+  change();
+  const moved = frame.getBoundingClientRect().top - before;
+  if (moved) window.scrollBy({ top: moved, behavior: "instant" });
+}
+function selectModule(mod, scroll) {
+  if (scroll) { A.sel = mod; drawArch(); renderModPanel(); goto("arch"); return; }
+  steadyArch(() => { A.sel = mod; drawArch(); renderModPanel(); });
+}
 const MODLINK = new Map();
 function moduleLinks(mod) {
   if (MODLINK.has(mod)) return MODLINK.get(mod);
@@ -615,7 +677,7 @@ function drawArch() {
   const links = A.sel ? moduleLinks(A.sel) : null;
   const related = links ? new Set([A.sel, ...links.out.keys(), ...links.inn.keys()]) : null;
   const svg = s("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": L.arch_h, class: links ? "focus" : "" });
-  svg.addEventListener("click", (ev) => { if (ev.target === svg) { A.sel = null; drawArch(); renderModPanel(); } });
+  svg.addEventListener("click", (ev) => { if (ev.target === svg) steadyArch(() => { A.sel = null; drawArch(); renderModPanel(); }); });
   cols.forEach((c, ci) => {
     if (!c.first) return;
     const x = pad + ci * (colW + gap), w = c.span * (colW + gap) - gap;
@@ -693,7 +755,7 @@ function renderModPanel() {
     h("div", {}, r.text, h("div", { class: "note" }, r.violations.length ? L.rule_bad + r.violations.map(([a, b]) => `${a} → ${b}`).join(", ") : L.rule_ok(r.sources))))));
   const fmt = (cs) => cs.map((c) => c.map(shortMod).join(" ↔ ")).join(" · ");
   fill(document.getElementById("lazy-cycles"), D.cycles.length ? h("span", { class: "todo" }, L.real_cycles(fmt(D.cycles))) : D.lazyCycles.length ? L.lazy_cycles(fmt(D.lazyCycles)) : L.no_cycles);
-  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && A.sel) { A.sel = null; drawArch(); renderModPanel(); } });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && A.sel) steadyArch(() => { A.sel = null; drawArch(); renderModPanel(); }); });
   drawArch();
   renderModPanel();
 })();
@@ -1073,6 +1135,10 @@ function showTable(t) {
 (function footer() {
   fill(document.getElementById("regen"), h("h3", {}, L.regen_h), h("pre", {}, D.regenCommand), h("p", {}, L.regen_cov(D.summary)), h("p", {}, L.regen_blind), h("p", {}, L.regen_gen));
 })();
+
+// the first history step is the page as it opened, so Back from the first jump returns here
+try { history.replaceState({ ...(history.state || {}), ...viewState() }, ""); } catch (e) { /* no history: nothing to restore */ }
 </script>
+<!--__SYSTEM_MAP_ASSETS__-->
 </body>
 </html>

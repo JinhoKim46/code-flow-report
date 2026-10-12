@@ -1,0 +1,79 @@
+/* System map component. Scoped to .sysmap so it sits inside any page; tokens fall back to a light palette. */
+.sysmap {
+  --sm-ink: #1b2422; --sm-muted: #5b6764; --sm-line: #d5dad7; --sm-grid: #e6eae7;
+  --sm-surface: #ffffff; --sm-bg: #f5f6f4; --sm-accent: #0b6e69; --sm-accent-soft: #d8ecea;
+  --sm-gold: #a35b00; --sm-gold-soft: #f6e8d4;
+  --sm-ui: #3b5b92; --sm-core: #0b6e69; --sm-svc: #a8436e; --sm-lab: #8a5a2b; --sm-data: #5f7a1e; --sm-any: #6e7378;
+  color: var(--sm-ink); display: grid; gap: 12px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sysmap, .sysmap:not([data-theme="light"]) {
+    --sm-ink: #e4ebe8; --sm-muted: #9aa8a4; --sm-line: #2c3633; --sm-grid: #222b29;
+    --sm-surface: #18201e; --sm-bg: #111615; --sm-accent: #4fc0b8; --sm-accent-soft: #163634;
+    --sm-gold: #e3a24a; --sm-gold-soft: #3a2a14;
+    --sm-ui: #86a6e0; --sm-core: #4fc0b8; --sm-svc: #e894b8; --sm-lab: #d8a774; --sm-data: #b2cc6e; --sm-any: #b0b5ba;
+  }
+}
+:root[data-theme="dark"] .sysmap {
+  --sm-ink: #e4ebe8; --sm-muted: #9aa8a4; --sm-line: #2c3633; --sm-grid: #222b29;
+  --sm-surface: #18201e; --sm-bg: #111615; --sm-accent: #4fc0b8; --sm-accent-soft: #163634;
+  --sm-gold: #e3a24a; --sm-gold-soft: #3a2a14;
+  --sm-ui: #86a6e0; --sm-core: #4fc0b8; --sm-svc: #e894b8; --sm-lab: #d8a774; --sm-data: #b2cc6e; --sm-any: #b0b5ba;
+}
+.sysmap .sysmap-title, .sysmap h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.sysmap h4 { margin: 8px 0 4px; font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; color: var(--sm-muted); font-weight: 500; }
+.sysmap p { margin: 0; }
+.sysmap ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; color: var(--sm-muted); }
+.sysmap code { font-family: ui-monospace, Menlo, monospace; font-size: .86em; background: var(--sm-bg); border: 1px solid var(--sm-line); border-radius: 4px; padding: 1px 6px; overflow-wrap: anywhere; }
+.sysmap button { font: inherit; color: inherit; }
+.sysmap :focus-visible { outline: 2px solid var(--sm-accent); outline-offset: 2px; border-radius: 4px; }
+.sysmap .sm-muted { color: var(--sm-muted); font-size: 13px; }
+
+.sysmap .sm-banner { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; padding: 8px 12px; border: 1px solid var(--sm-line); border-radius: 10px 10px 0 0; background: var(--sm-surface); min-height: 42px; }
+.sysmap .sm-chip { border: 1px solid var(--sm-line); background: var(--sm-surface); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.sysmap .sm-chip:hover { border-color: var(--sm-accent); }
+.sysmap .sm-trail { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--sm-muted); }
+.sysmap .sm-trail strong { color: var(--sm-ink); }
+.sysmap .sm-open { border-color: var(--sm-accent); color: var(--sm-accent); }
+/* a part that can be opened looks like a small stack of cards */
+.sysmap .sm-has-inside .sm-box { filter: drop-shadow(3px 3px 0 var(--sm-line)); }
+.sysmap .sm-steps { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.sysmap .sm-btn { border: 1px solid var(--sm-line); background: var(--sm-surface); border-radius: 6px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
+.sysmap .sm-btn:hover:not(:disabled) { border-color: var(--sm-accent); }
+.sysmap .sm-btn:disabled { opacity: .45; cursor: default; }
+
+.sysmap .sm-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (min-width: 880px) { .sysmap .sm-body { grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); } }
+.sysmap .sm-frame { background: var(--sm-surface); border: 1px solid var(--sm-line); border-radius: 10px; overflow-x: auto; }
+.sysmap .sm-svg { display: block; min-width: 640px; width: 100%; height: auto; }
+.sysmap .sm-panel { background: var(--sm-surface); border: 1px solid var(--sm-line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.sysmap .sm-kind { font-family: ui-monospace, Menlo, monospace; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--sm-muted); }
+.sysmap .sm-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.sysmap .sm-links { display: grid; gap: 4px; }
+.sysmap .sm-links button { text-align: left; background: none; border: none; padding: 2px 0; cursor: pointer; font-size: 14px; }
+.sysmap .sm-links button:hover { color: var(--sm-accent); }
+.sysmap .sm-links button span { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+.sysmap .sm-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.sysmap .sm-tag { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; padding: 2px 8px; border-radius: 4px; background: var(--sm-gold-soft); color: var(--sm-gold); border: 1px solid color-mix(in srgb, var(--sm-gold) 35%, transparent); cursor: pointer; }
+
+.sysmap .sm-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--sm-muted); padding: 2px 2px 0; }
+.sysmap .sm-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+.sysmap .sm-node { cursor: pointer; }
+.sysmap .sm-box { fill: var(--sm-surface); stroke: var(--sm-line); stroke-width: 1.25; transition: stroke 120ms, fill 120ms; }
+.sysmap .sm-bar { stroke: none; }
+.sysmap .sm-name { fill: var(--sm-ink); font-family: system-ui, sans-serif; }
+.sysmap .sm-sub { fill: var(--sm-muted); font-family: ui-monospace, Menlo, monospace; }
+.sysmap .sm-node:hover .sm-box { stroke: var(--sm-accent); }
+.sysmap .sm-node.sm-sel .sm-box { stroke: var(--sm-accent); stroke-width: 2.5; fill: var(--sm-accent-soft); }
+.sysmap .sm-node.sm-hl .sm-box { stroke: var(--sm-accent); stroke-width: 2; }
+.sysmap .sm-node.sm-gr .sm-box { stroke: var(--sm-gold); stroke-width: 2.25; fill: var(--sm-gold-soft); }
+.sysmap.sm-dim .sm-node:not(.sm-sel):not(.sm-hl):not(.sm-gr) { opacity: var(--fade, .28); }
+.sysmap .sm-edge { fill: none; stroke: var(--sm-muted); stroke-opacity: .45; stroke-width: 1.2; transition: stroke 120ms, opacity 120ms; }
+.sysmap .sm-edge.sm-hl { stroke: var(--sm-accent); stroke-opacity: 1; stroke-width: 2.2; }
+.sysmap.sm-dim .sm-edge:not(.sm-hl) { opacity: calc(var(--fade, .28) * .45); }
+.sysmap .sm-edge-label { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; fill: var(--sm-accent); display: none; paint-order: stroke; stroke: var(--sm-surface); stroke-width: 4px; }
+.sysmap .sm-edge-label.sm-hl { display: block; }
+.sysmap .sm-ah { fill: var(--sm-muted); }
+.sysmap .sm-ah-hl { fill: var(--sm-accent); }
+@media (prefers-reduced-motion: reduce) { .sysmap * { transition: none !important; } }

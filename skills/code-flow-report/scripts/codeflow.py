@@ -16,6 +16,9 @@
     codeflow.py check                       exit 1 if code_map.json, the narrative or the HTML is out of date
     codeflow.py install-test [--path tests/test_code_flow.py]   write a unittest that runs `check`
     codeflow.py report FILE.md              render a Markdown report as a matching HTML page
+    codeflow.py features [--json]           what a report can contain, with a preview of each
+    codeflow.py plan [--select a,b] [--save]   the planned report as a tree; --save stores the choice
+    codeflow.py system-map [--format all|html|md|mermaid] [--write-spec]   the system map on its own (HTML, PR Markdown, Mermaid)
 
 After `init`, the same scripts live in <out>/tools/, so anyone can rebuild without the skill installed.
 Standard library only (Python 3.11+).
@@ -40,7 +43,8 @@ import infra as infra_scanner  # noqa: E402
 from common import CONFIG_NAME, Paths, count_todo, load_map, load_narrative  # noqa: E402
 
 SAMPLE_DIRS = {"examples", "example", "samples", "demos", "demo", "benchmarks", "benchmark", "notebooks", "cookbook", "docs_src"}
-VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "infra_tf.py", "infra_containers.py"]
+VENDORED = ["codeflow.py", "common.py", "extract.py", "build.py", "draft.py", "report.py", "infra.py", "infra_tf.py", "infra_containers.py",
+            "features.py", "system_map.py", "system_map.js", "system_map.css", "architecture.py"]
 
 
 # --------------------------------------------------------------------------- init
@@ -200,6 +204,15 @@ def cmd_build(a) -> int:
         return 1
     page = builder.render(data)
     paths.html.write_text(page, encoding="utf-8")
+    import features
+    pr_files = [paths.out / "system-map.md", paths.out / "system-map.mmd"]
+    if features.enabled(paths.config, "pr_output") and data.get("systemMap"):
+        import system_map
+        pr_files[0].write_text(system_map.to_markdown(data["systemMap"]), encoding="utf-8")
+        pr_files[1].write_text(system_map.to_mermaid(data["systemMap"]), encoding="utf-8")
+    else:
+        for f in pr_files:  # a leftover from an earlier build would contradict the plan
+            f.unlink(missing_ok=True)
     print(f"wrote {paths.html} ({len(page.encode()) / 1024:,.0f} KB) · journeys {len(data['journeys'])} · boundary cards {len(data['roles'])} · "
           f"entities {len(data['entities'])} · findings {len(data['findings'])} · TODO left {data['todo']}")
     return 0
@@ -510,6 +523,81 @@ def cmd_install_test(a) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- features / plan / system map
+
+def _detected(paths: Paths) -> dict:
+    """Stack profiles the repo's last map switched on (empty before the first `map`)."""
+    try:
+        return {k: True for k in load_map(paths).get("profiles", {})}
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_features(a) -> int:
+    import features
+    items = features.catalog(a.lang)
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=1))
+        return 0
+    for f in items:
+        print(f"== {f['title']}  [{f['id']}]" + ("  (default)" if f["default"] else ""))
+        print(f"   {f['what']}")
+        for line in f["preview"].splitlines():
+            print(f"   | {line}")
+        print()
+    return 0
+
+
+def cmd_plan(a) -> int:
+    import features
+    paths = Paths.find()
+    selected = None if a.select is None else [x.strip() for x in a.select.split(",") if x.strip()]
+    detected = _detected(paths)
+    print(features.plan(selected, a.lang or paths.config["project"].get("language", "en"), detected))
+    if a.save:
+        if selected is None:
+            print("nothing saved: --save needs --select", file=sys.stderr)
+            return 1
+        cfg = dict(paths.config)
+        # auto features (model_calls) follow the repo unless the user answered for them explicitly
+        cfg["features"] = {f["id"]: f["id"] in selected for f in features.FEATURES if not f.get("auto") or f["id"] in selected}
+        write_config(paths.config_file, cfg)
+        print(f"saved to {paths.config_file.name} [features]")
+    return 0
+
+
+def cmd_system_map(a) -> int:
+    import system_map
+    paths = Paths.find()
+    cm = make_map(paths)
+    narrative = load_narrative(paths)
+    lang = paths.config["project"].get("language", "en")
+    spec, sm_problems = builder.system_map_spec(paths, cm, narrative, lang, force=True)
+    if sm_problems:
+        for p in sm_problems:
+            print("  -", p)
+        return 1
+    if a.write_spec:
+        import architecture
+        purposes, capabilities = builder.module_texts(narrative)
+        derived = architecture.map_spec(cm, lang=lang, title=(paths.config["project"].get("name") or paths.root.name),
+                                        purposes=purposes, capabilities=capabilities)
+        target = paths.out / system_map.SPEC_FILE
+        target.write_text(json.dumps(derived, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        print(f"wrote {target.name} (edit it: labels, jobs, steps; the page then uses it)")
+    outdir = Path(a.out).resolve() if a.out else paths.out
+    outdir.mkdir(parents=True, exist_ok=True)
+    stem = "system-map"
+    if a.format in ("html", "all"):
+        (outdir / f"{stem}.html").write_text(system_map.standalone_page(spec), encoding="utf-8")
+    if a.format in ("md", "all"):
+        (outdir / f"{stem}.md").write_text(system_map.to_markdown(spec), encoding="utf-8")
+    if a.format in ("mermaid", "all"):
+        (outdir / f"{stem}.mmd").write_text(system_map.to_mermaid(spec), encoding="utf-8")
+    print(f"system map: {len(spec['nodes'])} parts · {len(spec['edges'])} connections · {len(spec['layers'])} layers → {outdir}")
+    return 0
+
+
 def cmd_report(a) -> int:
     import report
     src = Path(a.file).resolve()
@@ -543,6 +631,12 @@ def main(argv=None) -> int:
     sub.add_parser("check").set_defaults(fn=cmd_check)
     p = sub.add_parser("install-test"); p.add_argument("--path", default="tests/test_code_flow.py"); p.set_defaults(fn=cmd_install_test)
     p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
+    p = sub.add_parser("features"); p.add_argument("--lang", default="en", choices=["en", "ko"]); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_features)
+    p = sub.add_parser("plan"); p.add_argument("--select", help="comma-separated feature ids (default: the defaults)"); p.add_argument("--lang", choices=["en", "ko"])
+    p.add_argument("--save", action="store_true", help="write the selection to codeflow.toml [features]"); p.set_defaults(fn=cmd_plan)
+    p = sub.add_parser("system-map"); p.add_argument("--format", default="all", choices=["all", "html", "md", "mermaid"])
+    p.add_argument("--out", help="output folder (default: the report folder)"); p.add_argument("--write-spec", action="store_true", help="also write system_map.json to edit")
+    p.set_defaults(fn=cmd_system_map)
     a = ap.parse_args(argv)
     return a.fn(a)
 

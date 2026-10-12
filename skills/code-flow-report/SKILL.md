@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py *) Bash(pyth
 license: MIT
 compatibility: Claude Code with Python 3.11+ on PATH as python3. Standard library only; the generated page works offline.
 metadata:
-  version: 0.7.0
+  version: 0.8.0
   repository: https://github.com/JinhoKim46/code-flow-report
 ---
 
@@ -23,14 +23,24 @@ Produces `docs/code-flow/code-flow-report.html` in the target repo: one offline 
 - **Size risks honestly**: what is true now, what trigger makes it go wrong, how far it reaches. No trigger and no reach → not a finding.
 - **Report measurements**, not impressions: the resolved-call ratio, edges checked, what `check` printed.
 
-## 1. Ask first (one AskUserQuestion call)
+## 1. Ask first (two AskUserQuestion calls, then one confirmation)
 
 Run `CF status` (before init: `python3 ${CLAUDE_SKILL_DIR}/scripts/codeflow.py status`). If it says there is no Python source, stop and say so. If a report already exists, go to **§7 Regenerate** instead.
 
-Then ask, together:
-1. **Report language** — English (default, first option) / 한국어.
-2. **Depth** — put the recommended one from `status` first: `quick` (3 journeys, ~10 min), `standard` (6 journeys, ~30 min), `deep` (12 journeys, everything filled).
-3. **Reader** — learning the code / owns the code / reviewing it. This sets the tone and goes into `meta.audience`.
+**Call A: how to write it.**
+1. **Report language**: English (default, first option) / 한국어.
+2. **Depth**: put the recommended one from `status` first: `quick` (3 journeys, ~10 min), `standard` (6 journeys, ~30 min), `deep` (12 journeys, everything filled).
+3. **Reader**: learning the code / owns the code / reviewing it. This sets the tone and goes into `meta.audience`.
+
+Then run `CF init --lang <en|ko> --audience "<reader>"` and `CF map` (§2). The map tells you which stack profiles the repo uses, which §1 needs.
+
+**Call B: what goes in.** Run `CF features --lang <en|ko> --json`. Each feature has a `title`, a `what` and a `preview`: a sketch of what the report will show. Ask one question per feature, with its `preview` as the option preview (previews only work with single choices, which is why each feature is its own question). Options: **Include** (first, with the feature's `output`) and **Leave out**. Ask about `system_map`, `call_flow`, `data_life` and `pr_output` in the first call, and `findings` and `staleness_test` in a second. Skip `model_calls`: it follows the repo (`auto`) and the plan shows it. A feature's default is its `default` value.
+
+**Then the plan.** Save the answers and print the tree:
+```
+CF plan --select <comma-separated ids of the included features> --save
+```
+Show that tree to the user as the plan, and ask one question: *Build this?* Start §3 only on a yes. A "change X" answer means run Call B again for that feature.
 
 ## 2. Map
 
@@ -49,7 +59,7 @@ CF candidates          # every entry point ranked as a journey candidate (* = al
 CF todo                # what is left to write
 ```
 
-`draft` fills layers, journey call chains, boundary cards, stack-profile cards, input-flow candidates and data lifecycles from the code and leaves `TODO:` wherever prose is needed. Then judge the journeys against `candidates`: the set should cover the flows a newcomer most needs — for an app: sign-in, the main create/submit action, the main read screen, the main background job; for a library: its main public calls (e.g. `Agent().run()`), past virtual calls into the subclasses that do the work; for a pipeline: its stages in order; for a serverless or containerised app (the map line says "infrastructure (… CDK / Terraform / Docker Compose / Kubernetes)"): the main request path, the main event-driven path (queue, schedule, upload), and one workflow, each crossing functions or services as the infrastructure wires them (a call to another service over HTTP is named in the step text, then the callee's route continues the chain). Swap out a journey that is an admin screen, a one-off script, or only the tail of another journey, and drop the drafted one with `drop = true` (copy the replacement's chain with `CF query <entry> --depth 3`). Add any step a chain is missing (a validation call, a permission check) and drop plumbing steps that add nothing. When two cards explain the same function, keep the more specific one.
+`draft` fills layers, journey call chains, boundary cards, stack-profile cards, input-flow candidates and data lifecycles from the code and leaves `TODO:` wherever prose is needed. Leave out the parts the user declined in §1: `[features]` in codeflow.toml already turns them off at build time. Then judge the journeys against `candidates`: the set should cover the flows a newcomer most needs — for an app: sign-in, the main create/submit action, the main read screen, the main background job; for a library: its main public calls (e.g. `Agent().run()`), past virtual calls into the subclasses that do the work; for a pipeline: its stages in order; for a serverless or containerised app (the map line says "infrastructure (… CDK / Terraform / Docker Compose / Kubernetes)"): the main request path, the main event-driven path (queue, schedule, upload), and one workflow, each crossing functions or services as the infrastructure wires them (a call to another service over HTTP is named in the step text, then the callee's route continues the chain). Swap out a journey that is an admin screen, a one-off script, or only the tail of another journey, and drop the drafted one with `drop = true` (copy the replacement's chain with `CF query <entry> --depth 3`). Add any step a chain is missing (a validation call, a permission check) and drop plumbing steps that add nothing. When two cards explain the same function, keep the more specific one.
 
 ## 4. Write the narrative
 
@@ -71,7 +81,7 @@ Always add, whatever the depth, **`[module_notes]` for every module — written 
   - `does` — what it does, as 2–5 capabilities, not a function list;
   - `flow` — who calls it and when → what it goes through → where it writes (name the real modules, tables, services);
   - `note` (optional) — a rule, trap or deliberate exception worth knowing.
-  Concrete and short; never copy the docstring's first sentence, never pad ("This module is responsible for various…"). The draft leaves all of them as TODO on purpose. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Give each finding the code can re-check a `check` (`no_callers`, `symbol_exists`, `text_in`, `calls`, `not_calls`) so it retires itself to the "Fixed" list once the code changes.
+  Concrete and short; never copy the docstring's first sentence, never pad ("This module is responsible for various…"). The draft leaves all of them as TODO on purpose. Then the system map, if it is on: `CF system-map --write-spec` writes the code-derived map to `docs/code-flow/system_map.json`. Give each layer an `owns` sentence, each part a `job`, the facts a reviewer would check and `tags` (the requirements or journeys it delivers), and add `steps` for the one or two flows a newcomer must follow. Keep node ids and edges as derived, so the map still matches the code. Then `meta.lede` (two sentences), at least two `[[decisions]]` (code vs people), `[[input_flows]]` for each place outside data enters (forms, uploads, imported files, API payloads, messages), and `[[findings]]` you verified. Give each finding the code can re-check a `check` (`no_callers`, `symbol_exists`, `text_in`, `calls`, `not_calls`) so it retires itself to the "Fixed" list once the code changes.
 
 ## 5. Build and self-check
 
@@ -80,7 +90,8 @@ CF build               # fails with a list if the narrative names something the 
 CF verify --edges 5    # standard: --edges 20
 ```
 
-- `build` must exit 0. Fix each listed problem (usually a typo'd symbol — `CF find <name>`).
+- `build` must exit 0. Fix each listed problem (usually a typo'd symbol — `CF find <name>`). A hand-written `system_map.json` with a bad layer, node or edge fails the build with the same list.
+- The system map is built in. It is derived from the repo's structure (entry points, scripts, core logic, data access, support and external services, from the call graph; each part opens onto its modules) unless `docs/code-flow/system_map.json` exists. To improve it, run `CF system-map --write-spec`, edit the file (layer labels, each part's `job`, `tags`, walkthrough `steps`), then `CF build`. Check the result in the report's system map section, not only in the JSON.
 - `verify`: every `??` line must be read and either explained or fixed; report how many of N matched.
 - Walk **one journey** against the source: open each step's function and confirm the order and what it passes on. Fix the narrative where it is wrong.
 - If a browser tool is available, open the HTML at phone and desktop width and confirm it renders without errors.
@@ -91,6 +102,7 @@ Tell the user, briefly:
 - what the report covers (journeys, cards, entities, findings counts) and where it is (`docs/code-flow/code-flow-report.html`);
 - coverage: resolved-call ratio and what static analysis cannot see (dynamic dispatch, calls inside templates, framework hook registration, SQL assembled at runtime, non-Python code);
 - the top 5 findings with `file:line`;
+- for a pull request: `CF system-map --format md` writes `system-map.md` (a Mermaid chart plus a parts table). Paste it into the PR description; GitHub draws the chart.
 - how to regenerate: `python3 docs/code-flow/tools/codeflow.py build`.
 
 Then ask whether to install the staleness test (`CF install-test`): it fails whenever the report no longer matches the code, which keeps the report honest **and** means every PR that moves a function must run `build`. Install only on a yes.

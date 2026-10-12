@@ -123,6 +123,9 @@ You rarely need these: Claude runs them for you. After `init` they are all `pyth
 | `verify --edges N` | random call edges next to their source lines |
 | `check` | fail if the map, narrative or page is out of date |
 | `install-test` | add the staleness unittest |
+| `features` | list what a report can contain, with a preview of each |
+| `plan` | show the planned report as a tree; `--select`, `--save` |
+| `system-map` | the system map alone: HTML, PR Markdown, Mermaid |
 | `report FILE.md` | render a Markdown document in the same look |
 
 ## Configuration

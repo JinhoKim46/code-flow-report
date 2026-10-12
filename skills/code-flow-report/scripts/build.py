@@ -15,11 +15,17 @@ from pathlib import Path
 
 try:
     from . import infra as infra_scanner
+    from . import architecture
+    from . import features
     from . import profiles as profile_registry
+    from . import system_map
     from .common import Paths, check_problem, count_todo, narrative_problems
 except ImportError:  # script import
+    import architecture
+    import features
     import infra as infra_scanner
     import profiles as profile_registry
+    import system_map
     from common import Paths, check_problem, count_todo, narrative_problems
 
 TEMPLATE = Path(__file__).resolve().parent / "template.html"
@@ -205,6 +211,46 @@ def enrich(code_map: dict, key: str) -> dict:
     return out
 
 
+def module_texts(narrative: dict) -> tuple[dict[str, str], dict]:
+    """From [module_notes]: each module's `purpose` and its `does` (what the system map's parts say),
+    leaving out the TODO placeholders a draft writes."""
+    purposes, capabilities = {}, {}
+    for m, v in narrative.get("module_notes", {}).items():
+        if not isinstance(v, dict):
+            continue
+        if v.get("purpose") and not str(v["purpose"]).startswith("TODO"):
+            purposes[m] = v["purpose"]
+        if v.get("does") and not (isinstance(v["does"], str) and v["does"].startswith("TODO")):
+            capabilities[m] = v["does"]
+    return purposes, capabilities
+
+
+def system_map_spec(paths: Paths, code_map: dict, narrative: dict, lang: str,
+                    force: bool = False) -> tuple[dict | None, list[str]]:
+    """The page's system map: the spec the narrative author wrote (docs/code-flow/system_map.json) if
+    there is one, otherwise the map derived from the repo's structure (architecture.py), with each
+    module's purpose from the narrative as the part's job. Off when [features] says so."""
+    detected = {k: True for k in code_map.get("profiles", {})}
+    if not force and not features.enabled(paths.config, "system_map", detected):
+        return None, []
+    own = paths.out / system_map.SPEC_FILE
+    if own.exists():
+        spec = json.loads(own.read_text(encoding="utf-8"))
+    else:
+        purposes, capabilities = module_texts(narrative)
+        title = (paths.config["project"].get("name") or paths.root.name) + (" — system map" if lang == "en" else " — 시스템 맵")
+        spec = architecture.map_spec(code_map, lang=lang, title=title, purposes=purposes, capabilities=capabilities)
+    spec.setdefault("lang", lang)
+    problems = system_map.validate(spec)
+    if problems:
+        return None, [f"system map: {p}" for p in problems]
+    return system_map.layout(spec), []
+
+
+# report sections a feature switches off: section id per feature id
+FEATURE_SECTIONS = {"call_flow": "journeys", "data_life": "data", "findings": "findings"}
+
+
 def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, list[str]]:
     cfg = paths.config
     if code_map.get("schema", 1) < 2:
@@ -213,6 +259,10 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
     problems = narrative_problems(narrative, code_map)
     layers, mod_layer, lp = assign_layers(code_map, narrative)
     problems += lp
+    sm_spec, sm_problems = system_map_spec(paths, code_map, narrative, lang)
+    problems += sm_problems
+    detected = {k: True for k in code_map.get("profiles", {})}
+    hidden = [sec for fid, sec in FEATURE_SECTIONS.items() if not features.enabled(cfg, fid, detected)]
     inc = incoming(code_map)
 
     keys = sorted(code_map["symbols"])
@@ -320,12 +370,18 @@ def build_data(paths: Paths, code_map: dict, narrative: dict) -> tuple[dict, lis
         "journeys": journeys, "roles": roles, "flows": flows, "entities": entities, "decisions": with_loc(narrative.get("decisions", [])),
         "findings": findings, "profiles": prof_sections, "cardExtras": dict(card_extras),
         "cycles": code_map["import_cycles"], "lazyCycles": code_map["lazy_import_cycles"],
-        "problems": problems, "todo": count_todo(narrative),
+        "problems": problems, "todo": count_todo(narrative), "systemMap": sm_spec, "hiddenSections": hidden,
     }
     return data, problems
 
 
 def render(data: dict) -> str:
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
+    sm_spec = data.get("systemMap")
+    payload = json.dumps({k: v for k, v in data.items() if k not in ("systemMap", "hiddenSections")}, ensure_ascii=False, separators=(",", ":"), sort_keys=True).replace("</", "<\\/")
     page = TEMPLATE.read_text(encoding="utf-8")
+    for sec in data.get("hiddenSections", []):
+        page = page.replace(f'<section id="{sec}">', f'<section id="{sec}" hidden>', 1)
+    fragment = system_map.to_fragment(sm_spec) if sm_spec else ""
+    assets = system_map.assets_html() if sm_spec else ""
+    page = page.replace("<!--__SYSTEM_MAP__-->", fragment, 1).replace("<!--__SYSTEM_MAP_ASSETS__-->", assets, 1)
     return page.replace("/*__DATA__*/{}", payload, 1).replace('<html lang="en">', f'<html lang="{data["lang"]}">', 1)

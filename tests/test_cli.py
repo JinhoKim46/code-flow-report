@@ -61,7 +61,8 @@ class FullRun(unittest.TestCase):
         self.assertEqual(data["lang"], "en")
         self.assertIn("app.views:create_order", data["keys"])
         self.assertGreater(data["todo"], 0)
-        self.assertEqual(html.count("</script>"), 2)  # the JSON cannot close its own script tag
+        # template script + code-map JSON + system-map component script + system-map data: each closed once, the JSON cannot close its own
+        self.assertEqual(html.count("</script>"), 4)
         self.assertEqual(data["profiles"], [])
         self.assertIn("note", data["modules"]["app.orders"])
 
